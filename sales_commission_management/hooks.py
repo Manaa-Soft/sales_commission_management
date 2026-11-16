@@ -2,8 +2,21 @@ app_name = "sales_commission_management"
 app_title = "Sales Commission Management for ERPNext"
 app_publisher = "ECOSIRE"
 app_description = "Advanced multi-tier commission engine for ERPNext v15/v16"
+app_icon = "fa fa-percent"
+app_color = "#2980b9"
 app_email = "support@ecosire.com"
 app_license = "mit"
+
+add_to_apps_screen = [
+    {
+        "name": app_name,
+        "logo": "/assets/sales_commission_management/images/icon.svg",
+        "title": app_title,
+        "route": "/desk/home",
+        "has_permission": "frappe.has_permission",
+        "sequence_id": 100,
+    }
+]
 
 doc_events = {
     "Sales Invoice": {
