@@ -13,7 +13,6 @@ add_to_apps_screen = [
         "logo": "/assets/sales_commission_management/images/icon.svg",
         "title": app_title,
         "route": "/desk/home",
-        "has_permission": "frappe.has_permission",
         "sequence_id": 100,
     }
 ]
