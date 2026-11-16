@@ -1,0 +1,49 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-01-01 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "company",
+  "period_from",
+  "period_to",
+  "accrual_date",
+  "expense_account",
+  "accrued_liability_account",
+  "cost_center",
+  "total_amount",
+  "status",
+  "journal_entry",
+  "items"
+ ],
+ "fields": [
+  { "fieldname": "company", "fieldtype": "Link", "label": "Company", "options": "Company", "reqd": 1 },
+  { "fieldname": "period_from", "fieldtype": "Date", "label": "Period From", "reqd": 1 },
+  { "fieldname": "period_to", "fieldtype": "Date", "label": "Period To", "reqd": 1 },
+  { "fieldname": "accrual_date", "fieldtype": "Date", "label": "Accrual Date", "reqd": 1 },
+  { "fieldname": "expense_account", "fieldtype": "Link", "label": "Expense Account", "options": "Account" },
+  { "fieldname": "accrued_liability_account", "fieldtype": "Link", "label": "Accrued Liability Account", "options": "Account" },
+  { "fieldname": "cost_center", "fieldtype": "Link", "label": "Cost Center", "options": "Cost Center" },
+  { "fieldname": "total_amount", "fieldtype": "Currency", "label": "Total Amount", "read_only": 1 },
+  { "fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "Draft\nSubmitted\nCancelled", "default": "Draft", "read_only": 1 },
+  { "fieldname": "journal_entry", "fieldtype": "Link", "label": "Journal Entry", "options": "Journal Entry", "read_only": 1 },
+  { "fieldname": "items", "fieldtype": "Table", "label": "Items", "options": "Commission Accrual Batch Item" }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2026-01-01 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Sales Commission Management",
+ "name": "Commission Accrual Batch",
+ "owner": "Administrator",
+ "permissions": [
+  { "create": 1, "delete": 1, "email": 1, "export": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1 }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

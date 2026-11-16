@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sales_commission_management"
+version = "0.1.0"
+description = "Advanced multi-tier commission engine for ERPNext v15/v16"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "ECOSIRE", email = "support@ecosire.com" }]
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sales_commission_management*"]

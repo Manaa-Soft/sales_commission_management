@@ -1,0 +1,37 @@
+{
+ "actions": [],
+ "creation": "2026-01-01 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "sequence",
+  "slab_name",
+  "min_attainment",
+  "max_attainment",
+  "rate_percentage",
+  "fixed_bonus",
+  "enabled"
+ ],
+ "fields": [
+  { "fieldname": "sequence", "fieldtype": "Int", "label": "Sequence", "default": "0" },
+  { "fieldname": "slab_name", "fieldtype": "Data", "label": "Slab Name" },
+  { "fieldname": "min_attainment", "fieldtype": "Float", "label": "Min Attainment", "reqd": 1 },
+  { "fieldname": "max_attainment", "fieldtype": "Float", "label": "Max Attainment" },
+  { "fieldname": "rate_percentage", "fieldtype": "Percent", "label": "Rate Percentage" },
+  { "fieldname": "fixed_bonus", "fieldtype": "Currency", "label": "Fixed Bonus", "options": "Company:company:default_currency" },
+  { "fieldname": "enabled", "fieldtype": "Check", "label": "Enabled", "default": "1" }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-01-01 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Sales Commission Management",
+ "name": "Commission Slab",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "sequence",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 1
+}
