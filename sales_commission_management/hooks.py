@@ -12,7 +12,7 @@ add_to_apps_screen = [
         "name": app_name,
         "logo": "/assets/sales_commission_management/images/icon.svg",
         "title": app_title,
-        "route": "/desk/home",
+        "route": "/app/sales-commission-management",
         "sequence_id": 100,
     }
 ]
