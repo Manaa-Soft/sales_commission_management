@@ -82,6 +82,46 @@
    "link_to": "Commission Settings",
    "type": "DocType",
    "url": ""
+  },
+  {
+   "color": "#2980b9",
+   "doc_view": "",
+   "label": "Commission Register",
+   "link_to": "Commission Register",
+   "type": "Report",
+   "url": ""
+  },
+  {
+   "color": "#2980b9",
+   "doc_view": "",
+   "label": "Sales Person Statement",
+   "link_to": "Sales Person Commission Statement",
+   "type": "Report",
+   "url": ""
+  },
+  {
+   "color": "#2980b9",
+   "doc_view": "",
+   "label": "Sales Partner Statement",
+   "link_to": "Sales Partner Commission Statement",
+   "type": "Report",
+   "url": ""
+  },
+  {
+   "color": "#2980b9",
+   "doc_view": "",
+   "label": "Commission Payable & Aging",
+   "link_to": "Commission Payable & Aging",
+   "type": "Report",
+   "url": ""
+  },
+  {
+   "color": "#2980b9",
+   "doc_view": "",
+   "label": "GL Reconciliation",
+   "link_to": "Commission GL Reconciliation",
+   "type": "Report",
+   "url": ""
   }
  ],
  "sidebar_items": [
