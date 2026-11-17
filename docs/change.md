@@ -92,6 +92,13 @@ This file records changes to the Sales Commission Management for ERPNext app so 
 - Added `naming_series` Select field (hidden, default first option) to the above DocTypes.
 - Child tables and `Commission Settings` (Single) unchanged.
 
+## Data patch: rename_hashed_to_series
+
+- Added `patches/rename_hashed_to_series.py` and registered it in `patches.txt`.
+- Renames pre-existing hash-named documents (e.g. `dm05c2un98`) to representative series names (`CE-2026-00001`, `CS-2026-00001`, `CAB-2026-00001`, `CP-2026-00001`, `CT-2026-00001`).
+- Runs during `bench migrate`; idempotent (skips already-series-named records).
+- Commission Plan uses `field:plan_name` (no rename needed).
+
 ## Notes for coders
 
 - Hook registration lives in `hooks.py` (`doc_events`, `scheduler_events`); run `bench migrate` + restart after changes.
