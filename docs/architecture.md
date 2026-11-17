@@ -28,7 +28,15 @@ sales_commission_management/
 │           ├── commission_settlement/
 │           ├── commission_settlement_item/
 │           ├── commission_accrual_batch/
-│           └── commission_accrual_batch_item/
+│           ├── commission_accrual_batch_item/
+│       ├── report/                     # 20 Script Reports (one folder per report)
+│       │   └── <report_name>/
+│       │       ├── <report_name>.py    # execute() returning columns/data
+│       │       ├── <report_name>.json  # Report metadata (filters, roles, type)
+│       │       └── <report_name>.js    # optional client-side formatter
+│       └── workspace/
+│           └── Sales Commission Management/
+│               └── Sales Commission Management.json  # Workspace shortcuts & sidebar
 └── docs/
 ```
 

@@ -31,6 +31,10 @@ bench --site <site_name> install-app sales_commission_management
 4. On a Sales Invoice, populate the **Sales Team** table with Sales Person + allocated %.
 5. Submit the invoice – `Commission Entry` records are created automatically.
 
+## Workspace & report sync
+
+`bench migrate` syncs the bundled `Workspace` ("Sales Commission Management") and all `Script Report` metadata into the site. Re-run `bench migrate` (then restart bench) after pulling updates that change reports or workspace shortcuts. `bench build` rebuilds the desk assets.
+
 ## Uninstall
 
 ```bash

@@ -43,6 +43,22 @@ class TestCommissionPlan(FrappeTestCase):
 - Integration tests: submit a Sales Invoice with a Sales Team and assert `Commission Entry` rows.
 - Reversal test: cancel invoice → negative entries created.
 
+## Report tests
+
+Script Reports execute via `frappe.desk.query_report.run`. Smoke-test each report after seeding sample data:
+
+```bash
+bench --site <site> run-tests --app sales_commission_management --module sales_commission_management.sales_commission_management.report.commission_register.commission_register
+```
+
+Or run the full app suite (includes any report test modules):
+
+```bash
+bench --site <site> run-tests --app sales_commission_management
+```
+
+When adding a new report, add a `test_<report_name>.py` next to the report folder and assert that `execute(filters)` returns columns and a (possibly empty) data list without raising.
+
 ## Linting
 
 ```bash

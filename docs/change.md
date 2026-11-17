@@ -70,6 +70,17 @@ This file records changes to the Sales Commission Management for ERPNext app so 
 
 - Added `before_update_after_submit` registration for Sales Invoice → `neutralize_native_commission_on_update`.
 
+## report (report/<name>/)
+
+- Added 20 Script Reports (type `Script Report`) under `report/<name>/` with `<name>.py` (`execute(filters)` returning columns/data), `<name>.json` metadata (filters, roles, type), and optional `<name>.js` client formatter.
+- Reports: Commission Register, Commission Accrual Register, Commission by Item, Commission by Item Group, Commission by Plan, Commission Expense Analysis, Commission GL Reconciliation, Commission Payable Aging, Commission ROI by Item Group, Collection-Based Commission, Gross Profit vs Commission, Payment Allocation Register, Returns & Clawbacks, Sales Partner Commission Statement, Sales Person Commission Statement, Sales Person Performance, Settlement Register, Settlement Variance Report, Slab Achievement, Target Achievement.
+- Run via the Frappe Report list or the Workspace shortcuts; smoke-test with `frappe.desk.query_report.run`.
+
+## workspace (workspace/Sales Commission Management/)
+
+- Added the `Workspace` DocType "Sales Commission Management" (`standard = 1`, icon `percent`, module `Sales Commission Management`) providing sidebar navigation (Plans & Rules, Commission Ledger, Settlements, Periods & Targets, Settings) and shortcuts to 18 of the 20 Script Reports (Slab Achievement and Target Achievement are reachable via the Report list).
+- Synced to the site by `bench migrate`; re-run `bench migrate` (then restart bench) after report/workspace changes. `bench build` rebuilds desk assets.
+
 ## Notes for coders
 
 - Hook registration lives in `hooks.py` (`doc_events`, `scheduler_events`); run `bench migrate` + restart after changes.

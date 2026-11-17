@@ -18,6 +18,8 @@ Commission engine for ERPNext v15/v16. Calculates sales commission when a Sales 
 - **Multi-currency** — company currency storage with transaction currency and exchange-rate snapshot
 - **Scheduled recalculation** — daily slab attainment recomputation hook
 - **Whitelisted API** — `get_commission_summary` and `get_commission_totals` for reporting
+- **Script Reports** — 20 built-in reports (Commission Register, Commission by Item/Plan, Payable Aging, GL Reconciliation, Settlement Register, Target/Slab Achievement, etc.) run from the Report list or Workspace shortcuts
+- **Workspace** — "Sales Commission Management" desk workspace with sidebar navigation and shortcuts to 18 of the 20 reports
 
 ## DocTypes
 

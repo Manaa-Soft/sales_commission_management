@@ -275,3 +275,38 @@ Permissions: System Manager (full).
 | accrued_liability_account | Link → Account | Accrued liability account |
 | cost_center | Link → Cost Center | Cost center |
 | project | Link → Project | Project |
+
+## Script Reports
+
+All reports are `Report` DocType entries of type `Script Report` (one folder under `report/<name>/` with `.py`/`.json`/`.js`). Run via the Frappe Report list or the Workspace shortcuts.
+
+| Report | Purpose |
+|---|---|
+| Commission Register | Ledger entries with filters (company, period, beneficiary, item, plan, status) |
+| Commission Accrual Register | Accrual batch items and posted Journal Entries |
+| Commission by Item | Commission grouped by item |
+| Commission by Item Group | Commission grouped by item group |
+| Commission by Plan | Commission grouped by commission plan |
+| Commission Expense Analysis | Expense account impact |
+| Commission GL Reconciliation | GL vs commission ledger reconciliation |
+| Commission Payable Aging | Payable aging by beneficiary |
+| Commission ROI by Item Group | ROI analysis by item group |
+| Collection-Based Commission | Commission earned on collections (payout_basis = On Collection) |
+| Gross Profit vs Commission | Gross profit vs commission comparison |
+| Payment Allocation Register | Payment Entry allocations to commission entries |
+| Returns & Clawbacks | Return/credit-note adjustments and reversals |
+| Sales Partner Commission Statement | External partner statement |
+| Sales Person Commission Statement | Internal sales person statement |
+| Sales Person Performance | Sales person performance vs targets |
+| Settlement Register | Settlement documents and linked entries |
+| Settlement Variance Report | Settlement variance analysis |
+| Slab Achievement | Slab tier attainment |
+| Target Achievement | Target attainment vs targets |
+
+## Workspace
+
+DocType: `Workspace` (name: "Sales Commission Management"). Standard workspace (`standard = 1`), icon `percent`, module `Sales Commission Management`. Provides sidebar navigation (Plans & Rules, Commission Ledger, Settlements, Periods & Targets, Settings) and shortcuts to 18 of the 20 Script Reports. Synced to the site by `bench migrate`.
+
+## Native-overlap hook
+
+`Commission Settings.block_native_hrms_overlap` gates the `before_submit` hook `neutralize_native_commission` on `Sales Invoice` (and `before_update_after_submit` -> `neutralize_native_commission_on_update`), which zeroes native ERPNext commission fields on the Sales Team to prevent double counting. See `docs/hooks.md`.
