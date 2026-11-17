@@ -64,7 +64,7 @@ def get_data(filters):
             "original_invoice": r.original_invoice,
             "return_invoice": r.return_invoice,
             "beneficiary_type": r.beneficiary_type,
-            "beneficiary": r.sales_person or r.sales_partner,
+            "beneficiary": r.sales_person or r.sales_partner or "(group)",
             "item_code": r.item_code,
             "original_commission": flt(orig_commission, 2),
             "clawback_amount": flt(clawback, 2),

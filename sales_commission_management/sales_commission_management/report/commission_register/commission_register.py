@@ -73,7 +73,7 @@ def get_data(filters):
             "posting_date": r.posting_date,
             "sales_invoice": r.sales_invoice,
             "beneficiary_type": r.beneficiary_type,
-            "beneficiary": r.sales_person or r.sales_partner,
+            "beneficiary": r.sales_person or r.sales_partner or "(group)",
             "item_code": r.item_code,
             "item_group": r.item_group,
             "commission_basis": r.commission_basis,

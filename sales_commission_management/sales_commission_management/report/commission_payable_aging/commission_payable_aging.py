@@ -53,6 +53,8 @@ def get_data(filters):
     for r in rows:
         bt = r.beneficiary_type
         ben = r.sales_person if bt == "Sales Person" else r.sales_partner
+        if not ben:
+            ben = "(group)"
         key = (bt, ben)
         a = agg.setdefault(key, {"earned": 0.0, "payable": 0.0, "paid": 0.0,
                                 "outstanding": 0.0, "b0": 0.0, "b1": 0.0,

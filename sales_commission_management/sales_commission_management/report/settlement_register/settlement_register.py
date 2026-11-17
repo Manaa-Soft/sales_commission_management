@@ -43,7 +43,7 @@ def get_data(filters):
     rows = frappe.get_list(
         "Commission Settlement",
         filters=flt_filters,
-        fields=["name", "company", "beneficiary_type", "sales_person", "sales_partner",
+        fields=["name", "company", "beneficiary_type", "beneficiary", "sales_person", "sales_partner",
                 "period_from", "period_to", "settlement_method", "total_payable",
                 "total_paid", "outstanding", "status", "settlement_document_type",
                 "settlement_document"],
@@ -57,7 +57,7 @@ def get_data(filters):
             "name": r.name,
             "company": r.company,
             "beneficiary_type": r.beneficiary_type,
-            "beneficiary": r.sales_person or r.sales_partner,
+            "beneficiary": r.beneficiary or r.sales_person or r.sales_partner or "(group)",
             "period_from": r.period_from,
             "period_to": r.period_to,
             "settlement_method": r.settlement_method,

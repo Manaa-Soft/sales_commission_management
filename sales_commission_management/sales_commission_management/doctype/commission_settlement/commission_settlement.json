@@ -9,6 +9,7 @@
   "naming_series",
   "company",
   "beneficiary_type",
+  "beneficiary",
   "sales_person",
   "sales_partner",
   "employee",
@@ -53,6 +54,12 @@
    "label": "Beneficiary Type",
    "options": "Sales Person\nSales Partner",
    "reqd": 1
+  },
+  {
+   "fieldname": "beneficiary",
+   "fieldtype": "Data",
+   "label": "Beneficiary",
+   "read_only": 1
   },
   {
    "fieldname": "sales_person",

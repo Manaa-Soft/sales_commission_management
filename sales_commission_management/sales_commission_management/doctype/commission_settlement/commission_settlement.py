@@ -5,7 +5,36 @@ from frappe.utils import flt, now_datetime
 
 class CommissionSettlement(Document):
     def validate(self):
+        self._resolve_beneficiary()
         self._compute_totals()
+
+    def _resolve_beneficiary(self):
+        if self.beneficiary:
+            return
+        # Prefer an explicit sales_person / sales_partner selection.
+        if self.sales_person:
+            self.beneficiary = self.sales_person
+            return
+        if self.sales_partner:
+            self.beneficiary = self.sales_partner
+            return
+        # Fall back to the first settlement item's beneficiary or its linked
+        # Commission Entry.
+        for row in (self.entries or []):
+            if getattr(row, "beneficiary", None):
+                self.beneficiary = row.beneficiary
+                return
+            if getattr(row, "commission_ledger_entry", None):
+                try:
+                    entry = frappe.get_doc("Commission Entry", row.commission_ledger_entry)
+                    ben = entry.sales_person or entry.sales_partner
+                    if ben:
+                        self.beneficiary = ben
+                        return
+                except Exception:
+                    continue
+        if not self.beneficiary:
+            self.beneficiary = "(group)"
 
     def before_submit(self):
         self._compute_totals()
