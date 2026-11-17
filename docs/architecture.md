@@ -30,10 +30,27 @@ sales_commission_management/
 │           ├── commission_accrual_batch/
 │           ├── commission_accrual_batch_item/
 │       ├── report/                     # 20 Script Reports (one folder per report)
-│       │   └── <report_name>/
-│       │       ├── <report_name>.py    # execute() returning columns/data
-│       │       ├── <report_name>.json  # Report metadata (filters, roles, type)
-│       │       └── <report_name>.js    # optional client-side formatter
+│       │   ├── commission_register/
+│       │   ├── sales_person_commission_statement/
+│       │   ├── sales_partner_commission_statement/
+│       │   ├── commission_payable_aging/
+│       │   ├── commission_gl_reconciliation/
+│       │   ├── collection_based_commission/
+│       │   ├── payment_allocation_register/
+│       │   ├── commission_by_item/
+│       │   ├── commission_by_item_group/
+│       │   ├── commission_by_plan/
+│       │   ├── returns_and_clawbacks/
+│       │   ├── sales_person_performance/
+│       │   ├── commission_accrual_register/
+│       │   ├── settlement_register/
+│       │   ├── settlement_variance_report/
+│       │   ├── commission_expense_analysis/
+│       │   ├── target_achievement/
+│       │   ├── slab_achievement/
+│       │   ├── gross_profit_vs_commission/
+│       │   └── commission_roi_by_item_group/
+│       │       Each folder contains: <name>.py, <name>.json, <name>.js
 │       └── workspace/
 │           └── Sales Commission Management/
 │               └── Sales Commission Management.json  # Workspace shortcuts & sidebar
