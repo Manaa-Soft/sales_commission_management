@@ -178,6 +178,54 @@
    "link_to": "Sales Person Performance",
    "type": "Report",
    "url": ""
+  },
+  {
+   "color": "#8e44ad",
+   "doc_view": "",
+   "label": "Commission Accrual Register",
+   "link_to": "Commission Accrual Register",
+   "type": "Report",
+   "url": ""
+  },
+  {
+   "color": "#8e44ad",
+   "doc_view": "",
+   "label": "Settlement Register",
+   "link_to": "Settlement Register",
+   "type": "Report",
+   "url": ""
+  },
+  {
+   "color": "#8e44ad",
+   "doc_view": "",
+   "label": "Settlement Variance Report",
+   "link_to": "Settlement Variance Report",
+   "type": "Report",
+   "url": ""
+  },
+  {
+   "color": "#8e44ad",
+   "doc_view": "",
+   "label": "Commission Expense Analysis",
+   "link_to": "Commission Expense Analysis",
+   "type": "Report",
+   "url": ""
+  },
+  {
+   "color": "#8e44ad",
+   "doc_view": "",
+   "label": "Gross Profit vs Commission",
+   "link_to": "Gross Profit vs Commission",
+   "type": "Report",
+   "url": ""
+  },
+  {
+   "color": "#8e44ad",
+   "doc_view": "",
+   "label": "Commission ROI by Item Group",
+   "link_to": "Commission ROI by Item Group",
+   "type": "Report",
+   "url": ""
   }
  ],
  "sidebar_items": [
