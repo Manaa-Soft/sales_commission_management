@@ -6,6 +6,7 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
+  "naming_series",
   "company",
   "period_from",
   "period_to",
@@ -19,17 +20,85 @@
   "items"
  ],
  "fields": [
-  { "fieldname": "company", "fieldtype": "Link", "label": "Company", "options": "Company", "reqd": 1 },
-  { "fieldname": "period_from", "fieldtype": "Date", "label": "Period From", "reqd": 1 },
-  { "fieldname": "period_to", "fieldtype": "Date", "label": "Period To", "reqd": 1 },
-  { "fieldname": "accrual_date", "fieldtype": "Date", "label": "Accrual Date", "reqd": 1 },
-  { "fieldname": "expense_account", "fieldtype": "Link", "label": "Expense Account", "options": "Account" },
-  { "fieldname": "accrued_liability_account", "fieldtype": "Link", "label": "Accrued Liability Account", "options": "Account" },
-  { "fieldname": "cost_center", "fieldtype": "Link", "label": "Cost Center", "options": "Cost Center" },
-  { "fieldname": "total_amount", "fieldtype": "Currency", "label": "Total Amount", "read_only": 1 },
-  { "fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "Draft\nSubmitted\nCancelled", "default": "Draft", "read_only": 1 },
-  { "fieldname": "journal_entry", "fieldtype": "Link", "label": "Journal Entry", "options": "Journal Entry", "read_only": 1 },
-  { "fieldname": "items", "fieldtype": "Table", "label": "Items", "options": "Commission Accrual Batch Item" }
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Naming Series",
+   "options": "CAB-.YYYY.-.####",
+   "default": "CAB-.YYYY.-.####",
+   "hidden": 1,
+   "reqd": 0
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "period_from",
+   "fieldtype": "Date",
+   "label": "Period From",
+   "reqd": 1
+  },
+  {
+   "fieldname": "period_to",
+   "fieldtype": "Date",
+   "label": "Period To",
+   "reqd": 1
+  },
+  {
+   "fieldname": "accrual_date",
+   "fieldtype": "Date",
+   "label": "Accrual Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "expense_account",
+   "fieldtype": "Link",
+   "label": "Expense Account",
+   "options": "Account"
+  },
+  {
+   "fieldname": "accrued_liability_account",
+   "fieldtype": "Link",
+   "label": "Accrued Liability Account",
+   "options": "Account"
+  },
+  {
+   "fieldname": "cost_center",
+   "fieldtype": "Link",
+   "label": "Cost Center",
+   "options": "Cost Center"
+  },
+  {
+   "fieldname": "total_amount",
+   "fieldtype": "Currency",
+   "label": "Total Amount",
+   "read_only": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Draft\nSubmitted\nCancelled",
+   "default": "Draft",
+   "read_only": 1
+  },
+  {
+   "fieldname": "journal_entry",
+   "fieldtype": "Link",
+   "label": "Journal Entry",
+   "options": "Journal Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "items",
+   "fieldtype": "Table",
+   "label": "Items",
+   "options": "Commission Accrual Batch Item"
+  }
  ],
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
@@ -40,10 +109,22 @@
  "name": "Commission Accrual Batch",
  "owner": "Administrator",
  "permissions": [
-  { "create": 1, "delete": 1, "email": 1, "export": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1 }
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
  ],
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "track_changes": 1
+ "track_changes": 1,
+ "autoname": "naming_series:"
 }

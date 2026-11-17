@@ -6,6 +6,7 @@
  "editable_grid": 0,
  "engine": "InnoDB",
  "field_order": [
+  "naming_series",
   "company",
   "period_type",
   "period_from",
@@ -19,17 +20,87 @@
   "reopen_reason"
  ],
  "fields": [
-  { "fieldname": "company", "fieldtype": "Link", "label": "Company", "options": "Company", "reqd": 1 },
-  { "fieldname": "period_type", "fieldtype": "Select", "label": "Period Type", "options": "Monthly\nQuarterly\nYearly\nPer Invoice", "default": "Monthly", "reqd": 1 },
-  { "fieldname": "period_from", "fieldtype": "Date", "label": "Period From", "reqd": 1 },
-  { "fieldname": "period_to", "fieldtype": "Date", "label": "Period To", "reqd": 1 },
-  { "fieldname": "fiscal_year", "fieldtype": "Link", "label": "Fiscal Year", "options": "Fiscal Year" },
-  { "fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "Open\nClosing\nClosed\nReopened", "default": "Open", "read_only": 1 },
-  { "fieldname": "closed_by", "fieldtype": "Link", "label": "Closed By", "options": "User", "read_only": 1 },
-  { "fieldname": "closed_on", "fieldtype": "Datetime", "label": "Closed On", "read_only": 1 },
-  { "fieldname": "reopened_by", "fieldtype": "Link", "label": "Reopened By", "options": "User", "read_only": 1 },
-  { "fieldname": "reopened_on", "fieldtype": "Datetime", "label": "Reopened On", "read_only": 1 },
-  { "fieldname": "reopen_reason", "fieldtype": "Small Text", "label": "Reopen Reason" }
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Naming Series",
+   "options": "CP-.YYYY.-.####",
+   "default": "CP-.YYYY.-.####",
+   "hidden": 1,
+   "reqd": 0
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "period_type",
+   "fieldtype": "Select",
+   "label": "Period Type",
+   "options": "Monthly\nQuarterly\nYearly\nPer Invoice",
+   "default": "Monthly",
+   "reqd": 1
+  },
+  {
+   "fieldname": "period_from",
+   "fieldtype": "Date",
+   "label": "Period From",
+   "reqd": 1
+  },
+  {
+   "fieldname": "period_to",
+   "fieldtype": "Date",
+   "label": "Period To",
+   "reqd": 1
+  },
+  {
+   "fieldname": "fiscal_year",
+   "fieldtype": "Link",
+   "label": "Fiscal Year",
+   "options": "Fiscal Year"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Open\nClosing\nClosed\nReopened",
+   "default": "Open",
+   "read_only": 1
+  },
+  {
+   "fieldname": "closed_by",
+   "fieldtype": "Link",
+   "label": "Closed By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "closed_on",
+   "fieldtype": "Datetime",
+   "label": "Closed On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reopened_by",
+   "fieldtype": "Link",
+   "label": "Reopened By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reopened_on",
+   "fieldtype": "Datetime",
+   "label": "Reopened On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reopen_reason",
+   "fieldtype": "Small Text",
+   "label": "Reopen Reason"
+  }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
@@ -39,10 +110,22 @@
  "name": "Commission Period",
  "owner": "Administrator",
  "permissions": [
-  { "create": 1, "delete": 1, "email": 1, "export": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1 }
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
  ],
  "sort_field": "period_from",
  "sort_order": "DESC",
  "states": [],
- "track_changes": 1
+ "track_changes": 1,
+ "autoname": "naming_series:"
 }

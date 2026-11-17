@@ -81,6 +81,17 @@ This file records changes to the Sales Commission Management for ERPNext app so 
 - Added the `Workspace` DocType "Sales Commission Management" (`standard = 1`, icon `percent`, module `Sales Commission Management`) providing sidebar navigation (Plans & Rules, Commission Ledger, Settlements, Periods & Targets, Settings) and shortcuts to 18 of the 20 Script Reports (Slab Achievement and Target Achievement are reachable via the Report list).
 - Synced to the site by `bench migrate`; re-run `bench migrate` (then restart bench) after report/workspace changes. `bench build` rebuilds desk assets.
 
+## Naming series (DocType autoname)
+
+- `Commission Plan`: `autoname = "field:plan_name"` (user-entered name).
+- `Commission Entry`: `autoname = "naming_series:"`, series `CE-.YYYY.-.####`.
+- `Commission Settlement`: `autoname = "naming_series:"`, series `CS-.YYYY.-.####`.
+- `Commission Accrual Batch`: `autoname = "naming_series:"`, series `CAB-.YYYY.-.####`.
+- `Commission Period`: `autoname = "naming_series:"`, series `CP-.YYYY.-.####`.
+- `Commission Target`: `autoname = "naming_series:"`, series `CT-.YYYY.-.####`.
+- Added `naming_series` Select field (hidden, default first option) to the above DocTypes.
+- Child tables and `Commission Settings` (Single) unchanged.
+
 ## Notes for coders
 
 - Hook registration lives in `hooks.py` (`doc_events`, `scheduler_events`); run `bench migrate` + restart after changes.

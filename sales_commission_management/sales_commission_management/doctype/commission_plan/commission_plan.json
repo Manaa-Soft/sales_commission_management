@@ -36,34 +36,180 @@
   "remarks"
  ],
  "fields": [
-  { "fieldname": "plan_name", "fieldtype": "Data", "label": "Plan Name", "reqd": 1 },
-  { "fieldname": "enabled", "fieldtype": "Check", "label": "Enabled", "default": "1" },
-  { "fieldname": "company", "fieldtype": "Link", "label": "Company", "options": "Company", "reqd": 1 },
-  { "fieldname": "valid_from", "fieldtype": "Date", "label": "Valid From" },
-  { "fieldname": "valid_to", "fieldtype": "Date", "label": "Valid To" },
-  { "fieldname": "priority", "fieldtype": "Int", "label": "Priority", "default": "10" },
-  { "fieldname": "applies_to", "fieldtype": "Select", "label": "Applies To", "options": "All\nCustomer Group\nSpecific Customer\nTerritory", "reqd": 1, "default": "All" },
-  { "fieldname": "customer", "fieldtype": "Link", "label": "Customer", "options": "Customer", "depends_on": "eval:doc.applies_to=='Specific Customer'" },
-  { "fieldname": "customer_group", "fieldtype": "Link", "label": "Customer Group", "options": "Customer Group", "depends_on": "eval:doc.applies_to=='Customer Group'" },
-  { "fieldname": "territory", "fieldtype": "Link", "label": "Territory", "options": "Territory", "depends_on": "eval:doc.applies_to=='Territory'" },
-  { "fieldname": "beneficiary_type", "fieldtype": "Select", "label": "Beneficiary Type", "options": "Sales Person\nSales Partner\nBoth", "default": "Sales Person" },
-  { "fieldname": "commission_period", "fieldtype": "Select", "label": "Commission Period", "options": "Per Invoice\nMonthly\nQuarterly\nYearly", "default": "Per Invoice" },
-  { "fieldname": "slab_calculation_method", "fieldtype": "Select", "label": "Slab Calculation Method", "options": "Progressive\nSingle", "default": "Progressive" },
-  { "fieldname": "earning_event", "fieldtype": "Select", "label": "Earning Event", "options": "On Invoice Submit\nOn Delivery\nOn Payment", "default": "On Invoice Submit" },
-  { "fieldname": "payout_basis", "fieldtype": "Select", "label": "Payout Basis", "options": "Accrued\nOn Collection", "default": "Accrued" },
-  { "fieldname": "hold_days", "fieldtype": "Int", "label": "Hold Days", "depends_on": "eval:doc.payout_basis=='Accrued'" },
-  { "fieldname": "target_metric", "fieldtype": "Select", "label": "Target Metric", "options": "Net Sales\nGross Profit\nQuantity\nCollected Net Sales" },
-  { "fieldname": "stacking_policy", "fieldtype": "Select", "label": "Stacking Policy", "options": "No Stacking\nExplicit Stack Groups", "default": "No Stacking" },
-  { "fieldname": "commission_currency_policy", "fieldtype": "Select", "label": "Commission Currency Policy", "options": "Company Currency\nTransaction Currency\nFixed Currency", "default": "Company Currency" },
-  { "fieldname": "rules_section", "fieldtype": "Section Break", "label": "Commission Rules" },
-  { "fieldname": "rules", "fieldtype": "Table", "label": "Rules", "options": "Commission Rule" },
-  { "fieldname": "slabs_section", "fieldtype": "Section Break", "label": "Commission Slabs" },
-  { "fieldname": "slabs", "fieldtype": "Table", "label": "Slabs", "options": "Commission Slab" },
-  { "fieldname": "contributors_section", "fieldtype": "Section Break", "label": "Plan Contributors" },
-  { "fieldname": "contributors", "fieldtype": "Table", "label": "Contributors", "options": "Commission Contributor" },
-  { "fieldname": "targets_section", "fieldtype": "Section Break", "label": "Commission Targets" },
-  { "fieldname": "targets", "fieldtype": "Table", "label": "Targets", "options": "Commission Target" },
-  { "fieldname": "remarks", "fieldtype": "Small Text", "label": "Remarks" }
+  {
+   "fieldname": "plan_name",
+   "fieldtype": "Data",
+   "label": "Plan Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enabled",
+   "default": "1"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "valid_from",
+   "fieldtype": "Date",
+   "label": "Valid From"
+  },
+  {
+   "fieldname": "valid_to",
+   "fieldtype": "Date",
+   "label": "Valid To"
+  },
+  {
+   "fieldname": "priority",
+   "fieldtype": "Int",
+   "label": "Priority",
+   "default": "10"
+  },
+  {
+   "fieldname": "applies_to",
+   "fieldtype": "Select",
+   "label": "Applies To",
+   "options": "All\nCustomer Group\nSpecific Customer\nTerritory",
+   "reqd": 1,
+   "default": "All"
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer",
+   "depends_on": "eval:doc.applies_to=='Specific Customer'"
+  },
+  {
+   "fieldname": "customer_group",
+   "fieldtype": "Link",
+   "label": "Customer Group",
+   "options": "Customer Group",
+   "depends_on": "eval:doc.applies_to=='Customer Group'"
+  },
+  {
+   "fieldname": "territory",
+   "fieldtype": "Link",
+   "label": "Territory",
+   "options": "Territory",
+   "depends_on": "eval:doc.applies_to=='Territory'"
+  },
+  {
+   "fieldname": "beneficiary_type",
+   "fieldtype": "Select",
+   "label": "Beneficiary Type",
+   "options": "Sales Person\nSales Partner\nBoth",
+   "default": "Sales Person"
+  },
+  {
+   "fieldname": "commission_period",
+   "fieldtype": "Select",
+   "label": "Commission Period",
+   "options": "Per Invoice\nMonthly\nQuarterly\nYearly",
+   "default": "Per Invoice"
+  },
+  {
+   "fieldname": "slab_calculation_method",
+   "fieldtype": "Select",
+   "label": "Slab Calculation Method",
+   "options": "Progressive\nSingle",
+   "default": "Progressive"
+  },
+  {
+   "fieldname": "earning_event",
+   "fieldtype": "Select",
+   "label": "Earning Event",
+   "options": "On Invoice Submit\nOn Delivery\nOn Payment",
+   "default": "On Invoice Submit"
+  },
+  {
+   "fieldname": "payout_basis",
+   "fieldtype": "Select",
+   "label": "Payout Basis",
+   "options": "Accrued\nOn Collection",
+   "default": "Accrued"
+  },
+  {
+   "fieldname": "hold_days",
+   "fieldtype": "Int",
+   "label": "Hold Days",
+   "depends_on": "eval:doc.payout_basis=='Accrued'"
+  },
+  {
+   "fieldname": "target_metric",
+   "fieldtype": "Select",
+   "label": "Target Metric",
+   "options": "Net Sales\nGross Profit\nQuantity\nCollected Net Sales"
+  },
+  {
+   "fieldname": "stacking_policy",
+   "fieldtype": "Select",
+   "label": "Stacking Policy",
+   "options": "No Stacking\nExplicit Stack Groups",
+   "default": "No Stacking"
+  },
+  {
+   "fieldname": "commission_currency_policy",
+   "fieldtype": "Select",
+   "label": "Commission Currency Policy",
+   "options": "Company Currency\nTransaction Currency\nFixed Currency",
+   "default": "Company Currency"
+  },
+  {
+   "fieldname": "rules_section",
+   "fieldtype": "Section Break",
+   "label": "Commission Rules"
+  },
+  {
+   "fieldname": "rules",
+   "fieldtype": "Table",
+   "label": "Rules",
+   "options": "Commission Rule"
+  },
+  {
+   "fieldname": "slabs_section",
+   "fieldtype": "Section Break",
+   "label": "Commission Slabs"
+  },
+  {
+   "fieldname": "slabs",
+   "fieldtype": "Table",
+   "label": "Slabs",
+   "options": "Commission Slab"
+  },
+  {
+   "fieldname": "contributors_section",
+   "fieldtype": "Section Break",
+   "label": "Plan Contributors"
+  },
+  {
+   "fieldname": "contributors",
+   "fieldtype": "Table",
+   "label": "Contributors",
+   "options": "Commission Contributor"
+  },
+  {
+   "fieldname": "targets_section",
+   "fieldtype": "Section Break",
+   "label": "Commission Targets"
+  },
+  {
+   "fieldname": "targets",
+   "fieldtype": "Table",
+   "label": "Targets",
+   "options": "Commission Target"
+  },
+  {
+   "fieldname": "remarks",
+   "fieldtype": "Small Text",
+   "label": "Remarks"
+  }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
@@ -73,11 +219,23 @@
  "name": "Commission Plan",
  "owner": "Administrator",
  "permissions": [
-  { "create": 1, "delete": 1, "email": 1, "export": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1 }
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
  ],
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
  "title_field": "plan_name",
- "track_changes": 1
+ "track_changes": 1,
+ "autoname": "field:plan_name"
 }

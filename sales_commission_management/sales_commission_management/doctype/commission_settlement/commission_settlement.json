@@ -6,6 +6,7 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
+  "naming_series",
   "company",
   "beneficiary_type",
   "sales_person",
@@ -30,28 +31,156 @@
   "remarks"
  ],
  "fields": [
-  { "fieldname": "company", "fieldtype": "Link", "label": "Company", "options": "Company", "reqd": 1 },
-  { "fieldname": "beneficiary_type", "fieldtype": "Select", "label": "Beneficiary Type", "options": "Sales Person\nSales Partner", "reqd": 1 },
-  { "fieldname": "sales_person", "fieldtype": "Link", "label": "Sales Person", "options": "Sales Person", "depends_on": "eval:doc.beneficiary_type=='Sales Person'" },
-  { "fieldname": "sales_partner", "fieldtype": "Link", "label": "Sales Partner", "options": "Sales Partner", "depends_on": "eval:doc.beneficiary_type=='Sales Partner'" },
-  { "fieldname": "employee", "fieldtype": "Link", "label": "Employee", "options": "Employee" },
-  { "fieldname": "supplier", "fieldtype": "Link", "label": "Supplier", "options": "Supplier" },
-  { "fieldname": "period_from", "fieldtype": "Date", "label": "Period From" },
-  { "fieldname": "period_to", "fieldtype": "Date", "label": "Period To" },
-  { "fieldname": "commission_currency", "fieldtype": "Link", "label": "Commission Currency", "options": "Currency" },
-  { "fieldname": "settlement_method", "fieldtype": "Select", "label": "Settlement Method", "options": "Additional Salary\nSupplier Purchase Invoice\nManual Approved Route" },
-  { "fieldname": "total_earned", "fieldtype": "Currency", "label": "Total Earned", "read_only": 1, "options": "commission_currency" },
-  { "fieldname": "total_payable", "fieldtype": "Currency", "label": "Total Payable", "read_only": 1, "options": "commission_currency" },
-  { "fieldname": "total_reserved", "fieldtype": "Currency", "label": "Total Reserved", "read_only": 1, "options": "commission_currency" },
-  { "fieldname": "total_paid", "fieldtype": "Currency", "label": "Total Paid", "read_only": 1, "options": "commission_currency" },
-  { "fieldname": "outstanding", "fieldtype": "Currency", "label": "Outstanding", "read_only": 1, "options": "commission_currency" },
-  { "fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "Draft\nSubmitted\nApproved\nPartly Settled\nSettled\nCancelled", "default": "Draft", "read_only": 1 },
-  { "fieldname": "settlement_document_type", "fieldtype": "Link", "label": "Settlement Document Type", "options": "DocType" },
-  { "fieldname": "settlement_document", "fieldtype": "Dynamic Link", "label": "Settlement Document", "options": "settlement_document_type" },
-  { "fieldname": "entries", "fieldtype": "Table", "label": "Entries", "options": "Commission Settlement Item" },
-  { "fieldname": "approval_user", "fieldtype": "Link", "label": "Approval User", "options": "User", "read_only": 1 },
-  { "fieldname": "approval_date", "fieldtype": "Datetime", "label": "Approval Date", "read_only": 1 },
-  { "fieldname": "remarks", "fieldtype": "Small Text", "label": "Remarks" }
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Naming Series",
+   "options": "CS-.YYYY.-.####",
+   "default": "CS-.YYYY.-.####",
+   "hidden": 1,
+   "reqd": 0
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "beneficiary_type",
+   "fieldtype": "Select",
+   "label": "Beneficiary Type",
+   "options": "Sales Person\nSales Partner",
+   "reqd": 1
+  },
+  {
+   "fieldname": "sales_person",
+   "fieldtype": "Link",
+   "label": "Sales Person",
+   "options": "Sales Person",
+   "depends_on": "eval:doc.beneficiary_type=='Sales Person'"
+  },
+  {
+   "fieldname": "sales_partner",
+   "fieldtype": "Link",
+   "label": "Sales Partner",
+   "options": "Sales Partner",
+   "depends_on": "eval:doc.beneficiary_type=='Sales Partner'"
+  },
+  {
+   "fieldname": "employee",
+   "fieldtype": "Link",
+   "label": "Employee",
+   "options": "Employee"
+  },
+  {
+   "fieldname": "supplier",
+   "fieldtype": "Link",
+   "label": "Supplier",
+   "options": "Supplier"
+  },
+  {
+   "fieldname": "period_from",
+   "fieldtype": "Date",
+   "label": "Period From"
+  },
+  {
+   "fieldname": "period_to",
+   "fieldtype": "Date",
+   "label": "Period To"
+  },
+  {
+   "fieldname": "commission_currency",
+   "fieldtype": "Link",
+   "label": "Commission Currency",
+   "options": "Currency"
+  },
+  {
+   "fieldname": "settlement_method",
+   "fieldtype": "Select",
+   "label": "Settlement Method",
+   "options": "Additional Salary\nSupplier Purchase Invoice\nManual Approved Route"
+  },
+  {
+   "fieldname": "total_earned",
+   "fieldtype": "Currency",
+   "label": "Total Earned",
+   "read_only": 1,
+   "options": "commission_currency"
+  },
+  {
+   "fieldname": "total_payable",
+   "fieldtype": "Currency",
+   "label": "Total Payable",
+   "read_only": 1,
+   "options": "commission_currency"
+  },
+  {
+   "fieldname": "total_reserved",
+   "fieldtype": "Currency",
+   "label": "Total Reserved",
+   "read_only": 1,
+   "options": "commission_currency"
+  },
+  {
+   "fieldname": "total_paid",
+   "fieldtype": "Currency",
+   "label": "Total Paid",
+   "read_only": 1,
+   "options": "commission_currency"
+  },
+  {
+   "fieldname": "outstanding",
+   "fieldtype": "Currency",
+   "label": "Outstanding",
+   "read_only": 1,
+   "options": "commission_currency"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Draft\nSubmitted\nApproved\nPartly Settled\nSettled\nCancelled",
+   "default": "Draft",
+   "read_only": 1
+  },
+  {
+   "fieldname": "settlement_document_type",
+   "fieldtype": "Link",
+   "label": "Settlement Document Type",
+   "options": "DocType"
+  },
+  {
+   "fieldname": "settlement_document",
+   "fieldtype": "Dynamic Link",
+   "label": "Settlement Document",
+   "options": "settlement_document_type"
+  },
+  {
+   "fieldname": "entries",
+   "fieldtype": "Table",
+   "label": "Entries",
+   "options": "Commission Settlement Item"
+  },
+  {
+   "fieldname": "approval_user",
+   "fieldtype": "Link",
+   "label": "Approval User",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approval_date",
+   "fieldtype": "Datetime",
+   "label": "Approval Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "remarks",
+   "fieldtype": "Small Text",
+   "label": "Remarks"
+  }
  ],
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
@@ -62,10 +191,22 @@
  "name": "Commission Settlement",
  "owner": "Administrator",
  "permissions": [
-  { "create": 1, "delete": 1, "email": 1, "export": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1 }
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
  ],
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "track_changes": 1
+ "track_changes": 1,
+ "autoname": "naming_series:"
 }
