@@ -122,6 +122,62 @@
    "link_to": "Commission GL Reconciliation",
    "type": "Report",
    "url": ""
+  },
+  {
+   "color": "#27ae60",
+   "doc_view": "",
+   "label": "Collection-Based Commission",
+   "link_to": "Collection-Based Commission",
+   "type": "Report",
+   "url": ""
+  },
+  {
+   "color": "#27ae60",
+   "doc_view": "",
+   "label": "Payment Allocation Register",
+   "link_to": "Payment Allocation Register",
+   "type": "Report",
+   "url": ""
+  },
+  {
+   "color": "#27ae60",
+   "doc_view": "",
+   "label": "Commission by Item",
+   "link_to": "Commission by Item",
+   "type": "Report",
+   "url": ""
+  },
+  {
+   "color": "#27ae60",
+   "doc_view": "",
+   "label": "Commission by Item Group",
+   "link_to": "Commission by Item Group",
+   "type": "Report",
+   "url": ""
+  },
+  {
+   "color": "#27ae60",
+   "doc_view": "",
+   "label": "Commission by Plan",
+   "link_to": "Commission by Plan",
+   "type": "Report",
+   "url": ""
+  },
+  {
+   "color": "#27ae60",
+   "doc_view": "",
+   "label": "Returns & Clawbacks",
+   "link_to": "Returns & Clawbacks",
+   "type": "Report",
+   "url": ""
+  },
+  {
+   "color": "#27ae60",
+   "doc_view": "",
+   "label": "Sales Person Performance",
+   "link_to": "Sales Person Performance",
+   "type": "Report",
+   "url": ""
   }
  ],
  "sidebar_items": [
