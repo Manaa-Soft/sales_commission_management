@@ -5,6 +5,8 @@ import frappe
 from frappe import _
 from frappe.utils import flt
 
+from sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry import _expand_sales_person
+
 
 def execute(filters=None):
     filters = filters or {}
@@ -35,6 +37,12 @@ def get_data(filters):
             flt_filters["posting_date"] = ["between", [filters["from_date"], filters["to_date"]]]
         else:
             flt_filters["posting_date"] = ["<=", filters["to_date"]]
+    if filters.get("sales_person"):
+        expanded = _expand_sales_person(filters["sales_person"])
+        if len(expanded) == 1:
+            flt_filters["sales_person"] = expanded[0]
+        else:
+            flt_filters["sales_person"] = ["in", expanded]
 
     rows = frappe.get_list(
         "Commission Entry",

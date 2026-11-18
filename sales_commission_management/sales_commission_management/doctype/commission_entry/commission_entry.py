@@ -35,6 +35,37 @@ def _company_currency(company):
     return frappe.get_cached_value("Company", company, "default_currency") if company else None
 
 
+def _expand_sales_person(sales_person):
+    """Return list of sales person names.
+
+    If sales_person is a group (is_group=1), expand to all descendants
+    using the nested-set lft/rgt tree. Otherwise return [sales_person].
+    """
+    if not sales_person:
+        return []
+    try:
+        is_group = frappe.get_cached_value("Sales Person", sales_person, "is_group")
+    except Exception:
+        is_group = 0
+    if not is_group:
+        return [sales_person]
+    try:
+        lft, rgt = frappe.get_cached_value("Sales Person", sales_person, ["lft", "rgt"])
+    except Exception:
+        return [sales_person]
+    if not lft or not rgt:
+        return [sales_person]
+    try:
+        descendants = frappe.get_all(
+            "Sales Person",
+            filters={"lft": [">=", lft], "rgt": ["<=", rgt]},
+            pluck="name",
+        )
+    except Exception:
+        return [sales_person]
+    return descendants or [sales_person]
+
+
 def _resolve_posted_cost(item, company, company_currency):
     """Attempt to resolve actual posted cost for an item row from Stock Ledger Entry.
     Returns cost in company currency (positive outgoing cost), or None if no traceable source exists."""

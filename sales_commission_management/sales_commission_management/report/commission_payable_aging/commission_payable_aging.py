@@ -5,6 +5,8 @@ import frappe
 from frappe import _
 from frappe.utils import flt, getdate, nowdate
 
+from sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry import _expand_sales_person
+
 
 def execute(filters=None):
     filters = filters or {}
@@ -32,6 +34,12 @@ def get_data(filters):
     flt_filters = {"docstatus": 1, "status": ["in", ["Accrued", "Payable", "Partially Paid"]]}
     if filters.get("company"):
         flt_filters["company"] = filters["company"]
+    if filters.get("sales_person"):
+        expanded = _expand_sales_person(filters["sales_person"])
+        if len(expanded) == 1:
+            flt_filters["sales_person"] = expanded[0]
+        else:
+            flt_filters["sales_person"] = ["in", expanded]
     if filters.get("from_date"):
         flt_filters["posting_date"] = [">=", filters["from_date"]]
     if filters.get("to_date"):
