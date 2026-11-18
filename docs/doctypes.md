@@ -1,4 +1,4 @@
-# DocTypes Reference
+﻿# DocTypes Reference
 
 ## Commission Settings (Single)
 
