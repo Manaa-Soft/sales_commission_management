@@ -1,7 +1,7 @@
-import frappe
+﻿import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import flt, now_datetime
+from frappe.utils import flt, now_datetime, getdate
 
 
 def _company_currency(company):
@@ -53,6 +53,7 @@ class CommissionSettlement(Document):
 
         Ensures that no Commission Entry is double-allocated beyond its
         available balance and that the same entry is not listed twice.
+        Also validates beneficiary, company, currency and date consistency.
         """
         seen = set()
         for row in self.entries or []:
@@ -67,10 +68,24 @@ class CommissionSettlement(Document):
                 )
             seen.add(entry_name)
 
+            # Row-level locking to guard against concurrent settlement submissions.
+            try:
+                frappe.db.sql(
+                    "SELECT name FROM `tabCommission Entry` WHERE name = %s FOR UPDATE",
+                    (entry_name,),
+                )
+            except Exception:
+                pass
+
             available = _available_balance_for_entry(
                 entry_name, exclude_settlement=self.name
             )
-            included = flt(row.amount_included)
+            raw_included = getattr(row, "amount_included", None)
+            if raw_included is None or raw_included == "":
+                included = flt(available)
+                row.amount_included = included
+            else:
+                included = flt(raw_included)
             if included < 0:
                 frappe.throw(
                     _("Amount included cannot be negative for {0}.").format(entry_name)
@@ -86,16 +101,51 @@ class CommissionSettlement(Document):
             try:
                 entry = frappe.get_doc("Commission Entry", entry_name)
                 row.earned_balance = flt(getattr(entry, "earned_commission", 0))
-                row.eligible_balance = flt(getattr(entry, "payable_amount", 0))
+                ce = flt(getattr(entry, "collection_eligible_amount", 0))
+                if ce <= 0:
+                    ce = flt(getattr(entry, "paid_amount", 0))
+                row.eligible_balance = flt(ce)
                 row.reserved_amount = flt(
                     _reserved_for_entry(entry_name, exclude_settlement=self.name)
                 )
-                row.already_settled_amount = flt(getattr(entry, "paid_amount", 0))
+                row.already_settled_amount = flt(
+                    getattr(entry, "settled_amount", 0) or 0
+                )
                 if not row.beneficiary:
                     row.beneficiary = entry.sales_person or entry.sales_partner
                 if not row.original_source_invoice:
                     row.original_source_invoice = getattr(entry, "sales_invoice", None)
-            except Exception:
+
+                if getattr(entry, "company", None) and self.company and                         entry.company != self.company:
+                    frappe.throw(
+                        _("Company mismatch for Commission Entry {0}.").format(entry_name)
+                    )
+                entry_ben = entry.sales_person or entry.sales_partner
+                self_ben = self.sales_person or self.sales_partner
+                if entry_ben and self_ben and entry_ben != self_ben:
+                    frappe.throw(
+                        _("Beneficiary mismatch for Commission Entry {0}.").format(entry_name)
+                    )
+                entry_currency = getattr(entry, "commission_currency", None)
+                if self.commission_currency and entry_currency and                         self.commission_currency != entry_currency:
+                    frappe.throw(
+                        _("Currency mismatch for Commission Entry {0}.").format(entry_name)
+                    )
+                if self.period_from and getattr(entry, "posting_date", None):
+                    if getdate(entry.posting_date) < getdate(self.period_from):
+                        frappe.throw(
+                            _("Posting date before period start for Commission Entry {0}.").format(entry_name)
+                        )
+                if self.period_to and getattr(entry, "posting_date", None):
+                    if getdate(entry.posting_date) > getdate(self.period_to):
+                        frappe.throw(
+                            _("Posting date after period end for Commission Entry {0}.").format(entry_name)
+                        )
+            except Exception as ex:
+                # Re-raise frappe throws; only swallow unexpected lookup errors.
+                msg = str(ex).lower()
+                if "throw" in msg or "mismatch" in msg or "exceeds" in msg:
+                    raise
                 continue
 
     def before_submit(self):
@@ -127,6 +177,8 @@ class CommissionSettlement(Document):
             except Exception:
                 continue
             accrued = flt(getattr(entry, "accrued_amount", 0))
+            if accrued <= 0.005:
+                accrued = flt(getattr(entry, "earned_commission", 0))
             if accrued <= 0.005:
                 continue
             already = _reclassified_for_entry(
@@ -196,9 +248,24 @@ class CommissionSettlement(Document):
         )
         je.insert(ignore_permissions=True)
         je.submit()
+        try:
+            self.settlement_journal_entry = je.name
+        except Exception:
+            pass
 
     def on_cancel(self):
         self._cancel_settlement_document()
+        # Reverse the accrued-liability journal entry created on submit.
+        je_name = getattr(self, "settlement_journal_entry", None)
+        if je_name:
+            try:
+                je = frappe.get_doc("Journal Entry", je_name)
+                if je.docstatus == 1:
+                    je.cancel()
+            except Exception:
+                frappe.log_error(
+                    frappe.get_traceback(), "Commission Settlement JE cancel failed"
+                )
         self.status = "Cancelled"
         self.save(ignore_permissions=True)
 
@@ -210,12 +277,16 @@ class CommissionSettlement(Document):
         for row in self.entries or []:
             total_earned += flt(row.earned_balance)
             # Total payable follows the amount actually included in this
-            # settlement, not the whole eligible balance of each entry.
-            total_payable += flt(row.amount_included) or flt(row.eligible_balance)
+            # settlement. A deliberately entered zero is respected.
+            raw = getattr(row, "amount_included", None)
+            if raw is None or raw == "":
+                row.amount_included = flt(row.eligible_balance)
+                included = flt(row.amount_included)
+            else:
+                included = flt(raw)
+            total_payable += included
             total_reserved += flt(row.reserved_amount)
             total_paid += flt(row.already_settled_amount)
-            if not row.amount_included:
-                row.amount_included = flt(row.eligible_balance)
         self.total_earned = flt(total_earned, 2)
         self.total_payable = flt(total_payable, 2)
         self.total_reserved = flt(total_reserved, 2)
@@ -343,25 +414,33 @@ class CommissionSettlement(Document):
 
 
 def _reserved_for_entry(entry_name, exclude_settlement=None):
-    """Sum of amounts reserved by other (submitted) settlements for an entry."""
-    total = 0.0
-    try:
-        # Find submitted settlements (excluding the current one) that contain
-        # this entry, then sum their reserved amounts.
-        sett_filters = {"docstatus": 1}
-        if exclude_settlement:
-            sett_filters["name"] = ["!=", exclude_settlement]
-        settlements = frappe.get_all(
-            "Commission Settlement",
-            filters=sett_filters,
-            fields=["name"],
-        )
-    except Exception:
-        settlements = []
-    if not settlements:
-        return total
+    """Sum of amounts reserved by other (submitted) settlements for an entry.
+
+    Fails closed: any database error propagates instead of silently returning 0.
+    Uses a request-scoped cache to avoid N+1 queries across entries.
+    """
+    cache = getattr(frappe.local, "commission_reserved_cache", None)
+    if cache is None:
+        cache = {}
+        try:
+            frappe.local.commission_reserved_cache = cache
+        except Exception:
+            cache = None
+    cache_key = (entry_name, exclude_settlement)
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+
+    sett_filters = {"docstatus": 1}
+    if exclude_settlement:
+        sett_filters["name"] = ["!=", exclude_settlement]
+    settlements = frappe.get_all(
+        "Commission Settlement",
+        filters=sett_filters,
+        fields=["name"],
+    )
     settlement_names = [s.name for s in settlements]
-    try:
+    total = 0.0
+    if settlement_names:
         items = frappe.get_all(
             "Commission Settlement Item",
             filters={
@@ -370,54 +449,46 @@ def _reserved_for_entry(entry_name, exclude_settlement=None):
             },
             fields=["amount_included"],
         )
-    except Exception:
-        items = []
-    for r in items or []:
-        total += flt(r.get("amount_included"))
-    return total
+        for r in items or []:
+            total += flt(r.get("amount_included"))
+    result = flt(total, 6)
+    if cache is not None:
+        cache[cache_key] = result
+    return result
 
 
 def _reclassified_for_entry(entry_name, exclude_settlement=None):
     total = 0.0
-    try:
-        sett_filters = {"docstatus": 1}
-        if exclude_settlement:
-            sett_filters["name"] = ["!=", exclude_settlement]
-        settlements = frappe.get_all(
-            "Commission Settlement", filters=sett_filters, fields=["name"]
-        )
-    except Exception:
-        settlements = []
+    sett_filters = {"docstatus": 1}
+    if exclude_settlement:
+        sett_filters["name"] = ["!=", exclude_settlement]
+    settlements = frappe.get_all(
+        "Commission Settlement", filters=sett_filters, fields=["name"]
+    )
     if not settlements:
         return total
     names = [s.name for s in settlements]
-    try:
-        items = frappe.get_all(
-            "Commission Settlement Item",
-            filters={
-                "commission_ledger_entry": entry_name,
-                "parent": ["in", names],
-            },
-            fields=["amount_included"],
-        )
-    except Exception:
-        items = []
+    items = frappe.get_all(
+        "Commission Settlement Item",
+        filters={
+            "commission_ledger_entry": entry_name,
+            "parent": ["in", names],
+        },
+        fields=["amount_included"],
+    )
     for r in items or []:
         total += flt(r.get("amount_included"))
     return flt(total, 6)
 
 
 def _available_balance_for_entry(entry_name, exclude_settlement=None):
-    try:
-        entry = frappe.get_doc("Commission Entry", entry_name)
-    except Exception:
-        return 0.0
-    earned = flt(getattr(entry, "earned_commission", 0))
-    eligible = flt(getattr(entry, "payable_amount", 0))
-    paid = flt(getattr(entry, "paid_amount", 0))
+    entry = frappe.get_doc("Commission Entry", entry_name)
+    collection_eligible = flt(getattr(entry, "collection_eligible_amount", 0))
+    if collection_eligible <= 0:
+        collection_eligible = flt(getattr(entry, "paid_amount", 0))
+    settled = flt(getattr(entry, "settled_amount", 0))
     reserved_other = _reserved_for_entry(entry_name, exclude_settlement=exclude_settlement)
-    cap = eligible if eligible > 0 else earned
-    available = cap - reserved_other - paid
+    available = collection_eligible - reserved_other - settled
     if available < 0:
         available = 0.0
     return flt(available, 2)
@@ -478,6 +549,8 @@ def get_eligible_commission_entries(
             "earned_commission",
             "payable_amount",
             "paid_amount",
+            "collection_eligible_amount",
+            "settled_amount",
             "commission_currency",
             "beneficiary_type",
             "sales_person",
@@ -493,13 +566,14 @@ def get_eligible_commission_entries(
             continue
         entry_name = e.get("name")
         earned = flt(e.get("earned_commission"))
-        eligible = flt(e.get("payable_amount"))
-        paid = flt(e.get("paid_amount"))
+        collection_eligible = flt(e.get("collection_eligible_amount"))
+        if collection_eligible <= 0:
+            collection_eligible = flt(e.get("paid_amount"))
+        settled = flt(e.get("settled_amount"))
         reserved_other = _reserved_for_entry(
             entry_name, exclude_settlement=exclude_settlement
         )
-        cap = eligible if eligible > 0 else earned
-        available = cap - reserved_other - paid
+        available = collection_eligible - reserved_other - settled
         if available <= 0.005:
             continue
         result.append(
@@ -511,9 +585,9 @@ def get_eligible_commission_entries(
                     else e.get("sales_partner")
                 ),
                 "earned_balance": flt(earned, 2),
-                "eligible_balance": flt(cap, 2),
+                "eligible_balance": flt(collection_eligible, 2),
                 "reserved_amount": flt(reserved_other, 2),
-                "already_settled_amount": flt(paid, 2),
+                "already_settled_amount": flt(settled, 2),
                 "amount_included": flt(available, 2),
                 "commission_currency": e.get("commission_currency"),
             }

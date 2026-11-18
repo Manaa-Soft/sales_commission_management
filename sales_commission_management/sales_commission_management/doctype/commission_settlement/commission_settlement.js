@@ -1,4 +1,4 @@
-frappe.ui.form.on("Commission Settlement", {
+﻿frappe.ui.form.on("Commission Settlement", {
     refresh: function (frm) {
         if (frm.doc.docstatus === 0) {
             frm.add_custom_button(__("Fetch Eligible Entries"), function () {
@@ -57,6 +57,19 @@ function fetch_eligible_entries(frm) {
         frappe.msgprint(__("Please set Company, Beneficiary Type and Beneficiary first."));
         return;
     }
+    if (frm.doc.entries && frm.doc.entries.length > 0) {
+        frappe.confirm(
+            __("This will replace the existing entries. Continue?"),
+            function () {
+                _do_fetch_eligible_entries(frm);
+            }
+        );
+        return;
+    }
+    _do_fetch_eligible_entries(frm);
+}
+
+function _do_fetch_eligible_entries(frm) {
     frappe.call({
         method: "sales_commission_management.sales_commission_management.doctype.commission_settlement.commission_settlement.get_eligible_commission_entries",
         args: {
@@ -107,7 +120,12 @@ function _recompute_settlement_totals(frm) {
     let total_paid = 0;
     (frm.doc.entries || []).forEach(function (row) {
         total_earned += flt(row.earned_balance);
-        total_payable += flt(row.amount_included) || flt(row.eligible_balance);
+        var raw = row.amount_included;
+        if (raw === null || raw === undefined || raw === "") {
+            total_payable += flt(row.eligible_balance);
+        } else {
+            total_payable += flt(raw);
+        }
         total_reserved += flt(row.reserved_amount);
         total_paid += flt(row.already_settled_amount);
     });

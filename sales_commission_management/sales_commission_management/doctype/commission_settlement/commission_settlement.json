@@ -1,4 +1,4 @@
-{
+﻿{
  "actions": [],
  "allow_rename": 0,
  "creation": "2026-01-01 00:00:00.000000",
@@ -26,6 +26,7 @@
   "status",
   "settlement_document_type",
   "settlement_document",
+  "settlement_journal_entry",
   "entries",
   "approval_user",
   "approval_date",
@@ -163,6 +164,13 @@
    "fieldtype": "Dynamic Link",
    "label": "Settlement Document",
    "options": "settlement_document_type"
+  },
+  {
+   "fieldname": "settlement_journal_entry",
+   "fieldtype": "Link",
+   "label": "Settlement Journal Entry",
+   "options": "Journal Entry",
+   "read_only": 1
   },
   {
    "fieldname": "entries",

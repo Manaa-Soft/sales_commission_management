@@ -1,4 +1,4 @@
-{
+﻿{
  "actions": [],
  "allow_rename": 0,
  "creation": "2026-01-01 00:00:00.000000",
@@ -57,7 +57,9 @@
   "exchange_rate",
   "earned_commission",
   "payable_amount",
+  "collection_eligible_amount",
   "paid_amount",
+  "settled_amount",
   "outstanding_amount",
   "status",
   "original_entry",
@@ -415,9 +417,23 @@
    "options": "commission_currency"
   },
   {
+   "fieldname": "collection_eligible_amount",
+   "fieldtype": "Currency",
+   "label": "Collection Eligible Amount",
+   "read_only": 1,
+   "options": "commission_currency"
+  },
+  {
    "fieldname": "paid_amount",
    "fieldtype": "Currency",
    "label": "Paid Amount",
+   "read_only": 1,
+   "options": "commission_currency"
+  },
+  {
+   "fieldname": "settled_amount",
+   "fieldtype": "Currency",
+   "label": "Settled Amount (Actual Payout)",
    "read_only": 1,
    "options": "commission_currency"
   },
