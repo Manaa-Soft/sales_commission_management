@@ -1,5 +1,4 @@
 import frappe
-from frappe import _
 from frappe.utils import flt
 
 
@@ -19,7 +18,13 @@ def _enforce_sales_person_scope(sales_person):
 
 
 @frappe.whitelist(methods=["GET"])
-def get_commission_summary(sales_person=None, from_date=None, to_date=None, status=None, company=None):
+def get_commission_summary(
+    sales_person: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    status: str | None = None,
+    company: str | None = None,
+):
     sales_person = _enforce_sales_person_scope(sales_person)
     filters = {}
     if sales_person:
@@ -38,18 +43,38 @@ def get_commission_summary(sales_person=None, from_date=None, to_date=None, stat
     entries = frappe.get_list(
         "Commission Entry",
         filters=filters,
-        fields=["name", "sales_invoice", "posting_date", "company", "beneficiary_type",
-                "sales_person", "sales_partner", "item_code", "commission_basis",
-                "commission_basis_amount", "earned_commission", "payable_amount",
-                "paid_amount", "outstanding_amount", "status", "transaction_currency",
-                "company_currency", "exchange_rate"],
+        fields=[
+            "name",
+            "sales_invoice",
+            "posting_date",
+            "company",
+            "beneficiary_type",
+            "sales_person",
+            "sales_partner",
+            "item_code",
+            "commission_basis",
+            "commission_basis_amount",
+            "earned_commission",
+            "payable_amount",
+            "paid_amount",
+            "outstanding_amount",
+            "status",
+            "transaction_currency",
+            "company_currency",
+            "exchange_rate",
+        ],
         order_by="posting_date desc",
     )
     return entries
 
 
 @frappe.whitelist(methods=["GET"])
-def get_commission_totals(sales_person=None, from_date=None, to_date=None, company=None):
+def get_commission_totals(
+    sales_person: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    company: str | None = None,
+):
     sales_person = _enforce_sales_person_scope(sales_person)
     filters = {}
     if sales_person:

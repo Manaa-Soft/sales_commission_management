@@ -13,13 +13,48 @@ def execute(filters=None):
 
 def get_columns():
     return [
-        {"fieldname": "beneficiary_type", "label": _("Beneficiary Type"), "fieldtype": "Data", "width": 120},
-        {"fieldname": "beneficiary", "label": _("Beneficiary"), "fieldtype": "Data", "width": 140},
-        {"fieldname": "target_metric", "label": _("Metric"), "fieldtype": "Data", "width": 120},
-        {"fieldname": "target_value", "label": _("Target"), "fieldtype": "Float", "width": 100},
-        {"fieldname": "attainment", "label": _("Attainment"), "fieldtype": "Float", "width": 100},
-        {"fieldname": "achievement_pct", "label": _("Achievement %"), "fieldtype": "Percent", "width": 110},
-        {"fieldname": "period_type", "label": _("Period"), "fieldtype": "Data", "width": 100},
+        {
+            "fieldname": "beneficiary_type",
+            "label": _("Beneficiary Type"),
+            "fieldtype": "Data",
+            "width": 120,
+        },
+        {
+            "fieldname": "beneficiary",
+            "label": _("Beneficiary"),
+            "fieldtype": "Data",
+            "width": 140,
+        },
+        {
+            "fieldname": "target_metric",
+            "label": _("Metric"),
+            "fieldtype": "Data",
+            "width": 120,
+        },
+        {
+            "fieldname": "target_value",
+            "label": _("Target"),
+            "fieldtype": "Float",
+            "width": 100,
+        },
+        {
+            "fieldname": "attainment",
+            "label": _("Attainment"),
+            "fieldtype": "Float",
+            "width": 100,
+        },
+        {
+            "fieldname": "achievement_pct",
+            "label": _("Achievement %"),
+            "fieldtype": "Percent",
+            "width": 110,
+        },
+        {
+            "fieldname": "period_type",
+            "label": _("Period"),
+            "fieldtype": "Data",
+            "width": 100,
+        },
     ]
 
 
@@ -31,24 +66,37 @@ def get_data(filters):
     rows = frappe.get_list(
         "Commission Target",
         filters=flt_filters,
-        fields=["beneficiary_type", "sales_person", "sales_partner", "target_metric",
-                "target_value", "attainment_percentage", "period_type"],
+        fields=[
+            "beneficiary_type",
+            "sales_person",
+            "sales_partner",
+            "target_metric",
+            "target_value",
+            "attainment_percentage",
+            "period_type",
+        ],
         limit_page_length=0,
     )
 
     data = []
     for r in rows:
-        ben = r.sales_person if r.beneficiary_type == "Sales Person" else r.sales_partner
+        ben = (
+            r.sales_person if r.beneficiary_type == "Sales Person" else r.sales_partner
+        )
         target = flt(r.target_value)
-        attainment = flt(r.attainment_percentage)  # placeholder until recompute_period_slabs is real
+        attainment = flt(
+            r.attainment_percentage
+        )  # placeholder until recompute_period_slabs is real
         pct = (attainment / target * 100.0) if target else 0.0
-        data.append({
-            "beneficiary_type": r.beneficiary_type,
-            "beneficiary": ben,
-            "target_metric": r.target_metric,
-            "target_value": flt(target, 2),
-            "attainment": flt(attainment, 2),
-            "achievement_pct": flt(pct, 2),
-            "period_type": r.period_type,
-        })
+        data.append(
+            {
+                "beneficiary_type": r.beneficiary_type,
+                "beneficiary": ben,
+                "target_metric": r.target_metric,
+                "target_value": flt(target, 2),
+                "attainment": flt(attainment, 2),
+                "achievement_pct": flt(pct, 2),
+                "period_type": r.period_type,
+            }
+        )
     return data

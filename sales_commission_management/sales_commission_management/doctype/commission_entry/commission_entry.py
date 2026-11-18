@@ -1,4 +1,4 @@
-﻿import frappe
+import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, getdate
@@ -12,13 +12,24 @@ class CommissionEntry(Document):
             return
         if self.docstatus == 1:
             # Allow only payment-tracking field updates performed by the engine.
-            immutable_fields = {"earned_commission", "commission_basis_amount",
-                                "sales_invoice", "posting_date", "company",
-                                "sales_person", "sales_partner", "commission_plan",
-                                "commission_rule"}
+            immutable_fields = {
+                "earned_commission",
+                "commission_basis_amount",
+                "sales_invoice",
+                "posting_date",
+                "company",
+                "sales_person",
+                "sales_partner",
+                "commission_plan",
+                "commission_rule",
+            }
             for f in immutable_fields:
                 if self.has_value_changed(f):
-                    frappe.throw(_("Submitted Commission Entry field '{0}' cannot be modified.").format(f))
+                    frappe.throw(
+                        _(
+                            "Submitted Commission Entry field '{0}' cannot be modified."
+                        ).format(f)
+                    )
 
     def on_submit(self):
         pass
@@ -31,8 +42,13 @@ class CommissionEntry(Document):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _company_currency(company):
-    return frappe.get_cached_value("Company", company, "default_currency") if company else None
+    return (
+        frappe.get_cached_value("Company", company, "default_currency")
+        if company
+        else None
+    )
 
 
 def _expand_sales_person(sales_person):
@@ -170,18 +186,28 @@ def _is_return(doc):
     return bool(getattr(doc, "is_return", 0))
 
 
-def _event_key(source_doctype, source_name, source_row, plan_name, pool_code,
-               beneficiary_type, beneficiary, event_type):
-    return "|".join([
-        source_doctype or "",
-        source_name or "",
-        source_row or "",
-        plan_name or "",
-        pool_code or "",
-        beneficiary_type or "",
-        beneficiary or "",
-        event_type or "",
-    ])
+def _event_key(
+    source_doctype,
+    source_name,
+    source_row,
+    plan_name,
+    pool_code,
+    beneficiary_type,
+    beneficiary,
+    event_type,
+):
+    return "|".join(
+        [
+            source_doctype or "",
+            source_name or "",
+            source_row or "",
+            plan_name or "",
+            pool_code or "",
+            beneficiary_type or "",
+            beneficiary or "",
+            event_type or "",
+        ]
+    )
 
 
 def _item_group_path(item_group):
@@ -208,8 +234,16 @@ def _resolve_plan(customer, customer_group, territory, company, posting_date):
     candidates = frappe.get_all(
         "Commission Plan",
         filters={"enabled": 1, "company": company},
-        fields=["name", "applies_to", "customer", "customer_group", "territory",
-                "priority", "valid_from", "valid_to"],
+        fields=[
+            "name",
+            "applies_to",
+            "customer",
+            "customer_group",
+            "territory",
+            "priority",
+            "valid_from",
+            "valid_to",
+        ],
     )
     valid = []
     for p in candidates:
@@ -241,7 +275,12 @@ def _resolve_plan(customer, customer_group, territory, company, posting_date):
 
     # scope precedence: Specific Customer > Customer Group > Territory > All
     scope_rank = {"Specific Customer": 0, "Customer Group": 1, "Territory": 2, "All": 3}
-    valid.sort(key=lambda p: (scope_rank.get(p.get("applies_to"), 9), -flt(p.get("priority") or 0)))
+    valid.sort(
+        key=lambda p: (
+            scope_rank.get(p.get("applies_to"), 9),
+            -flt(p.get("priority") or 0),
+        )
+    )
     return frappe.get_doc("Commission Plan", valid[0]["name"])
 
 
@@ -255,12 +294,18 @@ def _match_rule(plan, item_code, item_group):
         return None
 
     # Group 1: exact item
-    item_rules = [r for r in rules if r.match_type == "Item" and r.item_code == item_code]
+    item_rules = [
+        r for r in rules if r.match_type == "Item" and r.item_code == item_code
+    ]
     if item_rules:
         if len(item_rules) > 1:
             priorities = {flt(r.priority or 0) for r in item_rules}
             if len(priorities) == 1:
-                frappe.throw(_("Ambiguous commission rules: multiple Item rules with equal priority for {0}").format(item_code))
+                frappe.throw(
+                    _(
+                        "Ambiguous commission rules: multiple Item rules with equal priority for {0}"
+                    ).format(item_code)
+                )
         item_rules.sort(key=lambda r: -flt(r.priority or 0))
         return item_rules[0]
 
@@ -269,12 +314,20 @@ def _match_rule(plan, item_code, item_group):
         path = _item_group_path(item_group)
         # try from deepest to shallowest
         for group in reversed(path):
-            grp_rules = [r for r in rules if r.match_type == "Item Group" and r.item_group == group]
+            grp_rules = [
+                r
+                for r in rules
+                if r.match_type == "Item Group" and r.item_group == group
+            ]
             if grp_rules:
                 if len(grp_rules) > 1:
                     priorities = {flt(r.priority or 0) for r in grp_rules}
                     if len(priorities) == 1:
-                        frappe.throw(_("Ambiguous commission rules: multiple Item Group rules with equal priority for {0}").format(group))
+                        frappe.throw(
+                            _(
+                                "Ambiguous commission rules: multiple Item Group rules with equal priority for {0}"
+                            ).format(group)
+                        )
                 grp_rules.sort(key=lambda r: -flt(r.priority or 0))
                 return grp_rules[0]
 
@@ -284,7 +337,11 @@ def _match_rule(plan, item_code, item_group):
         if len(all_rules) > 1:
             priorities = {flt(r.priority or 0) for r in all_rules}
             if len(priorities) == 1:
-                frappe.throw(_("Ambiguous commission rules: multiple All Items rules with equal priority"))
+                frappe.throw(
+                    _(
+                        "Ambiguous commission rules: multiple All Items rules with equal priority"
+                    )
+                )
         all_rules.sort(key=lambda r: -flt(r.priority or 0))
         return all_rules[0]
 
@@ -302,7 +359,11 @@ def _calculate_basis(item, rule, doc):
 
     valuation_rate = flt(getattr(item, "valuation_rate", 0))
 
-    basis = getattr(rule, "basis", None) or getattr(rule, "calculation_basis", None) or "Net Total"
+    basis = (
+        getattr(rule, "basis", None)
+        or getattr(rule, "calculation_basis", None)
+        or "Net Total"
+    )
     if basis == "Gross Profit":
         # Attempt to use actual posted cost from Stock Ledger Entry when available.
         # Fall back to valuation_rate only as a documented best-effort; flag if
@@ -312,7 +373,7 @@ def _calculate_basis(item, rule, doc):
             conversion_factor = flt(getattr(item, "conversion_factor", 1) or 1)
             cogs_company = valuation_rate * flt(item.qty) * conversion_factor
             frappe.log_error(
-                "No posted cost source found for item {0} on {1}; falling back to valuation_rate.".format(
+                "No posted cost source found for item {} on {}; falling back to valuation_rate.".format(
                     getattr(item, "item_code", ""), getattr(doc, "name", "")
                 ),
                 "Commission Gross Profit Cost Source",
@@ -336,7 +397,13 @@ def _calculate_basis(item, rule, doc):
     if basis_company == 0:
         return basis_name, 0.0, 0.0, flt(item.qty), getattr(item, "uom", None)
 
-    return basis_name, flt(basis_company, 6), flt(basis_txn, 6), flt(item.qty), getattr(item, "uom", None)
+    return (
+        basis_name,
+        flt(basis_company, 6),
+        flt(basis_txn, 6),
+        flt(item.qty),
+        getattr(item, "uom", None),
+    )
 
 
 def _apply_floor_cap(amount, rule):
@@ -356,10 +423,27 @@ def _entries_exist(source_name, event_type=None):
     return frappe.db.exists("Commission Entry", filters)
 
 
-def _insert_entry(doc, plan, rule, item, beneficiary_type, beneficiary, pool_code,
-                  basis_name, basis_company, basis_txn, source_qty, source_uom,
-                  item_commission, split_share, company_currency, txn_currency,
-                  exchange_rate, status, event_type="Invoice Earned"):
+def _insert_entry(
+    doc,
+    plan,
+    rule,
+    item,
+    beneficiary_type,
+    beneficiary,
+    pool_code,
+    basis_name,
+    basis_company,
+    basis_txn,
+    source_qty,
+    source_uom,
+    item_commission,
+    split_share,
+    company_currency,
+    txn_currency,
+    exchange_rate,
+    status,
+    event_type="Invoice Earned",
+):
     """Persist a Commission Entry with idempotency key."""
     item_code = getattr(item, "item_code", None)
     item_group = getattr(item, "item_group", None)
@@ -383,80 +467,100 @@ def _insert_entry(doc, plan, rule, item, beneficiary_type, beneficiary, pool_cod
     if getattr(plan, "commission_currency_policy", None) == "Transaction Currency":
         commission_currency = txn_currency
     elif getattr(plan, "commission_currency_policy", None) == "Fixed Currency":
-        commission_currency = getattr(plan, "commission_currency", None) or company_currency
+        commission_currency = (
+            getattr(plan, "commission_currency", None) or company_currency
+        )
 
     commission_rate = flt(getattr(rule, "rate_percentage", 0))
     fixed_amount = flt(getattr(rule, "fixed_amount", 0))
 
-    ev_key = _event_key("Sales Invoice", doc.name, source_row, plan.name, pool_code,
-                        beneficiary_type, beneficiary, event_type)
+    ev_key = _event_key(
+        "Sales Invoice",
+        doc.name,
+        source_row,
+        plan.name,
+        pool_code,
+        beneficiary_type,
+        beneficiary,
+        event_type,
+    )
 
     # idempotency: return existing (non-cancelled) entry name if already present
-    existing = frappe.db.get_value("Commission Entry", {"event_key": ev_key, "docstatus": ["!=", 2]}, "name")
+    existing = frappe.db.get_value(
+        "Commission Entry", {"event_key": ev_key, "docstatus": ["!=", 2]}, "name"
+    )
     if existing:
         return existing
 
-    entry = frappe.get_doc({
-        "doctype": "Commission Entry",
-        "event_key": ev_key,
-        "event_type": event_type,
-        "company": doc.company,
-        "posting_date": doc.posting_date,
-        "source_doctype": "Sales Invoice",
-        "source_name": doc.name,
-        "source_row": source_row,
-        "original_invoice": doc.name,
-        "plan": plan.name,
-        "rule": getattr(rule, "name", None),
-        "pool_code": pool_code,
-        "beneficiary_type": beneficiary_type,
-        "sales_person": beneficiary if beneficiary_type == "Sales Person" else None,
-        "sales_partner": beneficiary if beneficiary_type == "Sales Partner" else None,
-        "employee": employee,
-        "supplier": supplier,
-        "item_code": item_code,
-        "item_name": getattr(item, "item_name", None),
-        "item_group": item_group,
-        "source_qty": flt(source_qty),
-        "source_uom": source_uom,
-        "commission_qty": flt(source_qty),
-        "commission_uom": getattr(rule, "commission_uom", None) or source_uom,
-        "transaction_currency": txn_currency,
-        "transaction_basis_amount": flt(basis_txn, 6),
-        "company_currency": company_currency,
-        "company_basis_amount": flt(basis_company, 6),
-        "conversion_rate_snapshot": flt(exchange_rate),
-        "commission_currency": commission_currency,
-        "commission_rate": commission_rate,
-        "fixed_amount_snapshot": fixed_amount,
-        "earned_delta": flt(item_commission, 6),
-        "payable_eligible_delta": 0,
-        "reserved_delta": 0,
-        "paid_delta": 0,
-        "sales_invoice": doc.name,
-        "commission_basis": basis_name,
-        "commission_basis_amount": flt(basis_company * split_share, 6),
-        "exchange_rate": exchange_rate,
-        "earned_commission": flt(item_commission, 2),
-        "payable_amount": 0,
-        "paid_amount": 0,
-        "outstanding_amount": flt(item_commission, 2),
-        "status": status,
-        "remarks": "",
-        "calculation_snapshot": frappe.as_json({
+    entry = frappe.get_doc(
+        {
+            "doctype": "Commission Entry",
+            "event_key": ev_key,
+            "event_type": event_type,
+            "company": doc.company,
+            "posting_date": doc.posting_date,
+            "source_doctype": "Sales Invoice",
+            "source_name": doc.name,
+            "source_row": source_row,
+            "original_invoice": doc.name,
             "plan": plan.name,
             "rule": getattr(rule, "name", None),
-            "basis_name": basis_name,
-            "basis_company": basis_company,
-            "basis_txn": basis_txn,
-            "split_share": split_share,
-            "item_commission": item_commission,
-        }),
-    })
+            "pool_code": pool_code,
+            "beneficiary_type": beneficiary_type,
+            "sales_person": beneficiary if beneficiary_type == "Sales Person" else None,
+            "sales_partner": beneficiary
+            if beneficiary_type == "Sales Partner"
+            else None,
+            "employee": employee,
+            "supplier": supplier,
+            "item_code": item_code,
+            "item_name": getattr(item, "item_name", None),
+            "item_group": item_group,
+            "source_qty": flt(source_qty),
+            "source_uom": source_uom,
+            "commission_qty": flt(source_qty),
+            "commission_uom": getattr(rule, "commission_uom", None) or source_uom,
+            "transaction_currency": txn_currency,
+            "transaction_basis_amount": flt(basis_txn, 6),
+            "company_currency": company_currency,
+            "company_basis_amount": flt(basis_company, 6),
+            "conversion_rate_snapshot": flt(exchange_rate),
+            "commission_currency": commission_currency,
+            "commission_rate": commission_rate,
+            "fixed_amount_snapshot": fixed_amount,
+            "earned_delta": flt(item_commission, 6),
+            "payable_eligible_delta": 0,
+            "reserved_delta": 0,
+            "paid_delta": 0,
+            "sales_invoice": doc.name,
+            "commission_basis": basis_name,
+            "commission_basis_amount": flt(basis_company * split_share, 6),
+            "exchange_rate": exchange_rate,
+            "earned_commission": flt(item_commission, 2),
+            "payable_amount": 0,
+            "paid_amount": 0,
+            "outstanding_amount": flt(item_commission, 2),
+            "status": status,
+            "remarks": "",
+            "calculation_snapshot": frappe.as_json(
+                {
+                    "plan": plan.name,
+                    "rule": getattr(rule, "name", None),
+                    "basis_name": basis_name,
+                    "basis_company": basis_company,
+                    "basis_txn": basis_txn,
+                    "split_share": split_share,
+                    "item_commission": item_commission,
+                }
+            ),
+        }
+    )
     try:
         entry.insert(ignore_permissions=True)
     except frappe.DuplicateEntryError:
-        existing = frappe.db.get_value("Commission Entry", {"event_key": ev_key, "docstatus": ["!=", 2]}, "name")
+        existing = frappe.db.get_value(
+            "Commission Entry", {"event_key": ev_key, "docstatus": ["!=", 2]}, "name"
+        )
         if existing:
             return existing
         raise
@@ -467,6 +571,7 @@ def _insert_entry(doc, plan, rule, item, beneficiary_type, beneficiary, pool_cod
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
+
 
 def _native_overlap_guard(doc):
     """Warn when native ERPNext commission rates are set on the invoice's sales team
@@ -480,15 +585,23 @@ def _native_overlap_guard(doc):
     if not getattr(settings, "block_native_hrms_overlap", 0):
         return
     native_found = False
-    for row in (getattr(doc, "sales_team", None) or []):
-        if flt(getattr(row, "commission_rate", 0)) > 0 or flt(getattr(row, "incentives", 0)) > 0:
+    for row in getattr(doc, "sales_team", None) or []:
+        if (
+            flt(getattr(row, "commission_rate", 0)) > 0
+            or flt(getattr(row, "incentives", 0)) > 0
+        ):
             native_found = True
-    if getattr(doc, "sales_partner", None) and flt(getattr(doc, "total_commission", 0)) > 0:
+    if (
+        getattr(doc, "sales_partner", None)
+        and flt(getattr(doc, "total_commission", 0)) > 0
+    ):
         native_found = True
     if native_found:
         frappe.log_error(
-            "Native commission fields detected on Sales Invoice {0}; "
-            "before_submit neutralization should have cleared them.".format(getattr(doc, "name", "")),
+            "Native commission fields detected on Sales Invoice {}; "
+            "before_submit neutralization should have cleared them.".format(
+                getattr(doc, "name", "")
+            ),
             "Commission Native Overlap Guard",
         )
 
@@ -505,7 +618,7 @@ def neutralize_native_commission(doc, method=None):
         return
     if not getattr(settings, "block_native_hrms_overlap", 0):
         return
-    for row in (getattr(doc, "sales_team", None) or []):
+    for row in getattr(doc, "sales_team", None) or []:
         try:
             row.commission_rate = 0
             row.incentives = 0
@@ -530,7 +643,7 @@ def neutralize_native_commission_on_update(doc, method=None):
         return
     if not getattr(settings, "block_native_hrms_overlap", 0):
         return
-    for row in (getattr(doc, "sales_team", None) or []):
+    for row in getattr(doc, "sales_team", None) or []:
         try:
             row.commission_rate = 0
             row.incentives = 0
@@ -571,43 +684,50 @@ def generate_commission_entries(doc, method=None):
     if plan_contributors:
         contributors = []
         for pc in plan_contributors:
-            contributors.append({
-                "sales_person": getattr(pc, "sales_person", None),
-                "sales_partner": getattr(pc, "sales_partner", None),
-                "contributor_type": getattr(pc, "contributor_type", "Sales Person"),
-                "allocated_percentage": flt(getattr(pc, "split_percentage", 100.0)),
-                "commission_rate": flt(getattr(pc, "commission_rate", 0)),
-                "pool_code": getattr(pc, "pool_code", None) or "INTERNAL_SALES",
-                "_from_plan": True,
-            })
+            contributors.append(
+                {
+                    "sales_person": getattr(pc, "sales_person", None),
+                    "sales_partner": getattr(pc, "sales_partner", None),
+                    "contributor_type": getattr(pc, "contributor_type", "Sales Person"),
+                    "allocated_percentage": flt(getattr(pc, "split_percentage", 100.0)),
+                    "commission_rate": flt(getattr(pc, "commission_rate", 0)),
+                    "pool_code": getattr(pc, "pool_code", None) or "INTERNAL_SALES",
+                    "_from_plan": True,
+                }
+            )
     else:
         contributors = []
-        for st in (doc.get("sales_team") or []):
-            contributors.append({
-                "sales_person": getattr(st, "sales_person", None),
-                "sales_partner": None,
-                "contributor_type": "Sales Person",
-                "allocated_percentage": flt(getattr(st, "allocated_percentage", 0)),
-                "commission_rate": flt(getattr(st, "commission_rate", 0)),
-                "pool_code": "INTERNAL_SALES",
-                "_from_plan": False,
-            })
+        for st in doc.get("sales_team") or []:
+            contributors.append(
+                {
+                    "sales_person": getattr(st, "sales_person", None),
+                    "sales_partner": None,
+                    "contributor_type": "Sales Person",
+                    "allocated_percentage": flt(getattr(st, "allocated_percentage", 0)),
+                    "commission_rate": flt(getattr(st, "commission_rate", 0)),
+                    "pool_code": "INTERNAL_SALES",
+                    "_from_plan": False,
+                }
+            )
 
     # Exclude group sales persons: a group is a non-earning container, not a
     # beneficiary. Only leaf (individual) sales persons earn commission entries.
     filtered_contributors = []
     for _rep in contributors:
-        if (_rep.get("contributor_type") or "Sales Person") == "Sales Person" and _is_sales_person_group(_rep.get("sales_person")):
+        if (
+            _rep.get("contributor_type") or "Sales Person"
+        ) == "Sales Person" and _is_sales_person_group(_rep.get("sales_person")):
             frappe.logger("sales_commission_management").warning(
                 "Excluded group sales person '%s' from commission generation for %s",
-                _rep.get("sales_person"), getattr(doc, "name", None),
+                _rep.get("sales_person"),
+                getattr(doc, "name", None),
             )
             continue
         filtered_contributors.append(_rep)
     contributors = filtered_contributors
 
     external_partner = getattr(doc, "sales_partner", None)
-    external_rate = flt(getattr(doc, "commission_rate", 0))
+    flt(getattr(doc, "commission_rate", 0))
 
     if not contributors and not external_partner:
         return
@@ -621,22 +741,29 @@ def generate_commission_entries(doc, method=None):
 
     fixed_invoice_rules_applied = set()
 
-    for item in (doc.items or []):
+    for item in doc.items or []:
         rule = _match_rule(plan, item.item_code, item.item_group)
         if not rule:
             continue
 
         # grant_commission check
-        if getattr(rule, "exclude_if_grant_commission_zero", 1) and not getattr(item, "grant_commission", 1):
+        if getattr(rule, "exclude_if_grant_commission_zero", 1) and not getattr(
+            item, "grant_commission", 1
+        ):
             continue
 
         # include_free_items check
-        if not getattr(rule, "include_free_items", 0) and flt(item.rate or item.price_list_rate or 0) == 0:
+        if (
+            not getattr(rule, "include_free_items", 0)
+            and flt(item.rate or item.price_list_rate or 0) == 0
+        ):
             # free item
             if flt(item.net_amount) == 0:
                 continue
 
-        basis_name, basis_company, basis_txn, source_qty, source_uom = _calculate_basis(item, rule, doc)
+        basis_name, basis_company, basis_txn, source_qty, source_uom = _calculate_basis(
+            item, rule, doc
+        )
         if basis_company <= 0:
             continue
 
@@ -684,10 +811,24 @@ def generate_commission_entries(doc, method=None):
                 if rep_commission <= 0:
                     continue
                 _insert_entry(
-                    doc, plan, rule, item, "Sales Partner", partner, pool_code,
-                    basis_name, basis_company, basis_txn, source_qty, source_uom,
-                    rep_commission, split_share, company_currency, txn_currency,
-                    exchange_rate, "Accrued",
+                    doc,
+                    plan,
+                    rule,
+                    item,
+                    "Sales Partner",
+                    partner,
+                    pool_code,
+                    basis_name,
+                    basis_company,
+                    basis_txn,
+                    source_qty,
+                    source_uom,
+                    rep_commission,
+                    split_share,
+                    company_currency,
+                    txn_currency,
+                    exchange_rate,
+                    "Accrued",
                 )
                 continue
 
@@ -702,10 +843,24 @@ def generate_commission_entries(doc, method=None):
             if not beneficiary:
                 continue
             _insert_entry(
-                doc, plan, rule, item, "Sales Person", beneficiary, pool_code,
-                basis_name, basis_company, basis_txn, source_qty, source_uom,
-                rep_commission, split_share, company_currency, txn_currency,
-                exchange_rate, "Accrued",
+                doc,
+                plan,
+                rule,
+                item,
+                "Sales Person",
+                beneficiary,
+                pool_code,
+                basis_name,
+                basis_company,
+                basis_txn,
+                source_qty,
+                source_uom,
+                rep_commission,
+                split_share,
+                company_currency,
+                txn_currency,
+                exchange_rate,
+                "Accrued",
             )
 
         # External sales partner from invoice. Skip if the same partner is already
@@ -718,30 +873,57 @@ def generate_commission_entries(doc, method=None):
         if external_partner and external_partner not in plan_partner_beneficiaries:
             # Plan rule rate is the single commission-rate source; do not use the
             # native Sales Partner rate from the invoice.
-            partner_commission = basis_company * (flt(getattr(rule, "rate_percentage", 0)) / 100.0)
+            partner_commission = basis_company * (
+                flt(getattr(rule, "rate_percentage", 0)) / 100.0
+            )
             if partner_commission > 0:
                 _insert_entry(
-                    doc, plan, rule, item, "Sales Partner", external_partner, "EXTERNAL_PARTNER",
-                    basis_name, basis_company, basis_txn, source_qty, source_uom,
-                    partner_commission, 1.0, company_currency, txn_currency,
-                    exchange_rate, "Accrued",
+                    doc,
+                    plan,
+                    rule,
+                    item,
+                    "Sales Partner",
+                    external_partner,
+                    "EXTERNAL_PARTNER",
+                    basis_name,
+                    basis_company,
+                    basis_txn,
+                    source_qty,
+                    source_uom,
+                    partner_commission,
+                    1.0,
+                    company_currency,
+                    txn_currency,
+                    exchange_rate,
+                    "Accrued",
                 )
 
 
 def _calculate_slab_amount(basis_amount, slabs, method="Progressive"):
     if not slabs:
         return 0.0
-    slabs = sorted(slabs, key=lambda s: flt(s.min_attainment if hasattr(s, "min_attainment") else getattr(s, "from_amount", 0)))
+    slabs = sorted(
+        slabs,
+        key=lambda s: flt(
+            s.min_attainment
+            if hasattr(s, "min_attainment")
+            else getattr(s, "from_amount", 0)
+        ),
+    )
+
     # support both old (from_amount) and new (min_attainment) field names
     def _from(s):
         return flt(getattr(s, "min_attainment", None) or getattr(s, "from_amount", 0))
+
     def _to(s):
         v = getattr(s, "max_attainment", None)
         if v is None:
             v = getattr(s, "to_amount", None)
         return flt(v) if v else float("inf")
+
     def _rate(s):
         return flt(getattr(s, "rate_percentage", 0))
+
     def _fixed(s):
         return flt(getattr(s, "fixed_bonus", None) or getattr(s, "fixed_amount", 0))
 
@@ -786,18 +968,32 @@ def handle_return_invoice(doc, method=None):
         original_entries = frappe.get_all(
             "Commission Entry",
             filters={"sales_invoice": original_name, "docstatus": 1},
-            fields=["name", "item_code", "source_qty", "earned_commission", "commission_basis_amount",
-                "beneficiary_type", "sales_person", "sales_partner", "commission_basis",
-                "plan", "transaction_currency", "company_currency", "conversion_rate_snapshot",
-                "pool_code"],
-    )
+            fields=[
+                "name",
+                "item_code",
+                "source_qty",
+                "earned_commission",
+                "commission_basis_amount",
+                "beneficiary_type",
+                "sales_person",
+                "sales_partner",
+                "commission_basis",
+                "plan",
+                "transaction_currency",
+                "company_currency",
+                "conversion_rate_snapshot",
+                "pool_code",
+            ],
+        )
     if not original_entries:
         return
 
     # Use absolute quantities for returns (ERPNext stores return qty as negative).
     returned_qty = {}
-    for item in (doc.items or []):
-        returned_qty[item.item_code] = returned_qty.get(item.item_code, 0) + abs(flt(item.qty))
+    for item in doc.items or []:
+        returned_qty[item.item_code] = returned_qty.get(item.item_code, 0) + abs(
+            flt(item.qty)
+        )
 
     try:
         original_doc = frappe.get_doc("Sales Invoice", original_name)
@@ -806,18 +1002,26 @@ def handle_return_invoice(doc, method=None):
     original_qty = {}
     if original_doc:
         for item in original_doc.items:
-            original_qty[item.item_code] = original_qty.get(item.item_code, 0) + abs(flt(item.qty))
+            original_qty[item.item_code] = original_qty.get(item.item_code, 0) + abs(
+                flt(item.qty)
+            )
 
     # Cumulative already-returned quantity from prior Return Adjustment entries,
     # so multiple partial returns never reverse more than the original commission.
     already_returned = {}
     prior_returns = frappe.get_all(
         "Commission Entry",
-        filters={"original_invoice": original_name, "event_type": "Return Adjustment", "docstatus": 1},
+        filters={
+            "original_invoice": original_name,
+            "event_type": "Return Adjustment",
+            "docstatus": 1,
+        },
         fields=["item_code", "source_qty"],
     )
     for pr in prior_returns:
-        already_returned[pr.item_code] = already_returned.get(pr.item_code, 0) + abs(flt(pr.source_qty))
+        already_returned[pr.item_code] = already_returned.get(pr.item_code, 0) + abs(
+            flt(pr.source_qty)
+        )
 
     for orig in original_entries:
         oq = original_qty.get(orig.item_code, 0) or abs(flt(orig.source_qty)) or 1
@@ -834,46 +1038,58 @@ def handle_return_invoice(doc, method=None):
         clawback_commission = -1 * flt(orig.earned_commission) * ratio
         clawback_basis = -1 * flt(orig.commission_basis_amount) * ratio
 
-        ev_key = _event_key("Sales Invoice", doc.name, orig.get("name"), orig.get("plan"), orig.get("pool_code"),
-                            orig.beneficiary_type, orig.sales_person or orig.sales_partner, "Return Adjustment")
+        ev_key = _event_key(
+            "Sales Invoice",
+            doc.name,
+            orig.get("name"),
+            orig.get("plan"),
+            orig.get("pool_code"),
+            orig.beneficiary_type,
+            orig.sales_person or orig.sales_partner,
+            "Return Adjustment",
+        )
 
-        existing = frappe.db.get_value("Commission Entry", {"event_key": ev_key, "docstatus": ["!=", 2]}, "name")
+        existing = frappe.db.get_value(
+            "Commission Entry", {"event_key": ev_key, "docstatus": ["!=", 2]}, "name"
+        )
         if existing:
             continue
 
-        entry = frappe.get_doc({
-            "doctype": "Commission Entry",
-            "event_key": ev_key,
-            "event_type": "Return Adjustment",
-            "company": doc.company,
-            "posting_date": doc.posting_date,
-            "source_doctype": "Sales Invoice",
-            "source_name": doc.name,
-            "original_invoice": original_name,
-            "return_invoice": doc.name,
-            "plan": orig.plan,
-            "pool_code": orig.pool_code,
-            "beneficiary_type": orig.beneficiary_type,
-            "sales_person": orig.sales_person,
-            "sales_partner": orig.sales_partner,
-            "item_code": orig.item_code,
-            "commission_basis": orig.commission_basis,
-            "commission_basis_amount": flt(clawback_basis, 2),
-            "transaction_currency": orig.transaction_currency,
-            "company_currency": orig.company_currency,
-            "conversion_rate_snapshot": orig.conversion_rate_snapshot,
-            "commission_currency": orig.company_currency,
-            "earned_delta": flt(clawback_commission, 6),
-            "sales_invoice": doc.name,
-            "exchange_rate": orig.conversion_rate_snapshot,
-            "earned_commission": flt(clawback_commission, 2),
-            "payable_amount": 0,
-            "paid_amount": 0,
-            "outstanding_amount": flt(clawback_commission, 2),
-            "status": "Reversed" if ratio >= 0.999 else "Adjusted",
-            "original_entry": orig.name,
-            "remarks": "Clawback for return {0} against {1}".format(doc.name, original_name),
-        })
+        entry = frappe.get_doc(
+            {
+                "doctype": "Commission Entry",
+                "event_key": ev_key,
+                "event_type": "Return Adjustment",
+                "company": doc.company,
+                "posting_date": doc.posting_date,
+                "source_doctype": "Sales Invoice",
+                "source_name": doc.name,
+                "original_invoice": original_name,
+                "return_invoice": doc.name,
+                "plan": orig.plan,
+                "pool_code": orig.pool_code,
+                "beneficiary_type": orig.beneficiary_type,
+                "sales_person": orig.sales_person,
+                "sales_partner": orig.sales_partner,
+                "item_code": orig.item_code,
+                "commission_basis": orig.commission_basis,
+                "commission_basis_amount": flt(clawback_basis, 2),
+                "transaction_currency": orig.transaction_currency,
+                "company_currency": orig.company_currency,
+                "conversion_rate_snapshot": orig.conversion_rate_snapshot,
+                "commission_currency": orig.company_currency,
+                "earned_delta": flt(clawback_commission, 6),
+                "sales_invoice": doc.name,
+                "exchange_rate": orig.conversion_rate_snapshot,
+                "earned_commission": flt(clawback_commission, 2),
+                "payable_amount": 0,
+                "paid_amount": 0,
+                "outstanding_amount": flt(clawback_commission, 2),
+                "status": "Reversed" if ratio >= 0.999 else "Adjusted",
+                "original_entry": orig.name,
+                "remarks": f"Clawback for return {doc.name} against {original_name}",
+            }
+        )
         try:
             entry.insert(ignore_permissions=True)
         except frappe.DuplicateEntryError:
@@ -884,16 +1100,36 @@ def handle_return_invoice(doc, method=None):
 def reverse_commission_entries(doc, method=None):
     """Triggered on Sales Invoice cancellation: full clawback of all entries."""
     existing_entries = frappe.get_all(
-        "Commission Entry", filters={"sales_invoice": doc.name, "docstatus": 1},
-        fields=["name", "earned_commission", "commission_basis_amount", "plan", "pool_code",
-                "beneficiary_type", "sales_person", "sales_partner", "item_code", "source_row"],
+        "Commission Entry",
+        filters={"sales_invoice": doc.name, "docstatus": 1},
+        fields=[
+            "name",
+            "earned_commission",
+            "commission_basis_amount",
+            "plan",
+            "pool_code",
+            "beneficiary_type",
+            "sales_person",
+            "sales_partner",
+            "item_code",
+            "source_row",
+        ],
     )
     for entry in existing_entries:
         original = frappe.get_doc("Commission Entry", entry.name)
-        ev_key = _event_key("Sales Invoice", doc.name, entry.get("source_row"), entry.get("plan"),
-                            entry.get("pool_code"), entry.beneficiary_type,
-                            entry.sales_person or entry.sales_partner, "Cancellation Reversal")
-        existing = frappe.db.get_value("Commission Entry", {"event_key": ev_key, "docstatus": ["!=", 2]}, "name")
+        ev_key = _event_key(
+            "Sales Invoice",
+            doc.name,
+            entry.get("source_row"),
+            entry.get("plan"),
+            entry.get("pool_code"),
+            entry.beneficiary_type,
+            entry.sales_person or entry.sales_partner,
+            "Cancellation Reversal",
+        )
+        existing = frappe.db.get_value(
+            "Commission Entry", {"event_key": ev_key, "docstatus": ["!=", 2]}, "name"
+        )
         if existing:
             continue
 
@@ -905,7 +1141,7 @@ def reverse_commission_entries(doc, method=None):
         clawback.earned_delta = -1 * flt(original.earned_delta)
         clawback.outstanding_amount = clawback.earned_commission
         clawback.status = "Reversed"
-        clawback.remarks = "Clawback due to cancellation of {0}".format(doc.name)
+        clawback.remarks = f"Clawback due to cancellation of {doc.name}"
         try:
             clawback.insert(ignore_permissions=True)
         except frappe.DuplicateEntryError:
@@ -936,8 +1172,11 @@ def update_commission_payment_status(payment_entry, method=None):
 
         entries = frappe.get_all(
             "Commission Entry",
-            filters={"sales_invoice": invoice, "docstatus": 1,
-                     "status": ["in", ["Accrued", "Payable", "Partially Paid"]]},
+            filters={
+                "sales_invoice": invoice,
+                "docstatus": 1,
+                "status": ["in", ["Accrued", "Payable", "Partially Paid"]],
+            },
             fields=["name", "earned_commission", "paid_amount"],
         )
         for e in entries:
@@ -952,7 +1191,8 @@ def update_commission_payment_status(payment_entry, method=None):
             else:
                 new_status = "Payable"
             frappe.db.set_value(
-                "Commission Entry", e.name,
+                "Commission Entry",
+                e.name,
                 {
                     "paid_amount": flt(new_paid, 6),
                     "outstanding_amount": flt(outstanding, 6),
@@ -978,7 +1218,9 @@ def recompute_period_slabs():
             fields=["name", "period_from", "period_to", "company"],
         )
     except Exception:
-        frappe.log_error(frappe.get_traceback(), "recompute_period_slabs: period lookup failed")
+        frappe.log_error(
+            frappe.get_traceback(), "recompute_period_slabs: period lookup failed"
+        )
         return
 
     for period in periods:
@@ -987,7 +1229,9 @@ def recompute_period_slabs():
         except Exception:
             frappe.log_error(
                 frappe.get_traceback(),
-                "recompute_period_slabs failed for period {0}".format(period.get("name")),
+                "recompute_period_slabs failed for period {}".format(
+                    period.get("name")
+                ),
             )
 
 
@@ -1008,8 +1252,14 @@ def _recompute_one_period(period):
     entries = frappe.get_all(
         "Commission Entry",
         filters=filters,
-        fields=["beneficiary_type", "sales_person", "sales_partner",
-                "commission_basis", "earned_commission", "company"],
+        fields=[
+            "beneficiary_type",
+            "sales_person",
+            "sales_partner",
+            "commission_basis",
+            "earned_commission",
+            "company",
+        ],
     )
 
     # Aggregate earned amounts per (beneficiary_type, beneficiary).
@@ -1044,7 +1294,8 @@ def _recompute_one_period(period):
             pct = (earned / target_value) * 100.0
             try:
                 frappe.db.set_value(
-                    "Commission Target", t.get("name"),
+                    "Commission Target",
+                    t.get("name"),
                     {"attainment_percentage": flt(pct, 2)},
                     update_modified=False,
                 )

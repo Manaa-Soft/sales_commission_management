@@ -15,13 +15,14 @@ class CommissionPeriod(Document):
 
     def _validate_dates(self):
         if self.period_from and self.period_to:
-            if frappe.utils.getdate(self.period_from) > frappe.utils.getdate(self.period_to):
+            if frappe.utils.getdate(self.period_from) > frappe.utils.getdate(
+                self.period_to
+            ):
                 frappe.throw(_("Period From must be before Period To."))
 
     def _check_reconciliation(self):
         """Verify that ledger events and payment allocations are reconciled before closing."""
         # Placeholder: in production, verify no unprocessed source docs and no open exceptions
-        pass
 
     def close_period(self, reason=None):
         if self.status == "Closed":

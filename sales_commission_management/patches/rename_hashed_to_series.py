@@ -1,8 +1,7 @@
-# -*- coding: utf-8 -*-
 import re
+
 import frappe
 from frappe.model.naming import make_autoname
-
 
 HASH_RE = re.compile(r"^[0-9a-f]{10}$")
 
@@ -25,7 +24,7 @@ def _rename_hashed(doctype, series_pattern):
         except Exception:
             frappe.log_error(
                 frappe.get_traceback(),
-                "rename_hashed failed for {0} {1}".format(doctype, old),
+                f"rename_hashed failed for {doctype} {old}",
             )
     if renamed:
         frappe.db.commit()
@@ -48,6 +47,6 @@ def execute():
         n = _rename_hashed(doctype, series)
         total += n
         if n:
-            print("Renamed {0} {1} record(s) for {2}".format(n, doctype, series))
+            print(f"Renamed {n} {doctype} record(s) for {series}")
     # Commission Plan uses field:plan_name (user-entered); nothing to rename.
     print("rename_hashed_to_series: total renamed =", total)

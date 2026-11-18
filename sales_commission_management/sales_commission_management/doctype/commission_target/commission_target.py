@@ -29,9 +29,8 @@ class CommissionTarget(Document):
         if metric in ("Net Sales", "Gross Profit", "Collected Net Sales"):
             if not self.target_currency:
                 frappe.throw(_("Target currency is required for monetary targets."))
-        elif metric == "Quantity":
-            if not self.target_uom:
-                frappe.throw(_("Target UOM is required for quantity targets."))
+        elif metric == "Quantity" and not self.target_uom:
+            frappe.throw(_("Target UOM is required for quantity targets."))
 
     def _validate_uniqueness(self):
         filters = {
@@ -50,4 +49,8 @@ class CommissionTarget(Document):
             filters["name"] = ["!=", self.name]
         existing = frappe.db.exists("Commission Target", filters)
         if existing:
-            frappe.throw(_("A target with the same beneficiary, metric, period, and item group already exists."))
+            frappe.throw(
+                _(
+                    "A target with the same beneficiary, metric, period, and item group already exists."
+                )
+            )

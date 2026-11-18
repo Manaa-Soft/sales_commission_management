@@ -15,8 +15,18 @@ def execute(filters=None):
 
 def get_columns():
     return [
-        {"fieldname": "description", "label": _("Description"), "fieldtype": "Data", "width": 260},
-        {"fieldname": "amount", "label": _("Amount"), "fieldtype": "Currency", "width": 140},
+        {
+            "fieldname": "description",
+            "label": _("Description"),
+            "fieldtype": "Data",
+            "width": 260,
+        },
+        {
+            "fieldname": "amount",
+            "label": _("Amount"),
+            "fieldtype": "Currency",
+            "width": 140,
+        },
     ]
 
 
@@ -38,9 +48,24 @@ def get_data(filters):
     subledger_earned = sum(flt(r.earned_commission) for r in rows)
     subledger_paid = sum(flt(r.paid_amount) for r in rows)
 
-    data.append({"description": _("Commission subledger — earned"), "amount": flt(subledger_earned, 2)})
-    data.append({"description": _("Commission subledger — paid"), "amount": flt(subledger_paid, 2)})
-    data.append({"description": _("Commission subledger — outstanding"), "amount": flt(subledger_outstanding, 2)})
+    data.append(
+        {
+            "description": _("Commission subledger — earned"),
+            "amount": flt(subledger_earned, 2),
+        }
+    )
+    data.append(
+        {
+            "description": _("Commission subledger — paid"),
+            "amount": flt(subledger_paid, 2),
+        }
+    )
+    data.append(
+        {
+            "description": _("Commission subledger — outstanding"),
+            "amount": flt(subledger_outstanding, 2),
+        }
+    )
 
     # GL accrued liability: sum of outstanding on submitted accrual batches
     batch_filters = {"docstatus": 1}
@@ -53,8 +78,18 @@ def get_data(filters):
         limit_page_length=0,
     )
     gl_accrued = sum(flt(b.total_amount) for b in batches)
-    data.append({"description": _("GL accrued liability (batches)"), "amount": flt(gl_accrued, 2)})
-    data.append({"description": _("Difference (subledger − GL)"), "amount": flt(subledger_outstanding - gl_accrued, 2)})
+    data.append(
+        {
+            "description": _("GL accrued liability (batches)"),
+            "amount": flt(gl_accrued, 2),
+        }
+    )
+    data.append(
+        {
+            "description": _("Difference (subledger − GL)"),
+            "amount": flt(subledger_outstanding - gl_accrued, 2),
+        }
+    )
 
     # Expense recognized via settlements
     sett_filters = {"docstatus": 1}
@@ -67,6 +102,11 @@ def get_data(filters):
         limit_page_length=0,
     )
     settled = sum(flt(s.total_payable) for s in settlements)
-    data.append({"description": _("Settled commission (settlements)"), "amount": flt(settled, 2)})
+    data.append(
+        {
+            "description": _("Settled commission (settlements)"),
+            "amount": flt(settled, 2),
+        }
+    )
 
     return data
