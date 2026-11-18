@@ -6,7 +6,10 @@
  "engine": "InnoDB",
  "field_order": [
   "commission_ledger_entry",
+  "commission_currency",
   "accrual_amount",
+  "company_amount",
+  "conversion_rate",
   "commission_expense_account",
   "accrued_liability_account",
   "cost_center",
@@ -14,7 +17,10 @@
  ],
  "fields": [
   { "fieldname": "commission_ledger_entry", "fieldtype": "Link", "label": "Commission Ledger Entry", "options": "Commission Entry", "reqd": 1 },
-  { "fieldname": "accrual_amount", "fieldtype": "Currency", "label": "Accrual Amount", "reqd": 1 },
+  { "fieldname": "commission_currency", "fieldtype": "Link", "label": "Commission Currency", "options": "Currency", "read_only": 1 },
+  { "fieldname": "accrual_amount", "fieldtype": "Currency", "label": "Accrual Amount", "reqd": 1, "options": "commission_currency" },
+  { "fieldname": "company_amount", "fieldtype": "Currency", "label": "Company Amount", "read_only": 1 },
+  { "fieldname": "conversion_rate", "fieldtype": "Float", "label": "Conversion Rate", "read_only": 1 },
   { "fieldname": "commission_expense_account", "fieldtype": "Link", "label": "Commission Expense Account", "options": "Account" },
   { "fieldname": "accrued_liability_account", "fieldtype": "Link", "label": "Accrued Liability Account", "options": "Account" },
   { "fieldname": "cost_center", "fieldtype": "Link", "label": "Cost Center", "options": "Cost Center" },

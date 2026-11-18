@@ -4,6 +4,14 @@ from frappe.model.document import Document
 from frappe.utils import flt, now_datetime
 
 
+def _company_currency(company):
+    return (
+        frappe.get_cached_value("Company", company, "default_currency")
+        if company
+        else None
+    )
+
+
 class CommissionSettlement(Document):
     def validate(self):
         self._resolve_beneficiary()
@@ -106,14 +114,43 @@ class CommissionSettlement(Document):
         self.save(ignore_permissions=True)
 
     def _clear_accrued_liability(self):
-        accrued_total = 0.0
+        # Reclassify only the portion actually settled in this settlement,
+        # converted to company (accounting) currency, and only up to the
+        # accrued (unreclassified) balance of each entry.
+        reclassify_total = 0.0
         for row in self.entries or []:
+            entry_name = getattr(row, "commission_ledger_entry", None)
+            if not entry_name:
+                continue
             try:
-                entry = frappe.get_doc("Commission Entry", row.commission_ledger_entry)
-                accrued_total += flt(getattr(entry, "accrued_amount", 0))
+                entry = frappe.get_doc("Commission Entry", entry_name)
             except Exception:
                 continue
-        if accrued_total <= 0.005:
+            accrued = flt(getattr(entry, "accrued_amount", 0))
+            if accrued <= 0.005:
+                continue
+            already = _reclassified_for_entry(
+                entry_name, exclude_settlement=self.name
+            )
+            delta = flt(row.amount_included) - already
+            if delta <= 0.005:
+                continue
+            if delta > accrued - already + 0.005:
+                delta = accrued - already
+            if delta <= 0.005:
+                continue
+            rate = flt(getattr(entry, "conversion_rate_snapshot", 1)) or 1.0
+            commission_currency = getattr(entry, "commission_currency", None)
+            company_currency = getattr(entry, "company_currency", None)
+            if not company_currency:
+                company_currency = _company_currency(self.company)
+            if commission_currency and company_currency and commission_currency != company_currency:
+                delta_company = flt(delta * rate, 6)
+            else:
+                delta_company = flt(delta, 6)
+            reclassify_total += delta_company
+
+        if reclassify_total <= 0.005:
             return
         try:
             settings = (
@@ -147,11 +184,11 @@ class CommissionSettlement(Document):
                 "accounts": [
                     {
                         "account": accrued_account,
-                        "debit_in_account_currency": flt(accrued_total),
+                        "debit_in_account_currency": flt(reclassify_total, 2),
                     },
                     {
                         "account": payable_account,
-                        "credit_in_account_currency": flt(accrued_total),
+                        "credit_in_account_currency": flt(reclassify_total, 2),
                     },
                 ],
                 "user_remark": f"Clear accrued commission liability for settlement {self.name}",
@@ -248,19 +285,35 @@ class CommissionSettlement(Document):
         if not item_code:
             item_code = frappe.db.get_value("Item", {"item_name": "Commission"}, "name")
 
+        # Consume the accrued commission liability rather than recording a second
+        # expense: debit the accrued liability account on the item line.
+        accrued_account = None
+        try:
+            settings = (
+                frappe.get_single("Commission Settings")
+                if frappe.db.exists("Commission Settings")
+                else None
+            )
+        except Exception:
+            settings = None
+        if settings:
+            accrued_account = getattr(settings, "default_accrued_liability_account", None)
+
+        item_row = {
+            "item_code": item_code,
+            "qty": 1,
+            "rate": flt(self.total_payable),
+        }
+        if accrued_account:
+            item_row["expense_account"] = accrued_account
+
         doc = frappe.get_doc(
             {
                 "doctype": "Purchase Invoice",
                 "supplier": self.supplier,
                 "company": self.company,
                 "posting_date": frappe.utils.nowdate(),
-                "items": [
-                    {
-                        "item_code": item_code,
-                        "qty": 1,
-                        "rate": flt(self.total_payable),
-                    }
-                ],
+                "items": [item_row],
                 "remarks": f"Commission settlement {self.name}",
             }
         )
@@ -322,6 +375,36 @@ def _reserved_for_entry(entry_name, exclude_settlement=None):
     for r in items or []:
         total += flt(r.get("amount_included"))
     return total
+
+
+def _reclassified_for_entry(entry_name, exclude_settlement=None):
+    total = 0.0
+    try:
+        sett_filters = {"docstatus": 1}
+        if exclude_settlement:
+            sett_filters["name"] = ["!=", exclude_settlement]
+        settlements = frappe.get_all(
+            "Commission Settlement", filters=sett_filters, fields=["name"]
+        )
+    except Exception:
+        settlements = []
+    if not settlements:
+        return total
+    names = [s.name for s in settlements]
+    try:
+        items = frappe.get_all(
+            "Commission Settlement Item",
+            filters={
+                "commission_ledger_entry": entry_name,
+                "parent": ["in", names],
+            },
+            fields=["amount_included"],
+        )
+    except Exception:
+        items = []
+    for r in items or []:
+        total += flt(r.get("amount_included"))
+    return flt(total, 6)
 
 
 def _available_balance_for_entry(entry_name, exclude_settlement=None):
