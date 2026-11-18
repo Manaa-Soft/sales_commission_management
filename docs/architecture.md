@@ -73,9 +73,9 @@ sales_commission_management/
      - For each contributor: split by allocated percentage, insert + submit a `Commission Entry`.
 4. On cancellation, `reverse_commission_entries` creates negative (clawback) entries.
 5. On return invoice, `handle_return_invoice` creates proportional adjustments referencing the original invoice/entry.
-6. `Payment Entry` submit/cancel triggers `update_commission_payment_status`, which allocates paid amounts proportionally and updates `paid_amount`, `outstanding_amount`, `status`.
-7. **Commission Settlement** documents select ledger entries and create Additional Salary (internal) or Purchase Invoice (external) documents.
-8. **Commission Accrual Batch** documents create a balanced Journal Entry for the selected entries.
+6. `Payment Entry` submit/cancel triggers `update_commission_payment_status`, which updates collection eligibility (`collection_eligible_amount`) — separate from actual payout (`settled_amount`).
+7. **Commission Settlement** documents fetch eligible entries (via `get_eligible_commission_entries`), reserve balances, and create Additional Salary (internal) or Purchase Invoice (external) documents. Cancellation reverses reservations and the accrued-liability Journal Entry.
+8. **Commission Accrual Batch** documents create a balanced Journal Entry (Dr Commission Expense / Cr Accrued Liability) for the selected entries.
 9. **Commission Period** documents support open/close/reopen with audit fields and mandatory reopen reason.
 
 ## Key design decisions
@@ -86,6 +86,7 @@ sales_commission_management/
 - **Append-only reversal** — negative entries preserve the audit trail rather than deleting.
 - **Multi-currency storage** — commission stored in company currency with transaction currency and exchange-rate snapshot preserved.
 - **Native-overlap guard** — blocks overlapping native HRMS commission payouts when enabled.
+- **Separated balance model** — earned, collection-eligible, reserved, settled, and available are tracked independently.
 
 ## Extension points
 

@@ -202,7 +202,9 @@ Generated commission record. All fields read-only. Submitted entries cannot be m
 | exchange_rate | Float | Exchange rate |
 | earned_commission | Currency | Final commission |
 | payable_amount | Currency | Payable amount |
-| paid_amount | Currency | Paid amount |
+| collection_eligible_amount | Currency | Collection-eligible amount (unlocked by customer payment) |
+| settled_amount | Currency | Actually settled (paid to beneficiary) |
+| paid_amount | Currency | Paid amount (legacy alias) |
 | outstanding_amount | Currency | Outstanding amount |
 | status | Select | Accrued / Payable / Partially Paid / Paid / Reversed / Adjusted |
 | original_entry | Link → Commission Entry | Original entry (legacy) |
@@ -218,6 +220,7 @@ Permissions: System Manager (full).
 | beneficiary_type | Select (reqd) | Sales Person / Sales Partner |
 | sales_person | Link → Sales Person | Internal beneficiary |
 | sales_partner | Link → Sales Partner | External beneficiary |
+| beneficiary | Data (read-only) | Resolved beneficiary name |
 | employee | Link → Employee | Employee settlement mapping |
 | supplier | Link → Supplier | Supplier settlement mapping |
 | period_from / period_to | Date | Settlement period |
@@ -231,6 +234,7 @@ Permissions: System Manager (full).
 | status | Select (read-only) | Draft / Submitted / Approved / Partly Settled / Settled / Cancelled |
 | settlement_document_type | Link → DocType | Linked output document type |
 | settlement_document | Dynamic Link | Additional Salary, Purchase Invoice, or other approved document |
+| settlement_journal_entry | Link → Journal Entry | Accrued-liability clearing Journal Entry |
 | entries | Table → Commission Settlement Item | Selected ledger entries |
 | approval_user / approval_date | Read-only | Approval audit |
 | remarks | Small Text | Comments |

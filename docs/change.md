@@ -99,6 +99,18 @@ This file records changes to the Sales Commission Management for ERPNext app so 
 - Runs during `bench migrate`; idempotent (skips already-series-named records).
 - Commission Plan uses `field:plan_name` (no rename needed).
 
+## Balance model & accrual reclassification (commission_entry, commission_settlement, commission_accrual_batch)
+
+- Added `collection_eligible_amount` and `settled_amount` fields to Commission Entry.
+- `update_commission_payment_status`: customer Payment Entry allocations now update `collection_eligible_amount` (collection eligibility), not `paid_amount` (actual payout). `paid_amount` is reserved for actual salesperson/supplier payouts.
+- `_available_balance_for_entry`: available = collection-eligible - reserved - actually settled; removed the earned-as-payable fallback.
+- `_validate_entries`: row-level locking (`SELECT ... FOR UPDATE`), beneficiary/company/currency/date consistency validation, explicit zero handling, defaults only on blank.
+- `_clear_accrued_liability`: reclassifies only `amount_included` (capped at unreclassified accrued balance, converted to company currency); accrued amount falls back to earned commission when unset.
+- Purchase Invoice item now debits the accrued liability account (no duplicate expense).
+- Accrued-liability Journal Entry linked to settlement via `settlement_journal_entry` and reversed on cancel.
+- `recompute_period_slabs`: aggregates attainment per beneficiary within each open Commission Period and updates Commission Target attainment.
+- `get_eligible_commission_entries`: whitelisted method for automatic fetching of eligible Commission Entries with balance enrichment.
+
 ## Notes for coders
 
 - Hook registration lives in `hooks.py` (`doc_events`, `scheduler_events`); run `bench migrate` + restart after changes.
