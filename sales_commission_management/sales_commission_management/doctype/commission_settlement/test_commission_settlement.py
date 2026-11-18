@@ -1,4 +1,4 @@
-﻿from frappe.tests import IntegrationTestCase
+from frappe.tests import IntegrationTestCase
 
 from sales_commission_management.sales_commission_management.doctype.commission_settlement.commission_settlement import (
     _available_balance_for_entry,

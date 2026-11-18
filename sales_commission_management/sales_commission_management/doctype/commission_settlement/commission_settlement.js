@@ -1,4 +1,4 @@
-﻿frappe.ui.form.on("Commission Settlement", {
+frappe.ui.form.on("Commission Settlement", {
     refresh: function (frm) {
         if (frm.doc.docstatus === 0) {
             frm.add_custom_button(__("Fetch Eligible Entries"), function () {
