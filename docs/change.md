@@ -11,7 +11,7 @@ This file records changes to the Sales Commission Management for ERPNext app so 
 - `_calculate_basis` supports `Net Total`, `Gross Profit` (posted cost), `Fixed Amount` (and `Fixed` alias), negative-basis and zero-basis handling, and `_apply_floor_cap` min/max caps.
 - `_calculate_slab_amount` supports both `from_amount`/`to_amount` and `min_attainment`/`max_attainment` field names, `Progressive` and `Single` methods.
 - `generate_commission_entries` prefers plan `contributors` over invoice `sales_team`; applies `grant_commission`, `include_free_items`, calculation methods (`Fixed Per Unit`, `Fixed Per Line`, `Fixed Per Invoice`, slabs, percentage), and external Sales Partner entries.
-- Added `_native_overlap_guard` to neutralize native ERPNext commission fields when `block_native_hrms_overlap` is enabled.
+- Added `_is_sales_person_group(name)` helper. `generate_commission_entries` now skips contributors whose `sales_person` is a group (non-earning container) and logs a warning; no commission entry is created with a group name as beneficiary. Existing group-named entries are not migrated. Report filters continue to expand groups to descendants via `_expand_sales_person`.
 - `handle_return_invoice` creates proportional clawback entries referencing the original invoice/entry.
 - `reverse_commission_entries` creates full negative (append-only) clawback entries on cancellation.
 - `update_commission_payment_status` allocates paid amounts proportionally and updates `paid_amount`, `outstanding_amount`, `status` (Payable / Partially Paid / Paid).

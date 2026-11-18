@@ -66,6 +66,16 @@ def _expand_sales_person(sales_person):
     return descendants or [sales_person]
 
 
+def _is_sales_person_group(name):
+    """Return True if the given Sales Person is a group (is_group == 1)."""
+    if not name:
+        return False
+    try:
+        return bool(frappe.get_cached_value("Sales Person", name, "is_group"))
+    except Exception:
+        return False
+
+
 def _resolve_posted_cost(item, company, company_currency):
     """Attempt to resolve actual posted cost for an item row from Stock Ledger Entry.
     Returns cost in company currency (positive outgoing cost), or None if no traceable source exists."""
@@ -582,6 +592,19 @@ def generate_commission_entries(doc, method=None):
                 "pool_code": "INTERNAL_SALES",
                 "_from_plan": False,
             })
+
+    # Exclude group sales persons: a group is a non-earning container, not a
+    # beneficiary. Only leaf (individual) sales persons earn commission entries.
+    filtered_contributors = []
+    for _rep in contributors:
+        if (_rep.get("contributor_type") or "Sales Person") == "Sales Person" and _is_sales_person_group(_rep.get("sales_person")):
+            frappe.logger("sales_commission_management").warning(
+                "Excluded group sales person '%s' from commission generation for %s",
+                _rep.get("sales_person"), getattr(doc, "name", None),
+            )
+            continue
+        filtered_contributors.append(_rep)
+    contributors = filtered_contributors
 
     external_partner = getattr(doc, "sales_partner", None)
     external_rate = flt(getattr(doc, "commission_rate", 0))
