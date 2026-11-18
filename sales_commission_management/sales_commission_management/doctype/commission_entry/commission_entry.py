@@ -473,6 +473,8 @@ def _insert_entry(
 
     commission_rate = flt(getattr(rule, "rate_percentage", 0))
     fixed_amount = flt(getattr(rule, "fixed_amount", 0))
+    # Store the calculation method from the actual Commission Rule.
+    calculation_method = getattr(rule, "calculation_method", None) or "Percentage"
 
     ev_key = _event_key(
         "Sales Invoice",
@@ -546,7 +548,7 @@ def _insert_entry(
                 {
                     "plan": plan.name,
                     "rule": getattr(rule, "name", None),
-                    "calculation_method": calc_method,
+                    "calculation_method": calculation_method,
                     "rate_percentage": flt(getattr(rule, "rate_percentage", 0)),
                     "fixed_amount": flt(getattr(rule, "fixed_amount", 0)),
                     "basis_name": basis_name,
