@@ -1226,20 +1226,23 @@ def handle_return_invoice(doc, method=None):
             flt(pr.source_qty)
         )
 
-    # Detect ambiguous return allocation: the same item_code appearing on more
-    # than one original Commission Entry cannot be matched unambiguously to a
-    # return row without an explicit original-row link.
-    entry_count_by_item = {}
+    # Detect ambiguous return allocation: ambiguity arises only when the same
+    # item_code appears on multiple *distinct* original invoice item rows.
+    # Multiple contributors sharing one invoice row are not ambiguous.
+    rows_by_item = {}
     for oe in original_entries:
-        entry_count_by_item[oe.item_code] = entry_count_by_item.get(oe.item_code, 0) + 1
+        rows_by_item.setdefault(oe.item_code, set()).add(
+            getattr(oe, "source_row", None)
+        )
 
     for orig in original_entries:
         item = orig.item_code
-        if entry_count_by_item.get(item, 0) > 1 and returned_qty.get(item, 0) > 0:
+        distinct_rows = rows_by_item.get(item, set())
+        if len(distinct_rows) > 1 and returned_qty.get(item, 0) > 0:
             frappe.throw(
                 _(
                     "Return allocation is ambiguous: item {0} appears on multiple "
-                    "original commission entries. Match returns to the original "
+                    "distinct original invoice rows. Match returns to the original "
                     "invoice item row explicitly."
                 ).format(item)
             )
@@ -1258,6 +1261,16 @@ def handle_return_invoice(doc, method=None):
 
         clawback_commission = -1 * flt(orig.earned_commission) * ratio
         clawback_basis = -1 * flt(orig.commission_basis_amount) * ratio
+
+        # Reverse the accrued portion of the original entry proportionally so
+        # Periodic Accrual settlement netting reflects the return.
+        try:
+            from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import _accrued_for_entry
+
+            _orig_accrued = _accrued_for_entry(orig.name)
+        except Exception:
+            _orig_accrued = flt(getattr(orig, "accrued_amount", 0))
+        clawback_accrued = -1 * flt(_orig_accrued) * ratio
 
         ev_key = _event_key(
             "Sales Invoice",
@@ -1308,6 +1321,7 @@ def handle_return_invoice(doc, method=None):
                 "earned_commission": flt(clawback_commission, 2),
                 "collection_eligible_amount": flt(clawback_commission, 2),
                 "payable_amount": flt(clawback_commission, 2),
+                "accrued_amount": flt(clawback_accrued, 2),
                 "paid_amount": 0,
                 "settled_amount": 0,
                 "outstanding_amount": flt(clawback_commission, 2),
@@ -1343,7 +1357,20 @@ def reverse_commission_entries(doc, method=None):
     )
     for entry in existing_entries:
         original = frappe.get_doc("Commission Entry", entry.name)
-        _orig_accrued = flt(getattr(original, "accrued_amount", 0))
+        try:
+            from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import _accrued_for_entry
+
+            _total_accrued = _accrued_for_entry(original.name)
+        except Exception:
+            _total_accrued = flt(getattr(original, "accrued_amount", 0))
+        # Subtract amounts already reclassified to payable by submitted settlements.
+        try:
+            from sales_commission_management.sales_commission_management.doctype.commission_settlement.commission_settlement import _reclassified_for_entry
+
+            _already_reclassified = _reclassified_for_entry(original.name)
+        except Exception:
+            _already_reclassified = 0.0
+        _orig_accrued = flt(_total_accrued - _already_reclassified)
         ev_key = _event_key(
             "Sales Invoice",
             doc.name,

@@ -49,19 +49,31 @@ def _resolve_settlement_accounts(company):
             expense = getattr(settings, "default_commission_expense_account", None)
         if not cost_center:
             cost_center = getattr(settings, "default_cost_center", None)
-    # Validate accounts belong to the settlement company where possible.
+    # Validate accounts belong to the settlement company and are usable ledgers.
     for acct in (accrued, payable, expense, payroll_expense):
-        if acct and company:
-            try:
-                acct_company = frappe.get_cached_value("Account", acct, "company")
-                if acct_company and acct_company != company:
-                    frappe.throw(
-                        _("Account {0} does not belong to company {1}.").format(
-                            acct, company
-                        )
-                    )
-            except Exception:
-                pass
+        if not acct or not company:
+            continue
+        if not frappe.db.exists("Account", acct):
+            frappe.throw(
+                _("Account {0} does not exist.").format(acct)
+            )
+        acct_company = frappe.get_cached_value("Account", acct, "company")
+        if acct_company and acct_company != company:
+            frappe.throw(
+                _("Account {0} does not belong to company {1}.").format(
+                    acct, company
+                )
+            )
+        disabled = frappe.get_cached_value("Account", acct, "disabled")
+        if disabled:
+            frappe.throw(
+                _("Account {0} is disabled.").format(acct)
+            )
+        is_group = frappe.get_cached_value("Account", acct, "is_group")
+        if is_group:
+            frappe.throw(
+                _("Account {0} is a group account, not a ledger account.").format(acct)
+            )
     return accrued, payable, expense, cost_center, payroll_expense
 
 
@@ -194,8 +206,12 @@ class CommissionSettlement(Document):
                         frappe.throw(
                             _("Posting date after period end for Commission Entry {0}.").format(entry_name)
                         )
+            except frappe.ValidationError:
+                raise
+            except frappe.DoesNotExistError:
+                continue
             except Exception as ex:
-                # Re-raise frappe throws; only swallow unexpected lookup errors.
+                # Only swallow unexpected lookup errors; re-raise validation.
                 msg = str(ex).lower()
                 if "throw" in msg or "mismatch" in msg or "exceeds" in msg:
                     raise
@@ -418,9 +434,11 @@ class CommissionSettlement(Document):
         accounting_mode = getattr(settings, "accounting_mode", None) if settings else None
 
         # Subledger Until Settlement: record expense directly against the supplier.
-        # Periodic Accrual: consume the accrued liability (no second expense).
+        # Periodic Accrual: the accrued liability was already debited by the
+        # separate reclassification Journal Entry, so the Purchase Invoice must
+        # debit the Commission Payable account (not the accrued liability again).
         if accounting_mode == "Periodic Accrual":
-            debit_account = accrued_account
+            debit_account = payable_account_pi
         else:
             debit_account = expense_account
 
@@ -576,7 +594,12 @@ def _available_balance_for_entry(entry_name, exclude_settlement=None):
 
     if accounting_mode == "Periodic Accrual":
         # Accrual availability: posted accrual minus previously reclassified.
-        accrued = flt(getattr(entry, "accrued_amount", 0))
+        try:
+            from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import _accrued_for_entry
+
+            accrued = _accrued_for_entry(entry_name)
+        except Exception:
+            accrued = flt(getattr(entry, "accrued_amount", 0))
         for r in returns or []:
             accrued += flt(r.get("accrued_amount", 0))
         reclassified_other = _reclassified_for_entry(entry_name, exclude_settlement=exclude_settlement)
