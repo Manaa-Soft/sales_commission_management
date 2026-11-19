@@ -1,4 +1,4 @@
-import frappe
+﻿import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, getdate
@@ -441,6 +441,9 @@ def _insert_entry(
     company_currency,
     txn_currency,
     exchange_rate,
+    selected_slab_rate=0.0,
+    attainment_before_pct=0.0,
+    attainment_after_pct=0.0,
     event_type="Invoice Earned",
 ):
     """Persist a Commission Entry with idempotency key."""
@@ -567,6 +570,15 @@ def _insert_entry(
                         if flt(basis_company)
                         else 0.0
                     ),
+                    "selected_slab_rate": flt(selected_slab_rate),
+                    "contributor_split_percentage": flt(split_share * 100.0),
+                    "effective_rate_after_split": (
+                        (flt(item_commission) / flt(basis_company) * 100.0)
+                        if flt(basis_company)
+                        else 0.0
+                    ),
+                    "attainment_before_pct": flt(attainment_before_pct, 6),
+                    "attainment_after_pct": flt(attainment_after_pct, 6),
                     "slab_calculation_method": getattr(
                         plan, "slab_calculation_method", None
                     ),
@@ -774,6 +786,9 @@ def generate_commission_entries(doc, method=None, force=False):
     _running_current_metric = [0.0]
 
     for item in doc.items or []:
+        _selected_slab_rate_val = 0.0
+        _prev_att_item = 0.0
+        _after_att_item = 0.0
         rule = _match_rule(plan, item.item_code, item.item_group)
         if not rule:
             continue
@@ -826,6 +841,9 @@ def generate_commission_entries(doc, method=None, force=False):
             else:
                 _prev_att = 0.0
                 _after_att = 0.0
+            _prev_att_item = _prev_att
+            _after_att_item = _after_att
+            _selected_slab_rate_val = _selected_slab_rate(slabs, slab_method, _after_att)
             item_commission = _calculate_slab_amount(
                 basis_company,
                 slabs,
@@ -885,6 +903,9 @@ def generate_commission_entries(doc, method=None, force=False):
                     company_currency,
                     txn_currency,
                     exchange_rate,
+                    selected_slab_rate=_selected_slab_rate_val,
+                    attainment_before_pct=_prev_att_item,
+                    attainment_after_pct=_after_att_item,
                 )
                 continue
 
@@ -916,6 +937,9 @@ def generate_commission_entries(doc, method=None, force=False):
                 company_currency,
                 txn_currency,
                 exchange_rate,
+                selected_slab_rate=_selected_slab_rate_val,
+                attainment_before_pct=_prev_att_item,
+                attainment_after_pct=_after_att_item,
             )
 
         # External sales partner from invoice. Skip if the same partner is already
@@ -950,6 +974,9 @@ def generate_commission_entries(doc, method=None, force=False):
                     company_currency,
                     txn_currency,
                     exchange_rate,
+                    selected_slab_rate=_selected_slab_rate_val,
+                    attainment_before_pct=_prev_att_item,
+                    attainment_after_pct=_after_att_item,
                 )
 
 
@@ -1035,13 +1062,52 @@ def _calculate_slab_amount(
         portion = basis_amount * (band_width / total_change) if total_change else 0.0
         rate = _rate(slab) / 100.0
         total += portion * rate
-    # Apply fixed bonus of the first crossed slab once.
-    for slab in slabs:
-        if _from(slab) <= after and before < _to(slab):
+    # Apply fixed bonus only when this invoice crosses into a slab, so a
+    # fixed bonus is not re-applied on every subsequent invoice in the same slab.
+    for idx, slab in enumerate(slabs):
+        crossed = False
+        if _from(slab) == 0:
+            if idx == 0 and before == 0 and after > 0:
+                crossed = True
+        else:
+            if before < _from(slab) <= after:
+                crossed = True
+        if crossed:
             if _fixed(slab):
                 total += _fixed(slab)
             break
     return flt(total, 2)
+
+
+def _selected_slab_rate(slabs, method, attainment_pct):
+    """Return the rate percentage of the slab applicable to attainment_pct."""
+    if not slabs:
+        return 0.0
+
+    def _from(s):
+        return flt(getattr(s, "min_attainment", None) or getattr(s, "from_amount", 0))
+
+    def _to(s):
+        v = getattr(s, "max_attainment", None)
+        if v is None:
+            v = getattr(s, "to_amount", None)
+        return flt(v) if v not in (None, 0) else float("inf")
+
+    slabs = sorted(slabs, key=_from)
+    attainment_pct = flt(attainment_pct or 0.0)
+    applicable = None
+    for slab in slabs:
+        if _from(slab) <= attainment_pct < _to(slab):
+            applicable = slab
+            break
+    if applicable is None and slabs:
+        if attainment_pct > _from(slabs[-1]):
+            applicable = slabs[-1]
+        else:
+            applicable = slabs[0]
+    if not applicable:
+        return 0.0
+    return flt(getattr(applicable, "rate_percentage", 0))
 
 
 def generate_commission_on_payment(payment_entry, method=None):
@@ -1105,6 +1171,7 @@ def handle_return_invoice(doc, method=None):
         fields=[
             "name",
             "item_code",
+            "source_row",
             "source_qty",
             "earned_commission",
             "commission_basis_amount",
@@ -1115,6 +1182,7 @@ def handle_return_invoice(doc, method=None):
             "plan",
             "transaction_currency",
             "company_currency",
+            "commission_currency",
             "conversion_rate_snapshot",
             "pool_code",
         ],
@@ -1150,18 +1218,20 @@ def handle_return_invoice(doc, method=None):
             "event_type": "Return Adjustment",
             "docstatus": 1,
         },
-        fields=["item_code", "source_qty"],
+        fields=["item_code", "source_row", "original_entry", "source_qty"],
     )
     for pr in prior_returns:
-        already_returned[pr.item_code] = already_returned.get(pr.item_code, 0) + abs(
+        key = pr.get("original_entry") or pr.get("source_row") or pr.get("item_code")
+        already_returned[key] = already_returned.get(key, 0) + abs(
             flt(pr.source_qty)
         )
 
     for orig in original_entries:
+        key = orig.get("name")
         oq = original_qty.get(orig.item_code, 0) or abs(flt(orig.source_qty)) or 1
         rq = returned_qty.get(orig.item_code, 0)
         # remaining quantity that can still be returned
-        remaining = max(0.0, oq - already_returned.get(orig.item_code, 0))
+        remaining = max(0.0, oq - already_returned.get(key, 0))
         effective_returned = min(rq, remaining) if remaining > 0 else 0
         ratio = (effective_returned / oq) if oq else 0.0
         if ratio < 0:
@@ -1205,13 +1275,16 @@ def handle_return_invoice(doc, method=None):
                 "beneficiary_type": orig.beneficiary_type,
                 "sales_person": orig.sales_person,
                 "sales_partner": orig.sales_partner,
+                "source_row": getattr(orig, "source_row", None),
+                "source_qty": flt(effective_returned, 6),
+                "original_entry": orig.name,
                 "item_code": orig.item_code,
                 "commission_basis": orig.commission_basis,
                 "commission_basis_amount": flt(clawback_basis, 2),
                 "transaction_currency": orig.transaction_currency,
                 "company_currency": orig.company_currency,
                 "conversion_rate_snapshot": orig.conversion_rate_snapshot,
-                "commission_currency": orig.company_currency,
+                "commission_currency": orig.get("commission_currency") or orig.get("company_currency"),
                 "earned_delta": flt(clawback_commission, 6),
                 "sales_invoice": doc.name,
                 "exchange_rate": orig.conversion_rate_snapshot,
@@ -1340,12 +1413,18 @@ def update_commission_payment_status(payment_entry, method=None):
             if allocated_raw == 0:
                 continue
             try:
-                received = flt(getattr(pe, "received_amount", 0))
-                base_received = flt(getattr(pe, "base_received_amount", 0))
-                if received:
-                    allocated = allocated_raw * (base_received / received)
-                else:
-                    allocated = allocated_raw
+                # allocated_raw is denominated in the party (receivable) account
+                # currency; convert to company currency using the source exchange
+                # rate (paid-from -> company), NOT the target (paid-to -> company)
+                # rate, which would mis-scale foreign-currency collections.
+                source_rate = flt(getattr(pe, "source_exchange_rate", 0))
+                if source_rate <= 0:
+                    frappe.throw(
+                        _("Invalid source exchange rate in Payment Entry {0}.").format(
+                            pe.name
+                        )
+                    )
+                allocated = allocated_raw * source_rate
             except Exception:
                 frappe.log_error(
                     frappe.get_traceback(),
