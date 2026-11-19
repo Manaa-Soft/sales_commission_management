@@ -1,4 +1,4 @@
-﻿import frappe
+import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, getdate
@@ -1426,15 +1426,14 @@ def reverse_commission_entries(doc, method=None):
 
         # Reverse the accrual GL if an accrual was posted for this entry.
         if _orig_accrued and abs(_orig_accrued) > 0.005:
-            try:
-                settings = (
-                    frappe.get_single("Commission Settings")
-                    if frappe.db.exists("Commission Settings")
-                    else None
+            if not frappe.db.exists("Commission Settings"):
+                frappe.throw(
+                    _("Commission Settings must be configured before invoice cancellation.")
                 )
-            except Exception:
-                settings = None
-            accounting_mode = getattr(settings, "accounting_mode", None) if settings else None
+            settings = frappe.get_single("Commission Settings")
+            accounting_mode = getattr(settings, "accounting_mode", None)
+            if accounting_mode not in ("Subledger Until Settlement", "Periodic Accrual"):
+                frappe.throw(_("Invalid Commission Accounting Mode."))
             if accounting_mode == "Periodic Accrual":
                 accrued_account = None
                 expense_account = None

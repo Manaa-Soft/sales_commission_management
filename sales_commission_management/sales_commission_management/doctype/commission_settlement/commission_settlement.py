@@ -1,4 +1,4 @@
-﻿import frappe
+import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, now_datetime, getdate
@@ -423,7 +423,9 @@ class CommissionSettlement(Document):
         self.total_payable = flt(total_payable, 2)
         self.total_reserved = flt(total_reserved, 2)
         self.total_paid = flt(total_paid, 2)
-        self.outstanding = flt(total_payable - total_paid, 2)
+        # amount_included already excludes previously settled amounts, so
+        # outstanding for this settlement is the included amount itself.
+        self.outstanding = flt(total_payable, 2)
 
     def _create_settlement_document(self):
         if self.settlement_method == "Additional Salary":

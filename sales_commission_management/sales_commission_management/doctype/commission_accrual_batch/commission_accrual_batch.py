@@ -103,9 +103,13 @@ class CommissionAccrualBatch(Document):
         self._validate_items()
 
     def on_submit(self):
-        self.status = "Submitted"
         self._create_journal_entry()
-        self.save(ignore_permissions=True)
+        update = {"status": "Submitted"}
+        if getattr(self, "journal_entry", None):
+            update["journal_entry"] = self.journal_entry
+        frappe.db.set_value(
+            "Commission Accrual Batch", self.name, update, update_modified=False
+        )
 
     def on_cancel(self):
         self._cancel_journal_entry()
