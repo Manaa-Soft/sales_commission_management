@@ -12,6 +12,19 @@ def _company_currency(company):
     )
 
 
+def _get_accounting_mode():
+    """Return the configured accounting mode. Fail closed if not configured."""
+    if not frappe.db.exists("Commission Settings"):
+        frappe.throw(
+            _("Commission Settings must be configured before settlement.")
+        )
+    settings = frappe.get_single("Commission Settings")
+    mode = getattr(settings, "accounting_mode", None)
+    if mode not in ("Subledger Until Settlement", "Periodic Accrual"):
+        frappe.throw(_("Invalid Commission Accounting Mode."))
+    return mode
+
+
 def _resolve_settlement_accounts(company):
     """Resolve GL accounts from the Commission Account Mapping child table.
 
@@ -255,21 +268,39 @@ class CommissionSettlement(Document):
             )
 
     def on_submit(self):
-        self.status = "Submitted"
-        self.approval_user = frappe.session.user
-        self.approval_date = now_datetime()
         self._create_settlement_document()
         self._clear_accrued_liability()
-        self.save(ignore_permissions=True)
+        # Persist system-generated fields via controlled DB update (Frappe v17
+        # does not allow saving submitted documents through the normal lifecycle).
+        update = {
+            "status": "Submitted",
+            "approval_user": frappe.session.user,
+            "approval_date": now_datetime(),
+        }
+        if getattr(self, "settlement_document_type", None):
+            update["settlement_document_type"] = self.settlement_document_type
+        if getattr(self, "settlement_document", None):
+            update["settlement_document"] = self.settlement_document
+        if getattr(self, "settlement_journal_entry", None):
+            update["settlement_journal_entry"] = self.settlement_journal_entry
+        frappe.db.set_value(
+            "Commission Settlement", self.name, update, update_modified=False
+        )
+        # Persist child-row reclassified_amount audit values.
+        for row in (self.entries or []):
+            if getattr(row, "name", None) and getattr(row, "reclassified_amount", None) is not None:
+                frappe.db.set_value(
+                    "Commission Settlement Item",
+                    row.name,
+                    "reclassified_amount",
+                    row.reclassified_amount,
+                    update_modified=False,
+                )
 
     def _clear_accrued_liability(self):
         # In Subledger Until Settlement mode there is no prior accrual posting,
         # so no reclassification Journal Entry should be created.
-        try:
-            settings = frappe.get_single("Commission Settings") if frappe.db.exists("Commission Settings") else None
-        except Exception:
-            settings = None
-        accounting_mode = getattr(settings, "accounting_mode", None) if settings else None
+        accounting_mode = _get_accounting_mode()
         if accounting_mode != "Periodic Accrual":
             return
 
@@ -370,8 +401,10 @@ class CommissionSettlement(Document):
             je = frappe.get_doc("Journal Entry", je_name)
             if je.docstatus == 1:
                 je.cancel()
-        self.status = "Cancelled"
-        self.save(ignore_permissions=True)
+        frappe.db.set_value(
+            "Commission Settlement", self.name,
+            {"status": "Cancelled"}, update_modified=False
+        )
 
     def _compute_totals(self):
         total_earned = 0.0
@@ -464,12 +497,8 @@ class CommissionSettlement(Document):
             self.company
         )
 
-        # Determine accounting mode.
-        try:
-            settings = frappe.get_single("Commission Settings") if frappe.db.exists("Commission Settings") else None
-        except Exception:
-            settings = None
-        accounting_mode = getattr(settings, "accounting_mode", None) if settings else None
+        # Determine accounting mode (fail closed).
+        accounting_mode = _get_accounting_mode()
 
         # Subledger Until Settlement: record expense directly against the supplier.
         # Periodic Accrual: the accrued liability was already debited by the
@@ -675,12 +704,8 @@ def _available_balance_for_entry(entry_name, exclude_settlement=None):
     collection_available = collection_eligible - reserved_other - settled
     if collection_available < 0:
         collection_available = 0.0
-    # Determine accounting mode.
-    try:
-        settings = frappe.get_single("Commission Settings") if frappe.db.exists("Commission Settings") else None
-    except Exception:
-        settings = None
-    accounting_mode = getattr(settings, "accounting_mode", None) if settings else None
+    # Determine accounting mode (fail closed).
+    accounting_mode = _get_accounting_mode()
 
     if accounting_mode == "Periodic Accrual":
         # Accrual availability: posted accrual minus previously reclassified.

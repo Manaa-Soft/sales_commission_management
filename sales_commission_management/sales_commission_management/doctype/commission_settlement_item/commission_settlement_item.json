@@ -26,7 +26,7 @@
   { "fieldname": "reserved_amount", "fieldtype": "Currency", "label": "Reserved Amount", "read_only": 1 },
   { "fieldname": "already_settled_amount", "fieldtype": "Currency", "label": "Already Settled Amount", "read_only": 1 },
   { "fieldname": "amount_included", "fieldtype": "Currency", "label": "Amount Included", "reqd": 1 },
-  { "fieldname": "reclassified_amount", "fieldtype": "Currency", "label": "Reclassified Amount", "read_only": 1 },
+  { "fieldname": "reclassified_amount", "fieldtype": "Currency", "label": "Reclassified Amount", "options": "commission_currency", "read_only": 1, "allow_on_submit": 1 },
   { "fieldname": "source_currency_amount", "fieldtype": "Currency", "label": "Source Currency Amount" },
   { "fieldname": "base_currency_amount", "fieldtype": "Currency", "label": "Base Currency Amount" }
  ],
