@@ -667,7 +667,7 @@ def neutralize_native_commission_on_update(doc, method=None):
             pass
 
 
-def generate_commission_entries(doc, method=None):
+def generate_commission_entries(doc, method=None, force=False):
     """Triggered on Sales Invoice / POS Invoice on_submit. Creates Commission Entry records."""
     if _is_return(doc):
         handle_return_invoice(doc, method)
@@ -688,6 +688,12 @@ def generate_commission_entries(doc, method=None):
         getattr(doc, "posting_date", None),
     )
     if not plan:
+        return
+
+    # Honor the plan's earning_event unless forced (e.g. by Payment Entry
+    # for "On Payment" plans).
+    earning_event = getattr(plan, "earning_event", None) or "On Invoice Submit"
+    if not force and earning_event != "On Invoice Submit":
         return
 
     # contributors: prefer plan contributors, else invoice sales team
@@ -964,6 +970,42 @@ def _calculate_slab_amount(basis_amount, slabs, method="Progressive"):
     return flt(total, 2)
 
 
+def generate_commission_on_payment(payment_entry, method=None):
+    """Generate commission entries for invoices whose plan uses
+    earning_event = 'On Payment', triggered by Payment Entry submit.
+
+    Entries are only created if they do not already exist for the invoice.
+    """
+    references = payment_entry.get("references") or []
+    invoices = set()
+    for ref in references:
+        if ref.reference_doctype == "Sales Invoice" and ref.reference_name:
+            invoices.add(ref.reference_name)
+
+    for invoice_name in invoices:
+        try:
+            inv = frappe.get_doc("Sales Invoice", invoice_name)
+        except Exception:
+            continue
+        # resolve plan
+        plan = _resolve_plan(
+            getattr(inv, "customer", None),
+            getattr(inv, "customer_group", None),
+            getattr(inv, "territory", None),
+            getattr(inv, "company", None),
+            getattr(inv, "posting_date", None),
+        )
+        if not plan:
+            continue
+        earning_event = getattr(plan, "earning_event", None) or "On Invoice Submit"
+        if earning_event != "On Payment":
+            continue
+        if _entries_exist(inv.name):
+            continue
+        # generate (force=True bypasses the earning_event check)
+        generate_commission_entries(inv, method=method, force=True)
+
+
 def handle_return_invoice(doc, method=None):
     """Handle credit notes / returns: create proportional clawback entries."""
     original_name = getattr(doc, "return_against", None)
@@ -1231,7 +1273,19 @@ def update_commission_payment_status(payment_entry, method=None):
         )
         for e in entries:
             earned = flt(e.earned_commission)
-            target_eligible = earned * cumulative_ratio
+            # Resolve payout_basis from the entry's plan.
+            payout_basis = "On Collection"
+            try:
+                plan_name = frappe.get_cached_value("Commission Entry", e.name, "plan")
+                if plan_name:
+                    payout_basis = frappe.get_cached_value("Commission Plan", plan_name, "payout_basis") or "On Collection"
+            except Exception:
+                payout_basis = "On Collection"
+            if payout_basis == "Accrued":
+                # Commission is eligible immediately upon earning (no payment gate).
+                target_eligible = earned
+            else:
+                target_eligible = earned * cumulative_ratio
             # clamp
             if target_eligible < 0:
                 target_eligible = 0.0

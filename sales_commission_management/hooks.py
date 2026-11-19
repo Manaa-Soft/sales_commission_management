@@ -29,7 +29,10 @@ doc_events = {
         "on_cancel": "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.reverse_commission_entries",
     },
     "Payment Entry": {
-        "on_submit": "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.update_commission_payment_status",
+        "on_submit": [
+            "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.generate_commission_on_payment",
+            "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.update_commission_payment_status",
+        ],
         "on_cancel": "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.update_commission_payment_status",
     },
 }
