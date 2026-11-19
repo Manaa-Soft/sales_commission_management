@@ -232,13 +232,20 @@ class CommissionSettlement(Document):
             except frappe.ValidationError:
                 raise
             except frappe.DoesNotExistError:
-                continue
+                frappe.throw(
+                    _("Commission Entry {0} not found.").format(entry_name)
+                )
             except Exception as ex:
-                # Only swallow unexpected lookup errors; re-raise validation.
-                msg = str(ex).lower()
-                if "throw" in msg or "mismatch" in msg or "exceeds" in msg:
-                    raise
-                continue
+                # Fail closed: do not silently skip an entry whose lookup failed.
+                frappe.log_error(
+                    frappe.get_traceback(),
+                    "Commission Settlement: entry lookup failed for {0}".format(entry_name),
+                )
+                frappe.throw(
+                    _("Could not retrieve Commission Entry {0}: {1}").format(
+                        entry_name, str(ex)
+                    )
+                )
 
     def before_submit(self):
         self._compute_totals()
@@ -280,10 +287,8 @@ class CommissionSettlement(Document):
             entry_name = getattr(row, "commission_ledger_entry", None)
             if not entry_name:
                 continue
-            try:
-                entry = frappe.get_doc("Commission Entry", entry_name)
-            except Exception:
-                continue
+            # Fail closed: if the entry cannot be retrieved, abort.
+            entry = frappe.get_doc("Commission Entry", entry_name)
             # Authoritative accrued balance comes from submitted Accrual Batches.
             accrued = flt(_batch_accrued_for_entry(entry_name))
             # Do not fall back to earned_commission: only reclassify amounts
