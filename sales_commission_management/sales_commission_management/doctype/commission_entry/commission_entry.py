@@ -562,6 +562,14 @@ def _insert_entry(
                     "item_commission": item_commission,
                     "conversion_rate": exchange_rate,
                     "commission_currency": commission_currency,
+                    "effective_rate_percentage": (
+                        (flt(item_commission) / flt(basis_company) * 100.0)
+                        if flt(basis_company)
+                        else 0.0
+                    ),
+                    "slab_calculation_method": getattr(
+                        plan, "slab_calculation_method", None
+                    ),
                 }
             ),
         }
@@ -983,7 +991,7 @@ def _calculate_slab_amount(
     if method == "Single":
         applicable = None
         for slab in slabs:
-            if _from(slab) <= attainment_pct <= _to(slab):
+            if _from(slab) <= attainment_pct < _to(slab):
                 applicable = slab
                 break
         if applicable is None and slabs:
@@ -1017,9 +1025,10 @@ def _calculate_slab_amount(
 
     total_change = after - before
     total = 0.0
-    for slab in slabs:
+    for idx, slab in enumerate(slabs):
+        slab_to = float("inf") if idx == len(slabs) - 1 else _to(slab)
         lo = max(_from(slab), before)
-        hi = min(_to(slab), after)
+        hi = min(slab_to, after)
         if hi <= lo:
             continue
         band_width = hi - lo
@@ -1090,26 +1099,26 @@ def handle_return_invoice(doc, method=None):
     if _entries_exist(doc.name):
         return
 
-        original_entries = frappe.get_all(
-            "Commission Entry",
-            filters={"sales_invoice": original_name, "docstatus": 1},
-            fields=[
-                "name",
-                "item_code",
-                "source_qty",
-                "earned_commission",
-                "commission_basis_amount",
-                "beneficiary_type",
-                "sales_person",
-                "sales_partner",
-                "commission_basis",
-                "plan",
-                "transaction_currency",
-                "company_currency",
-                "conversion_rate_snapshot",
-                "pool_code",
-            ],
-        )
+    original_entries = frappe.get_all(
+        "Commission Entry",
+        filters={"sales_invoice": original_name, "docstatus": 1},
+        fields=[
+            "name",
+            "item_code",
+            "source_qty",
+            "earned_commission",
+            "commission_basis_amount",
+            "beneficiary_type",
+            "sales_person",
+            "sales_partner",
+            "commission_basis",
+            "plan",
+            "transaction_currency",
+            "company_currency",
+            "conversion_rate_snapshot",
+            "pool_code",
+        ],
+    )
     if not original_entries:
         return
 
@@ -1297,7 +1306,7 @@ def update_commission_payment_status(payment_entry, method=None):
             inv = frappe.get_doc("Sales Invoice", invoice)
         except Exception:
             continue
-        invoice_total = abs(flt(inv.grand_total)) or 1.0
+        invoice_total = abs(flt(inv.base_grand_total)) or 1.0
         if invoice_total <= 0:
             continue
 
@@ -1331,13 +1340,18 @@ def update_commission_payment_status(payment_entry, method=None):
             if allocated_raw == 0:
                 continue
             try:
-                allocated = pe.get_allocated_amount_in_transaction_currency(
-                    allocated_raw, "Sales Invoice", invoice
-                )
+                received = flt(getattr(pe, "received_amount", 0))
+                base_received = flt(getattr(pe, "base_received_amount", 0))
+                if received:
+                    allocated = allocated_raw * (base_received / received)
+                else:
+                    allocated = allocated_raw
             except Exception:
                 frappe.log_error(
                     frappe.get_traceback(),
-                    "Commission: currency conversion failed for payment {}".format(pe_name),
+                    "Commission: currency conversion failed for payment {}".format(
+                        pe_name
+                    ),
                 )
                 continue
             cumulative_allocated += abs(allocated)
@@ -1350,9 +1364,17 @@ def update_commission_payment_status(payment_entry, method=None):
                 "sales_invoice": invoice,
                 "docstatus": 1,
             },
-            fields=["name", "earned_commission", "collection_eligible_amount",
-                    "settled_amount", "paid_amount", "status",
-                    "accrual_status", "collection_status", "settlement_status"],
+            fields=[
+                "name",
+                "earned_commission",
+                "collection_eligible_amount",
+                "settled_amount",
+                "paid_amount",
+                "status",
+                "accrual_status",
+                "collection_status",
+                "settlement_status",
+            ],
         )
         for e in entries:
             earned = flt(e.earned_commission)
@@ -1361,7 +1383,12 @@ def update_commission_payment_status(payment_entry, method=None):
             try:
                 plan_name = frappe.get_cached_value("Commission Entry", e.name, "plan")
                 if plan_name:
-                    payout_basis = frappe.get_cached_value("Commission Plan", plan_name, "payout_basis") or "On Collection"
+                    payout_basis = (
+                        frappe.get_cached_value(
+                            "Commission Plan", plan_name, "payout_basis"
+                        )
+                        or "On Collection"
+                    )
             except Exception:
                 payout_basis = "On Collection"
             if payout_basis == "Accrued":
@@ -1396,7 +1423,9 @@ def update_commission_payment_status(payment_entry, method=None):
                 {
                     "collection_eligible_amount": flt(target_eligible, 6),
                     "payable_amount": flt(target_eligible, 6),
-                    "payable_eligible_delta": flt(target_eligible - flt(e.collection_eligible_amount), 6),
+                    "payable_eligible_delta": flt(
+                        target_eligible - flt(e.collection_eligible_amount), 6
+                    ),
                     "outstanding_amount": flt(outstanding, 6),
                     "status": new_status,
                     "collection_status": coll_status,
@@ -1445,7 +1474,9 @@ def _sales_person_ancestors(name):
         seen.add(current)
         result.append(current)
         try:
-            parent = frappe.get_cached_value("Sales Person", current, "parent_sales_person")
+            parent = frappe.get_cached_value(
+                "Sales Person", current, "parent_sales_person"
+            )
         except Exception:
             parent = None
         if not parent or parent == current:
@@ -1492,7 +1523,7 @@ _METRIC_TO_BASIS = {
 def _plan_target_value(plan):
     """Sum target values from plan's targets child table."""
     total = 0.0
-    for t in (plan.get("targets") or []):
+    for t in plan.get("targets") or []:
         total += flt(getattr(t, "target_value", 0))
     return flt(total)
 
@@ -1503,7 +1534,12 @@ def _plan_cumulative_metric(plan, company, posting_date):
     multi-contributor invoices are not double-counted."""
     if not plan or not posting_date:
         return 0.0
-    period_type = getattr(plan, "commission_period", None) or "Monthly"
+    period_type = "Monthly"
+    for _t in getattr(plan, "targets", None) or []:
+        _pt = getattr(_t, "period_type", None)
+        if _pt:
+            period_type = _pt
+            break
     pf, pt = _period_range(posting_date, period_type)
     target_metric = getattr(plan, "target_metric", None)
     basis_name = _METRIC_TO_BASIS.get(target_metric)
@@ -1597,12 +1633,34 @@ def _recompute_one_period(period):
     # Update matching Commission Targets. For group (Sales Person container)
     # targets, aggregate across descendants.
     # First, collect all targets in this period's company.
+    target_filters = {"docstatus": ["!=", 2]}
+    if company:
+        try:
+            plan_names = (
+                frappe.get_all(
+                    "Commission Plan",
+                    filters={"company": company, "docstatus": ["!=", 2]},
+                    pluck="name",
+                )
+                or []
+            )
+        except Exception:
+            plan_names = []
+        if plan_names:
+            target_filters["parent"] = ["in", plan_names]
     try:
         all_targets = frappe.get_all(
             "Commission Target",
-            filters={"docstatus": ["!=", 2]},
-            fields=["name", "beneficiary_type", "sales_person", "sales_partner",
-                    "target_value", "target_metric"],
+            filters=target_filters,
+            fields=[
+                "name",
+                "beneficiary_type",
+                "sales_person",
+                "sales_partner",
+                "target_value",
+                "target_metric",
+                "parent",
+            ],
         )
     except Exception:
         all_targets = []
@@ -1621,9 +1679,7 @@ def _recompute_one_period(period):
             res = [name]
         else:
             try:
-                lft, rgt = frappe.get_cached_value(
-                    "Sales Person", name, ["lft", "rgt"]
-                )
+                lft, rgt = frappe.get_cached_value("Sales Person", name, ["lft", "rgt"])
             except Exception:
                 lft, rgt = None, None
             if not lft or not rgt:
@@ -1659,12 +1715,19 @@ def _recompute_one_period(period):
         seen2 = set()
         for e in entries or []:
             ebt = e.get("beneficiary_type")
-            eben = e.get("sales_person") if ebt == "Sales Person" else e.get("sales_partner")
+            eben = (
+                e.get("sales_person")
+                if ebt == "Sales Person"
+                else e.get("sales_partner")
+            )
             if ebt != bt or eben not in members:
                 continue
             if target_basis and e.get("commission_basis") != target_basis:
                 continue
-            src_key = (e.get("sales_invoice") or e.get("source_name"), e.get("source_row"))
+            src_key = (
+                e.get("sales_invoice") or e.get("source_name"),
+                e.get("source_row"),
+            )
             if src_key in seen2:
                 continue
             seen2.add(src_key)
