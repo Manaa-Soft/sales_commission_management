@@ -19,28 +19,23 @@ def _accrued_for_entry(entry_name, exclude_batch=None):
     so an entry can be accrued across multiple batches.
     """
     total = 0.0
-    try:
-        filters = {"commission_ledger_entry": entry_name, "docstatus": 1}
-        if exclude_batch:
-            filters["parent"] = ["!=", exclude_batch]
-        items = frappe.get_all(
-            "Commission Accrual Batch Item",
-            filters=filters,
-            fields=["accrual_amount", "parent"],
-        )
-    except Exception:
-        items = []
+    filters = {"commission_ledger_entry": entry_name, "docstatus": 1}
+    if exclude_batch:
+        filters["parent"] = ["!=", exclude_batch]
+    items = frappe.get_all(
+        "Commission Accrual Batch Item",
+        filters=filters,
+        fields=["accrual_amount", "parent"],
+    )
+    if not items:
+        return flt(total, 6)
     # Only count items whose parent batch is submitted.
-    submitted_parents = set()
-    try:
-        parents = frappe.get_all(
-            "Commission Accrual Batch",
-            filters={"name": ["in", [i["parent"] for i in items]] , "docstatus": 1},
-            pluck="name",
-        )
-        submitted_parents = set(parents or [])
-    except Exception:
-        submitted_parents = {i["parent"] for i in items}
+    parents = frappe.get_all(
+        "Commission Accrual Batch",
+        filters={"name": ["in", [i["parent"] for i in items]], "docstatus": 1},
+        pluck="name",
+    )
+    submitted_parents = set(parents or [])
     for i in items or []:
         if i.get("parent") in submitted_parents:
             total += flt(i.get("accrual_amount"))
@@ -51,29 +46,23 @@ def _accrued_for_entry(entry_name, exclude_batch=None):
 def _reclassified_for_entry(entry_name, exclude_settlement=None):
     """Sum of accrued liability already reclassified to payable by other settlements."""
     total = 0.0
-    try:
-        sett_filters = {"docstatus": 1}
-        if exclude_settlement:
-            sett_filters["name"] = ["!=", exclude_settlement]
-        settlements = frappe.get_all(
-            "Commission Settlement",
-            filters=sett_filters,
-            fields=["name", "settlement_journal_entry"],
-        )
-    except Exception:
-        settlements = []
+    sett_filters = {"docstatus": 1}
+    if exclude_settlement:
+        sett_filters["name"] = ["!=", exclude_settlement]
+    settlements = frappe.get_all(
+        "Commission Settlement",
+        filters=sett_filters,
+        fields=["name", "settlement_journal_entry"],
+    )
     if not settlements:
         return total
     valid_names = []
     for s in settlements:
         je_name = getattr(s, "settlement_journal_entry", None)
         if je_name:
-            try:
-                je_status = frappe.get_cached_value(
-                    "Journal Entry", je_name, "docstatus"
-                )
-            except Exception:
-                je_status = None
+            je_status = frappe.get_cached_value(
+                "Journal Entry", je_name, "docstatus"
+            )
             if je_status != 1:
                 continue
         else:
@@ -81,19 +70,20 @@ def _reclassified_for_entry(entry_name, exclude_settlement=None):
         valid_names.append(s.name)
     if not valid_names:
         return total
-    try:
-        items = frappe.get_all(
-            "Commission Settlement Item",
-            filters={
-                "commission_ledger_entry": entry_name,
-                "parent": ["in", valid_names],
-            },
-            fields=["amount_included"],
-        )
-    except Exception:
-        items = []
+    items = frappe.get_all(
+        "Commission Settlement Item",
+        filters={
+            "commission_ledger_entry": entry_name,
+            "parent": ["in", valid_names],
+        },
+        fields=["amount_included", "reclassified_amount"],
+    )
     for r in items or []:
-        total += flt(r.get("amount_included"))
+        ra = r.get("reclassified_amount")
+        if ra is None or ra == "":
+            total += flt(r.get("amount_included"))
+        else:
+            total += flt(ra)
     return flt(total, 6)
 
 
@@ -233,10 +223,14 @@ class CommissionAccrualBatch(Document):
                         )
 
             earned = flt(getattr(entry, "earned_delta", 0))
-            # For Return Adjustment entries, cap the accrual basis to the
-            # entry's accrued_amount so we never reverse more than actually accrued.
+            # For Return Adjustment entries, the accrued_amount is the authoritative
+            # accrual-reversal basis, including when it is zero: a return with no
+            # previously accrued amount must not generate an accrual reversal.
             entry_accrued = flt(getattr(entry, "accrued_amount", 0))
-            if entry_accrued != 0 and abs(entry_accrued) < abs(earned):
+            is_return = getattr(entry, "event_type", None) == "Return Adjustment"
+            if is_return:
+                earned = entry_accrued
+            elif entry_accrued != 0 and abs(entry_accrued) < abs(earned):
                 earned = entry_accrued
             accrued = _accrued_for_entry(
                 row.commission_ledger_entry, exclude_batch=self.name
@@ -351,14 +345,11 @@ class CommissionAccrualBatch(Document):
     def _cancel_journal_entry(self):
         if not getattr(self, "journal_entry", None):
             return
-        try:
-            je = frappe.get_doc("Journal Entry", self.journal_entry)
-            if je.docstatus == 1:
-                je.cancel()
-        except Exception:
-            frappe.log_error(
-                frappe.get_traceback(), "Commission Accrual Batch cancel failed"
-            )
+        # Fail closed: if the Journal Entry cannot be cancelled, abort batch
+        # cancellation so the subledger and GL stay synchronized.
+        je = frappe.get_doc("Journal Entry", self.journal_entry)
+        if je.docstatus == 1:
+            je.cancel()
 
 
 @frappe.whitelist()
@@ -396,11 +387,12 @@ def fetch_unaccrued_entries(company, period_from, period_to, exclude_batch=None)
     result = []
     for e in entries:
         earned = flt(e.get("earned_delta"))
-        # For Return Adjustment entries, the accrual reversal is capped at the
-        # entry's accrued_amount (the actually accrued portion of the original),
-        # never the full earned clawback.
+        # For Return Adjustment entries, the accrued_amount is the authoritative
+        # accrual-reversal basis, including when it is zero.
         entry_accrued = flt(e.get("accrued_amount", 0))
-        if entry_accrued != 0 and abs(entry_accrued) < abs(earned):
+        if e.get("event_type") == "Return Adjustment":
+            earned = entry_accrued
+        elif entry_accrued != 0 and abs(entry_accrued) < abs(earned):
             earned = entry_accrued
         accrued = _accrued_for_entry(e.get("name"), exclude_batch=exclude_batch)
         unaccrued = earned - accrued

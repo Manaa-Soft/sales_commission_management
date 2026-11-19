@@ -139,6 +139,20 @@ class CommissionSettlement(Document):
         Also validates beneficiary, company, currency and date consistency.
         """
         seen = set()
+        # Lock all Commission Entry rows in a consistent order to avoid deadlocks
+        # under concurrent settlement submissions. Do not suppress lock failures.
+        entry_names = sorted(
+            {
+                getattr(r, "commission_ledger_entry", None)
+                for r in (self.entries or [])
+                if getattr(r, "commission_ledger_entry", None)
+            }
+        )
+        for name in entry_names:
+            frappe.db.sql(
+                "SELECT name FROM `tabCommission Entry` WHERE name = %s FOR UPDATE",
+                (name,),
+            )
         for row in self.entries or []:
             entry_name = getattr(row, "commission_ledger_entry", None)
             if not entry_name:
@@ -150,15 +164,6 @@ class CommissionSettlement(Document):
                     ).format(entry_name)
                 )
             seen.add(entry_name)
-
-            # Row-level locking to guard against concurrent settlement submissions.
-            try:
-                frappe.db.sql(
-                    "SELECT name FROM `tabCommission Entry` WHERE name = %s FOR UPDATE",
-                    (entry_name,),
-                )
-            except Exception:
-                pass
 
             available = _available_balance_for_entry(
                 entry_name, exclude_settlement=self.name
@@ -265,10 +270,12 @@ class CommissionSettlement(Document):
         # converted to company (accounting) currency, and only up to the
         # accrued (unreclassified) balance of each entry.
         reclassify_total = 0.0
-        try:
-            from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import _accrued_for_entry as _batch_accrued_for_entry
-        except Exception:
-            _batch_accrued_for_entry = None
+        # Fail closed: the authoritative accrual ledger must be importable.
+        from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import _accrued_for_entry as _batch_accrued_for_entry
+
+        # Track the actual reclassified (commission-currency) amount per entry
+        # so it can be audited on the settlement item row.
+        row_reclassified = {}
         for row in self.entries or []:
             entry_name = getattr(row, "commission_ledger_entry", None)
             if not entry_name:
@@ -277,13 +284,8 @@ class CommissionSettlement(Document):
                 entry = frappe.get_doc("Commission Entry", entry_name)
             except Exception:
                 continue
-            # Authoritative accrued balance comes from submitted Accrual Batches,
-            # not from Commission Entry.accrued_amount (which is never updated by
-            # the batch on_submit).
-            if _batch_accrued_for_entry is not None:
-                accrued = flt(_batch_accrued_for_entry(entry_name))
-            else:
-                accrued = flt(getattr(entry, "accrued_amount", 0))
+            # Authoritative accrued balance comes from submitted Accrual Batches.
+            accrued = flt(_batch_accrued_for_entry(entry_name))
             # Do not fall back to earned_commission: only reclassify amounts
             # that have actually been accrued in Periodic Accrual mode.
             if accrued <= 0.005:
@@ -309,6 +311,7 @@ class CommissionSettlement(Document):
             else:
                 delta_company = flt(delta, 6)
             reclassify_total += delta_company
+            row_reclassified[entry_name] = delta
 
         if reclassify_total <= 0.005:
             return
@@ -343,10 +346,13 @@ class CommissionSettlement(Document):
         )
         je.insert(ignore_permissions=True)
         je.submit()
-        try:
-            self.settlement_journal_entry = je.name
-        except Exception:
-            pass
+        self.settlement_journal_entry = je.name
+        # Record the actually reclassified amount per item only after the JE
+        # was successfully submitted, so the audit trail matches the GL.
+        for row in self.entries or []:
+            entry_name = getattr(row, "commission_ledger_entry", None)
+            if entry_name in row_reclassified:
+                row.reclassified_amount = flt(row_reclassified[entry_name], 6)
 
     def on_cancel(self):
         # Reverse linked financial documents first; abort (propagate) if any
@@ -601,18 +607,14 @@ def _reclassified_for_entry(entry_name, exclude_settlement=None):
     for s in settlements:
         je_name = getattr(s, "settlement_journal_entry", None)
         if je_name:
-            try:
-                je_status = frappe.get_cached_value(
-                    "Journal Entry", je_name, "docstatus"
-                )
-            except Exception:
-                je_status = None
+            # Fail closed: an unreadable Journal Entry must not be treated as
+            # "not submitted" (which would silently drop a reclassification).
+            je_status = frappe.get_cached_value(
+                "Journal Entry", je_name, "docstatus"
+            )
             if je_status != 1:
                 continue
         else:
-            # No JE recorded: only count in Subledger mode where no
-            # reclassification is expected. To be safe, skip entries without a
-            # submitted JE so we never over-claim reclassification.
             continue
         valid_names.append(s.name)
     if not valid_names:
@@ -623,10 +625,14 @@ def _reclassified_for_entry(entry_name, exclude_settlement=None):
             "commission_ledger_entry": entry_name,
             "parent": ["in", valid_names],
         },
-        fields=["amount_included"],
+        fields=["amount_included", "reclassified_amount"],
     )
     for r in items or []:
-        total += flt(r.get("amount_included"))
+        ra = r.get("reclassified_amount")
+        if ra is None or ra == "":
+            total += flt(r.get("amount_included"))
+        else:
+            total += flt(ra)
     return flt(total, 6)
 
 
@@ -673,12 +679,11 @@ def _available_balance_for_entry(entry_name, exclude_settlement=None):
 
     if accounting_mode == "Periodic Accrual":
         # Accrual availability: posted accrual minus previously reclassified.
-        try:
-            from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import _accrued_for_entry
+        # Fail closed: an unreadable accrual history must abort, not be
+        # substituted with a stale Commission Entry.accrued_amount.
+        from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import _accrued_for_entry
 
-            accrued = _accrued_for_entry(entry_name)
-        except Exception:
-            accrued = flt(getattr(entry, "accrued_amount", 0))
+        accrued = _accrued_for_entry(entry_name)
         for r in returns or []:
             accrued += flt(r.get("accrued_amount", 0))
         reclassified_other = _reclassified_for_entry(entry_name, exclude_settlement=exclude_settlement)
@@ -776,6 +781,7 @@ def get_eligible_commission_entries(
         if collection_eligible <= 0:
             collection_eligible = flt(e.get("payable_amount"))
         settled = flt(e.get("settled_amount"))
+        reserved_other = _reserved_for_entry(entry_name, exclude_settlement=exclude_settlement)
         result.append(
             {
                 "commission_ledger_entry": entry_name,
