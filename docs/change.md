@@ -111,6 +111,14 @@ This file records changes to the Sales Commission Management for ERPNext app so 
 - `recompute_period_slabs`: aggregates attainment per beneficiary within each open Commission Period and updates Commission Target attainment.
 - `get_eligible_commission_entries`: whitelisted method for automatic fetching of eligible Commission Entries with balance enrichment.
 
+## Collection eligibility vs payout separation
+
+- `_insert_entry`: at invoice submission, `collection_eligible_amount = 0`, `payable_amount = 0`, `outstanding_amount = 0`, `status = "Earned"`. Only `earned_commission` is recorded.
+- Added `accrual_status`, `collection_status`, `settlement_status` fields to Commission Entry for independent tracking.
+- `update_commission_payment_status`: recalculates collection eligibility from all submitted Payment Entries (idempotent, supports multiple payments and cancellation). Uses `get_allocated_amount_in_transaction_currency` for currency conversion. `outstanding = collection_eligible - settled`.
+- `_available_balance_for_entry`: available = min(collection_available, accrual_available) where collection_available = eligible - reserved - settled, accrual_available = accrued - reclassified.
+- Calculation snapshot enhanced with `calculation_method`, `rate_percentage`, `fixed_amount`, `basis_after_split`, `conversion_rate`, `commission_currency`, `split_source`.
+
 ## Notes for coders
 
 - Hook registration lives in `hooks.py` (`doc_events`, `scheduler_events`); run `bench migrate` + restart after changes.

@@ -1,4 +1,4 @@
-import frappe
+﻿import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, now_datetime, getdate
@@ -485,10 +485,22 @@ def _available_balance_for_entry(entry_name, exclude_settlement=None):
     entry = frappe.get_doc("Commission Entry", entry_name)
     collection_eligible = flt(getattr(entry, "collection_eligible_amount", 0))
     if collection_eligible <= 0:
-        collection_eligible = flt(getattr(entry, "paid_amount", 0))
+        collection_eligible = flt(getattr(entry, "payable_amount", 0))
     settled = flt(getattr(entry, "settled_amount", 0))
     reserved_other = _reserved_for_entry(entry_name, exclude_settlement=exclude_settlement)
-    available = collection_eligible - reserved_other - settled
+    collection_available = collection_eligible - reserved_other - settled
+    if collection_available < 0:
+        collection_available = 0.0
+    # Accrual availability: posted accrual minus previously reclassified.
+    accrued = flt(getattr(entry, "accrued_amount", 0))
+    if accrued <= 0:
+        accrued = flt(getattr(entry, "earned_commission", 0))
+    reclassified_other = _reclassified_for_entry(entry_name, exclude_settlement=exclude_settlement)
+    accrual_available = accrued - reclassified_other
+    if accrual_available < 0:
+        accrual_available = 0.0
+    # Settlement availability is the intersection of collection and accrual.
+    available = min(collection_available, accrual_available)
     if available < 0:
         available = 0.0
     return flt(available, 2)
@@ -566,16 +578,15 @@ def get_eligible_commission_entries(
             continue
         entry_name = e.get("name")
         earned = flt(e.get("earned_commission"))
-        collection_eligible = flt(e.get("collection_eligible_amount"))
-        if collection_eligible <= 0:
-            collection_eligible = flt(e.get("paid_amount"))
-        settled = flt(e.get("settled_amount"))
-        reserved_other = _reserved_for_entry(
+        available = _available_balance_for_entry(
             entry_name, exclude_settlement=exclude_settlement
         )
-        available = collection_eligible - reserved_other - settled
         if available <= 0.005:
             continue
+        collection_eligible = flt(e.get("collection_eligible_amount"))
+        if collection_eligible <= 0:
+            collection_eligible = flt(e.get("payable_amount"))
+        settled = flt(e.get("settled_amount"))
         result.append(
             {
                 "commission_ledger_entry": entry_name,

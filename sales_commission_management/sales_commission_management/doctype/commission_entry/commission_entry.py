@@ -1,4 +1,4 @@
-import frappe
+﻿import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, getdate
@@ -441,7 +441,6 @@ def _insert_entry(
     company_currency,
     txn_currency,
     exchange_rate,
-    status,
     event_type="Invoice Earned",
 ):
     """Persist a Commission Entry with idempotency key."""
@@ -540,9 +539,14 @@ def _insert_entry(
             "exchange_rate": exchange_rate,
             "earned_commission": flt(item_commission, 2),
             "payable_amount": 0,
+            "collection_eligible_amount": 0,
+            "settled_amount": 0,
             "paid_amount": 0,
-            "outstanding_amount": flt(item_commission, 2),
-            "status": status,
+            "outstanding_amount": 0,
+            "status": "Earned",
+            "accrual_status": "Not Accrued",
+            "collection_status": "Not Eligible",
+            "settlement_status": "Not Reserved",
             "remarks": "",
             "calculation_snapshot": frappe.as_json(
                 {
@@ -835,7 +839,6 @@ def generate_commission_entries(doc, method=None):
                     company_currency,
                     txn_currency,
                     exchange_rate,
-                    "Accrued",
                 )
                 continue
 
@@ -867,7 +870,6 @@ def generate_commission_entries(doc, method=None):
                 company_currency,
                 txn_currency,
                 exchange_rate,
-                "Accrued",
             )
 
         # External sales partner from invoice. Skip if the same partner is already
@@ -902,7 +904,6 @@ def generate_commission_entries(doc, method=None):
                     company_currency,
                     txn_currency,
                     exchange_rate,
-                    "Accrued",
                 )
 
 
@@ -1157,34 +1158,24 @@ def reverse_commission_entries(doc, method=None):
 
 
 def update_commission_payment_status(payment_entry, method=None):
-    """On Payment Entry submit/cancel, update collection eligibility.
+    """On Payment Entry submit/cancel, recompute collection eligibility.
 
-    Customer Payment Entry allocations increase collection_eligible_amount
+    Customer Payment Entry allocations unlock collection_eligible_amount
     (commission unlocked by customer collection), NOT paid_amount (actual
     payout to the beneficiary). This keeps customer-collection eligibility
     separate from salesperson/supplier payout.
+
+    Eligibility is recalculated from ALL submitted Payment Entries for the
+    invoice, so multiple payments, partial payments, and cancellations are
+    handled correctly and idempotently.
     """
-    is_cancel = getattr(payment_entry, "docstatus", 0) == 2
     references = payment_entry.get("references") or []
+    invoices = set()
     for ref in references:
-        if ref.reference_doctype != "Sales Invoice":
-            continue
-        invoice = ref.reference_name
-        allocated_raw = flt(ref.allocated_amount)
-        if allocated_raw == 0:
-            continue
+        if ref.reference_doctype == "Sales Invoice" and ref.reference_name:
+            invoices.add(ref.reference_name)
 
-        # Convert allocated amount to invoice (transaction) currency using
-        # ERPNext's native conversion helper to avoid unit mismatches.
-        try:
-            allocated = payment_entry.get_allocated_amount_in_transaction_currency(
-                allocated_raw, "Sales Invoice", invoice
-            )
-        except Exception:
-            allocated = allocated_raw
-        if is_cancel:
-            allocated = -abs(allocated)
-
+    for invoice in invoices:
         try:
             inv = frappe.get_doc("Sales Invoice", invoice)
         except Exception:
@@ -1192,12 +1183,42 @@ def update_commission_payment_status(payment_entry, method=None):
         invoice_total = abs(flt(inv.grand_total)) or 1.0
         if invoice_total <= 0:
             continue
-        proportion = min(max(abs(allocated) / invoice_total, 0.0), 1.0)
-        if is_cancel:
-            proportion = -proportion
 
-        # Do NOT filter by status: cancellation must reverse even entries that
-        # have since become "Paid", otherwise collection allocations leak.
+        # Compute cumulative collection ratio from all submitted Payment Entries
+        # referencing this invoice, converted to invoice transaction currency.
+        cumulative_allocated = 0.0
+        try:
+            all_refs = frappe.get_all(
+                "Payment Entry Reference",
+                filters={
+                    "reference_doctype": "Sales Invoice",
+                    "reference_name": invoice,
+                },
+                fields=["allocated_amount", "parent"],
+            )
+        except Exception:
+            all_refs = []
+        for r in all_refs or []:
+            pe_name = r.get("parent")
+            try:
+                pe = frappe.get_doc("Payment Entry", pe_name)
+            except Exception:
+                continue
+            if getattr(pe, "docstatus", 0) != 1:
+                continue
+            allocated_raw = flt(r.get("allocated_amount"))
+            if allocated_raw == 0:
+                continue
+            try:
+                allocated = pe.get_allocated_amount_in_transaction_currency(
+                    allocated_raw, "Sales Invoice", invoice
+                )
+            except Exception:
+                allocated = allocated_raw
+            cumulative_allocated += abs(allocated)
+
+        cumulative_ratio = min(max(cumulative_allocated / invoice_total, 0.0), 1.0)
+
         entries = frappe.get_all(
             "Commission Entry",
             filters={
@@ -1205,35 +1226,43 @@ def update_commission_payment_status(payment_entry, method=None):
                 "docstatus": 1,
             },
             fields=["name", "earned_commission", "collection_eligible_amount",
-                    "settled_amount", "paid_amount", "status"],
+                    "settled_amount", "paid_amount", "status",
+                    "accrual_status", "collection_status", "settlement_status"],
         )
         for e in entries:
             earned = flt(e.earned_commission)
-            add_eligible = earned * proportion
-            new_eligible = flt(e.collection_eligible_amount) + add_eligible
-            if new_eligible < 0:
-                new_eligible = 0.0
-            if new_eligible > earned:
-                new_eligible = earned
-            outstanding = earned - new_eligible
-            if outstanding <= 0.005:
-                new_status = "Payable" if new_eligible > 0 else "Accrued"
-            elif new_eligible > 0:
+            target_eligible = earned * cumulative_ratio
+            # clamp
+            if target_eligible < 0:
+                target_eligible = 0.0
+            if target_eligible > earned:
+                target_eligible = earned
+            settled = flt(e.settled_amount or e.paid_amount)
+            outstanding = target_eligible - settled
+            if outstanding < 0:
+                outstanding = 0.0
+            if target_eligible <= 0:
+                coll_status = "Not Eligible"
+            elif target_eligible < earned:
+                coll_status = "Partially Eligible"
+            else:
+                coll_status = "Eligible"
+            if settled > 0:
+                new_status = "Partially Paid" if target_eligible > settled else "Paid"
+            elif target_eligible > 0:
                 new_status = "Payable"
             else:
-                new_status = "Accrued"
-            # preserve paid status if actually paid
-            if flt(e.settled_amount) > 0 or flt(e.paid_amount) > 0:
-                new_status = "Partially Paid" if new_eligible > flt(e.settled_amount or e.paid_amount) else "Paid"
+                new_status = "Earned"
             frappe.db.set_value(
                 "Commission Entry",
                 e.name,
                 {
-                    "collection_eligible_amount": flt(new_eligible, 6),
-                    "payable_amount": flt(new_eligible, 6),
-                    "payable_eligible_delta": flt(add_eligible, 6),
+                    "collection_eligible_amount": flt(target_eligible, 6),
+                    "payable_amount": flt(target_eligible, 6),
+                    "payable_eligible_delta": flt(target_eligible - flt(e.collection_eligible_amount), 6),
                     "outstanding_amount": flt(outstanding, 6),
                     "status": new_status,
+                    "collection_status": coll_status,
                 },
                 update_modified=False,
             )

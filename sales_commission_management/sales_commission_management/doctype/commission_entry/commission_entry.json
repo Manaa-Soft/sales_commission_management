@@ -1,4 +1,4 @@
-{
+﻿{
  "actions": [],
  "allow_rename": 0,
  "creation": "2026-01-01 00:00:00.000000",
@@ -62,6 +62,9 @@
   "settled_amount",
   "outstanding_amount",
   "status",
+  "accrual_status",
+  "collection_status",
+  "settlement_status",
   "original_entry",
   "remarks"
  ],
@@ -448,7 +451,31 @@
    "fieldname": "status",
    "fieldtype": "Select",
    "label": "Status",
-   "options": "Accrued\nPayable\nPartially Paid\nPaid\nReversed\nAdjusted",
+   "options": "Earned\nAccrued\nPayable\nPartially Paid\nPaid\nReserved\nReversed\nAdjusted",
+   "read_only": 1
+  },
+  {
+   "fieldname": "accrual_status",
+   "fieldtype": "Select",
+   "label": "Accrual Status",
+   "options": "Not Accrued\nPartially Accrued\nAccrued\nReversed",
+   "default": "Not Accrued",
+   "read_only": 1
+  },
+  {
+   "fieldname": "collection_status",
+   "fieldtype": "Select",
+   "label": "Collection Status",
+   "options": "Not Eligible\nPartially Eligible\nEligible",
+   "default": "Not Eligible",
+   "read_only": 1
+  },
+  {
+   "fieldname": "settlement_status",
+   "fieldtype": "Select",
+   "label": "Settlement Status",
+   "options": "Not Reserved\nPartially Reserved\nReserved\nPartially Paid\nPaid",
+   "default": "Not Reserved",
    "read_only": 1
   },
   {
