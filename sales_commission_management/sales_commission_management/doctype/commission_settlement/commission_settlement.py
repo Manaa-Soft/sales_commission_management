@@ -1,4 +1,4 @@
-import frappe
+﻿import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, now_datetime, getdate
@@ -10,6 +10,42 @@ def _company_currency(company):
         if company
         else None
     )
+
+
+def _resolve_settlement_accounts(company):
+    """Resolve GL accounts from the Commission Account Mapping child table.
+
+    Returns (accrued_account, payable_account, expense_account, cost_center).
+    Falls back to Commission Settings single-doc fields for backward compat.
+    """
+    accrued = None
+    payable = None
+    expense = None
+    cost_center = None
+    try:
+        settings = (
+            frappe.get_single("Commission Settings")
+            if frappe.db.exists("Commission Settings")
+            else None
+        )
+    except Exception:
+        settings = None
+    if settings:
+        for row in (getattr(settings, "account_mappings", None) or []):
+            if getattr(row, "company", None) == company and getattr(row, "enabled", 1):
+                accrued = getattr(row, "accrued_commission_payable_account", None) or accrued
+                expense = getattr(row, "commission_expense_account", None) or expense
+                cost_center = getattr(row, "cost_center", None) or cost_center
+                break
+        if not accrued:
+            accrued = getattr(settings, "default_accrued_liability_account", None)
+        if not payable:
+            payable = getattr(settings, "default_commission_payable_account", None)
+        if not expense:
+            expense = getattr(settings, "default_commission_expense_account", None)
+        if not cost_center:
+            cost_center = getattr(settings, "default_cost_center", None)
+    return accrued, payable, expense, cost_center
 
 
 class CommissionSettlement(Document):
@@ -204,27 +240,14 @@ class CommissionSettlement(Document):
 
         if reclassify_total <= 0.005:
             return
-        try:
-            settings = (
-                frappe.get_single("Commission Settings")
-                if frappe.db.exists("Commission Settings")
-                else None
-            )
-        except Exception:
-            settings = None
-        accrued_account = None
-        payable_account = None
-        if settings:
-            accrued_account = (
-                getattr(settings, "default_accrued_liability_account", None) or None
-            )
-            payable_account = (
-                getattr(settings, "default_commission_payable_account", None) or None
-            )
+        accrued_account, payable_account, _expense, _cc = _resolve_settlement_accounts(
+            self.company
+        )
         if not accrued_account or not payable_account:
             frappe.throw(
                 _(
-                    "Accrued liability and commission payable accounts must be configured in Commission Settings before settlement."
+                    "Accrued liability and commission payable accounts must be configured "
+                    "in Commission Settings (account mappings) before settlement."
                 )
             )
         je = frappe.get_doc(
@@ -358,17 +381,9 @@ class CommissionSettlement(Document):
 
         # Consume the accrued commission liability rather than recording a second
         # expense: debit the accrued liability account on the item line.
-        accrued_account = None
-        try:
-            settings = (
-                frappe.get_single("Commission Settings")
-                if frappe.db.exists("Commission Settings")
-                else None
-            )
-        except Exception:
-            settings = None
-        if settings:
-            accrued_account = getattr(settings, "default_accrued_liability_account", None)
+        accrued_account, _payable, _expense, _cc = _resolve_settlement_accounts(
+            self.company
+        )
 
         item_row = {
             "item_code": item_code,

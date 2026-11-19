@@ -1289,8 +1289,10 @@ def handle_return_invoice(doc, method=None):
                 "sales_invoice": doc.name,
                 "exchange_rate": orig.conversion_rate_snapshot,
                 "earned_commission": flt(clawback_commission, 2),
-                "payable_amount": 0,
+                "collection_eligible_amount": flt(clawback_commission, 2),
+                "payable_amount": flt(clawback_commission, 2),
                 "paid_amount": 0,
+                "settled_amount": 0,
                 "outstanding_amount": flt(clawback_commission, 2),
                 "status": "Reversed" if ratio >= 0.999 else "Adjusted",
                 "original_entry": orig.name,
@@ -1346,14 +1348,48 @@ def reverse_commission_entries(doc, method=None):
         clawback.earned_commission = -1 * flt(original.earned_commission)
         clawback.commission_basis_amount = -1 * flt(original.commission_basis_amount)
         clawback.earned_delta = -1 * flt(original.earned_delta)
+        # Reverse all financial balances, not just earned.
+        clawback.collection_eligible_amount = -1 * flt(original.collection_eligible_amount)
+        clawback.payable_amount = -1 * flt(original.payable_amount)
+        clawback.payable_eligible_delta = -1 * flt(original.payable_eligible_delta)
+        clawback.reserved_delta = -1 * flt(original.reserved_delta)
+        clawback.paid_delta = -1 * flt(original.paid_delta)
+        clawback.settled_amount = -1 * flt(original.settled_amount)
+        clawback.paid_amount = -1 * flt(original.paid_amount)
         clawback.outstanding_amount = clawback.earned_commission
         clawback.status = "Reversed"
+        clawback.collection_status = "Not Eligible"
+        clawback.settlement_status = "Not Reserved"
         clawback.remarks = f"Clawback due to cancellation of {doc.name}"
         try:
             clawback.insert(ignore_permissions=True)
         except frappe.DuplicateEntryError:
             continue
         clawback.submit()
+
+        # Mark the original entry as reversed so it is excluded from settlement
+        # and its balances are zeroed (prevents double-availability).
+        try:
+            frappe.db.set_value(
+                "Commission Entry",
+                original.name,
+                {
+                    "status": "Reversed",
+                    "collection_eligible_amount": 0,
+                    "payable_amount": 0,
+                    "outstanding_amount": 0,
+                    "collection_status": "Not Eligible",
+                    "settlement_status": "Not Reserved",
+                },
+                update_modified=False,
+            )
+        except Exception:
+            frappe.log_error(
+                frappe.get_traceback(),
+                "Commission: failed to mark original entry {0} as reversed".format(
+                    original.name
+                ),
+            )
 
 
 def update_commission_payment_status(payment_entry, method=None):
