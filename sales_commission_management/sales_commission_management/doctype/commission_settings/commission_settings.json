@@ -19,6 +19,9 @@
   "allow_manual_adjustments",
   "rounding_policy",
   "default_cost_center",
+  "default_commission_payable_account",
+  "default_accrued_liability_account",
+  "default_commission_expense_account",
   "account_mappings_section",
   "account_mappings"
  ],
@@ -38,8 +41,10 @@
   { "fieldname": "default_cost_center", "fieldtype": "Link", "label": "Default Cost Center", "options": "Cost Center" },
   { "fieldname": "default_salary_component", "fieldtype": "Link", "label": "Default Salary Component", "options": "Salary Component" },
   { "fieldname": "default_commission_item", "fieldtype": "Link", "label": "Default Commission Item", "options": "Item" },
-  { "fieldname": "default_commission_payable_account", "fieldtype": "Link", "label": "Default Commission Payable Account", "options": "Account" },
-  { "fieldname": "account_mappings_section", "fieldtype": "Section Break", "label": "Company Account Mappings" },
+   { "fieldname": "default_commission_payable_account", "fieldtype": "Link", "label": "Default Commission Payable Account", "options": "Account" },
+   { "fieldname": "default_accrued_liability_account", "fieldtype": "Link", "label": "Default Accrued Liability Account", "options": "Account" },
+   { "fieldname": "default_commission_expense_account", "fieldtype": "Link", "label": "Default Commission Expense Account", "options": "Account" },
+   { "fieldname": "account_mappings_section", "fieldtype": "Section Break", "label": "Company Account Mappings" },
   { "fieldname": "account_mappings", "fieldtype": "Table", "label": "Account Mappings", "options": "Commission Account Mapping" }
  ],
  "index_web_pages_for_search": 1,

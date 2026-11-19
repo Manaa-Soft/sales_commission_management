@@ -15,13 +15,15 @@ def _company_currency(company):
 def _resolve_settlement_accounts(company):
     """Resolve GL accounts from the Commission Account Mapping child table.
 
-    Returns (accrued_account, payable_account, expense_account, cost_center).
-    Falls back to Commission Settings single-doc fields for backward compat.
+    Returns (accrued_account, payable_account, expense_account, cost_center,
+    payroll_expense_account). Falls back to Commission Settings single-doc fields
+    for backward compat.
     """
     accrued = None
     payable = None
     expense = None
     cost_center = None
+    payroll_expense = None
     try:
         settings = (
             frappe.get_single("Commission Settings")
@@ -34,7 +36,9 @@ def _resolve_settlement_accounts(company):
         for row in (getattr(settings, "account_mappings", None) or []):
             if getattr(row, "company", None) == company and getattr(row, "enabled", 1):
                 accrued = getattr(row, "accrued_commission_payable_account", None) or accrued
+                payable = getattr(row, "commission_payable_account", None) or payable
                 expense = getattr(row, "commission_expense_account", None) or expense
+                payroll_expense = getattr(row, "payroll_commission_expense_account", None) or payroll_expense
                 cost_center = getattr(row, "cost_center", None) or cost_center
                 break
         if not accrued:
@@ -45,7 +49,20 @@ def _resolve_settlement_accounts(company):
             expense = getattr(settings, "default_commission_expense_account", None)
         if not cost_center:
             cost_center = getattr(settings, "default_cost_center", None)
-    return accrued, payable, expense, cost_center
+    # Validate accounts belong to the settlement company where possible.
+    for acct in (accrued, payable, expense, payroll_expense):
+        if acct and company:
+            try:
+                acct_company = frappe.get_cached_value("Account", acct, "company")
+                if acct_company and acct_company != company:
+                    frappe.throw(
+                        _("Account {0} does not belong to company {1}.").format(
+                            acct, company
+                        )
+                    )
+            except Exception:
+                pass
+    return accrued, payable, expense, cost_center, payroll_expense
 
 
 class CommissionSettlement(Document):
@@ -200,6 +217,16 @@ class CommissionSettlement(Document):
         self.save(ignore_permissions=True)
 
     def _clear_accrued_liability(self):
+        # In Subledger Until Settlement mode there is no prior accrual posting,
+        # so no reclassification Journal Entry should be created.
+        try:
+            settings = frappe.get_single("Commission Settings") if frappe.db.exists("Commission Settings") else None
+        except Exception:
+            settings = None
+        accounting_mode = getattr(settings, "accounting_mode", None) if settings else None
+        if accounting_mode != "Periodic Accrual":
+            return
+
         # Reclassify only the portion actually settled in this settlement,
         # converted to company (accounting) currency, and only up to the
         # accrued (unreclassified) balance of each entry.
@@ -213,8 +240,8 @@ class CommissionSettlement(Document):
             except Exception:
                 continue
             accrued = flt(getattr(entry, "accrued_amount", 0))
-            if accrued <= 0.005:
-                accrued = flt(getattr(entry, "earned_commission", 0))
+            # Do not fall back to earned_commission: only reclassify amounts
+            # that have actually been accrued in Periodic Accrual mode.
             if accrued <= 0.005:
                 continue
             already = _reclassified_for_entry(
@@ -240,7 +267,7 @@ class CommissionSettlement(Document):
 
         if reclassify_total <= 0.005:
             return
-        accrued_account, payable_account, _expense, _cc = _resolve_settlement_accounts(
+        accrued_account, payable_account, _expense, _cc, _payroll = _resolve_settlement_accounts(
             self.company
         )
         if not accrued_account or not payable_account:
@@ -379,20 +406,33 @@ class CommissionSettlement(Document):
         if not item_code:
             item_code = frappe.db.get_value("Item", {"item_name": "Commission"}, "name")
 
-        # Consume the accrued commission liability rather than recording a second
-        # expense: debit the accrued liability account on the item line.
-        accrued_account, _payable, _expense, _cc = _resolve_settlement_accounts(
+        accrued_account, payable_account_pi, expense_account, _cc, _payroll = _resolve_settlement_accounts(
             self.company
         )
+
+        # Determine accounting mode.
+        try:
+            settings = frappe.get_single("Commission Settings") if frappe.db.exists("Commission Settings") else None
+        except Exception:
+            settings = None
+        accounting_mode = getattr(settings, "accounting_mode", None) if settings else None
+
+        # Subledger Until Settlement: record expense directly against the supplier.
+        # Periodic Accrual: consume the accrued liability (no second expense).
+        if accounting_mode == "Periodic Accrual":
+            debit_account = accrued_account
+        else:
+            debit_account = expense_account
 
         item_row = {
             "item_code": item_code,
             "qty": 1,
             "rate": flt(self.total_payable),
         }
-        if accrued_account:
-            item_row["expense_account"] = accrued_account
-
+        if debit_account:
+            item_row["expense_account"] = debit_account
+        if _cc:
+            item_row["cost_center"] = _cc
         doc = frappe.get_doc(
             {
                 "doctype": "Purchase Invoice",
@@ -501,21 +541,53 @@ def _available_balance_for_entry(entry_name, exclude_settlement=None):
     collection_eligible = flt(getattr(entry, "collection_eligible_amount", 0))
     if collection_eligible <= 0:
         collection_eligible = flt(getattr(entry, "payable_amount", 0))
+
+    # Net in linked Return Adjustment events so returns reduce availability.
+    try:
+        returns = frappe.get_all(
+            "Commission Entry",
+            filters={"original_entry": entry_name, "docstatus": 1},
+            fields=[
+                "collection_eligible_amount",
+                "payable_amount",
+                "accrued_amount",
+                "earned_commission",
+            ],
+        )
+    except Exception:
+        returns = []
+    for r in returns or []:
+        ce = flt(r.get("collection_eligible_amount"))
+        if ce == 0:
+            ce = flt(r.get("payable_amount"))
+        collection_eligible += ce
+
     settled = flt(getattr(entry, "settled_amount", 0))
     reserved_other = _reserved_for_entry(entry_name, exclude_settlement=exclude_settlement)
     collection_available = collection_eligible - reserved_other - settled
     if collection_available < 0:
         collection_available = 0.0
-    # Accrual availability: posted accrual minus previously reclassified.
-    accrued = flt(getattr(entry, "accrued_amount", 0))
-    if accrued <= 0:
-        accrued = flt(getattr(entry, "earned_commission", 0))
-    reclassified_other = _reclassified_for_entry(entry_name, exclude_settlement=exclude_settlement)
-    accrual_available = accrued - reclassified_other
-    if accrual_available < 0:
-        accrual_available = 0.0
-    # Settlement availability is the intersection of collection and accrual.
-    available = min(collection_available, accrual_available)
+    # Determine accounting mode.
+    try:
+        settings = frappe.get_single("Commission Settings") if frappe.db.exists("Commission Settings") else None
+    except Exception:
+        settings = None
+    accounting_mode = getattr(settings, "accounting_mode", None) if settings else None
+
+    if accounting_mode == "Periodic Accrual":
+        # Accrual availability: posted accrual minus previously reclassified.
+        accrued = flt(getattr(entry, "accrued_amount", 0))
+        for r in returns or []:
+            accrued += flt(r.get("accrued_amount", 0))
+        reclassified_other = _reclassified_for_entry(entry_name, exclude_settlement=exclude_settlement)
+        accrual_available = accrued - reclassified_other
+        if accrual_available < 0:
+            accrual_available = 0.0
+        # Settlement availability is the intersection of collection and accrual.
+        available = min(collection_available, accrual_available)
+    else:
+        # Subledger Until Settlement: no accrual gate.
+        available = collection_available
     if available < 0:
         available = 0.0
     return flt(available, 2)

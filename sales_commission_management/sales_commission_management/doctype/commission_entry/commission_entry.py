@@ -1226,10 +1226,27 @@ def handle_return_invoice(doc, method=None):
             flt(pr.source_qty)
         )
 
+    # Detect ambiguous return allocation: the same item_code appearing on more
+    # than one original Commission Entry cannot be matched unambiguously to a
+    # return row without an explicit original-row link.
+    entry_count_by_item = {}
+    for oe in original_entries:
+        entry_count_by_item[oe.item_code] = entry_count_by_item.get(oe.item_code, 0) + 1
+
     for orig in original_entries:
+        item = orig.item_code
+        if entry_count_by_item.get(item, 0) > 1 and returned_qty.get(item, 0) > 0:
+            frappe.throw(
+                _(
+                    "Return allocation is ambiguous: item {0} appears on multiple "
+                    "original commission entries. Match returns to the original "
+                    "invoice item row explicitly."
+                ).format(item)
+            )
+
         key = orig.get("name")
-        oq = original_qty.get(orig.item_code, 0) or abs(flt(orig.source_qty)) or 1
-        rq = returned_qty.get(orig.item_code, 0)
+        oq = abs(flt(orig.source_qty)) or original_qty.get(item, 0) or 1
+        rq = returned_qty.get(item, 0)
         # remaining quantity that can still be returned
         remaining = max(0.0, oq - already_returned.get(key, 0))
         effective_returned = min(rq, remaining) if remaining > 0 else 0
@@ -1326,6 +1343,7 @@ def reverse_commission_entries(doc, method=None):
     )
     for entry in existing_entries:
         original = frappe.get_doc("Commission Entry", entry.name)
+        _orig_accrued = flt(getattr(original, "accrued_amount", 0))
         ev_key = _event_key(
             "Sales Invoice",
             doc.name,
@@ -1356,6 +1374,7 @@ def reverse_commission_entries(doc, method=None):
         clawback.paid_delta = -1 * flt(original.paid_delta)
         clawback.settled_amount = -1 * flt(original.settled_amount)
         clawback.paid_amount = -1 * flt(original.paid_amount)
+        clawback.accrued_amount = -1 * flt(original.accrued_amount)
         clawback.outstanding_amount = clawback.earned_commission
         clawback.status = "Reversed"
         clawback.collection_status = "Not Eligible"
@@ -1368,28 +1387,79 @@ def reverse_commission_entries(doc, method=None):
         clawback.submit()
 
         # Mark the original entry as reversed so it is excluded from settlement
-        # and its balances are zeroed (prevents double-availability).
-        try:
-            frappe.db.set_value(
-                "Commission Entry",
-                original.name,
-                {
-                    "status": "Reversed",
-                    "collection_eligible_amount": 0,
-                    "payable_amount": 0,
-                    "outstanding_amount": 0,
-                    "collection_status": "Not Eligible",
-                    "settlement_status": "Not Reserved",
-                },
-                update_modified=False,
-            )
-        except Exception:
-            frappe.log_error(
-                frappe.get_traceback(),
-                "Commission: failed to mark original entry {0} as reversed".format(
-                    original.name
-                ),
-            )
+        # and its balances are zeroed (prevents double-availability). This is a
+        # critical financial operation; failure must abort the cancellation.
+        frappe.db.set_value(
+            "Commission Entry",
+            original.name,
+            {
+                "status": "Reversed",
+                "collection_eligible_amount": 0,
+                "payable_amount": 0,
+                "accrued_amount": 0,
+                "outstanding_amount": 0,
+                "collection_status": "Not Eligible",
+                "settlement_status": "Not Reserved",
+            },
+            update_modified=False,
+        )
+
+        # Reverse the accrual GL if an accrual was posted for this entry.
+        if _orig_accrued and abs(_orig_accrued) > 0.005:
+            try:
+                settings = (
+                    frappe.get_single("Commission Settings")
+                    if frappe.db.exists("Commission Settings")
+                    else None
+                )
+            except Exception:
+                settings = None
+            accounting_mode = getattr(settings, "accounting_mode", None) if settings else None
+            if accounting_mode == "Periodic Accrual":
+                accrued_account = None
+                expense_account = None
+                cost_center = None
+                if settings:
+                    for row in (getattr(settings, "account_mappings", None) or []):
+                        if getattr(row, "company", None) == original.company and getattr(row, "enabled", 1):
+                            accrued_account = getattr(row, "accrued_commission_payable_account", None)
+                            expense_account = getattr(row, "commission_expense_account", None)
+                            cost_center = getattr(row, "cost_center", None)
+                            break
+                    if not accrued_account:
+                        accrued_account = getattr(settings, "default_accrued_liability_account", None)
+                    if not expense_account:
+                        expense_account = getattr(settings, "default_commission_expense_account", None)
+                    if not cost_center:
+                        cost_center = getattr(settings, "default_cost_center", None)
+                if accrued_account and expense_account:
+                    amt = abs(_orig_accrued)
+                    je = frappe.get_doc(
+                        {
+                            "doctype": "Journal Entry",
+                            "voucher_type": "Journal Entry",
+                            "company": original.company,
+                            "posting_date": original.posting_date,
+                            "accounts": [
+                                {
+                                    "account": accrued_account,
+                                    "debit_in_account_currency": flt(amt, 2),
+                                },
+                                {
+                                    "account": expense_account,
+                                    "credit_in_account_currency": flt(amt, 2),
+                                },
+                            ],
+                            "user_remark": "Reverse accrued commission for cancelled invoice {0}".format(
+                                doc.name
+                            ),
+                        }
+                    )
+                    if cost_center:
+                        for a in je.accounts:
+                            a.cost_center = cost_center
+                    je.insert(ignore_permissions=True)
+                    je.submit()
 
 
 def update_commission_payment_status(payment_entry, method=None):
