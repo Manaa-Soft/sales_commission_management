@@ -1608,6 +1608,7 @@ def _recompute_one_period(period):
             "source_row",
             "sales_invoice",
             "company",
+            "plan",
         ],
     )
 
@@ -1723,6 +1724,10 @@ def _recompute_one_period(period):
             if ebt != bt or eben not in members:
                 continue
             if target_basis and e.get("commission_basis") != target_basis:
+                continue
+            # Scope by parent plan so a target is only credited entries
+            # generated under its own Commission Plan.
+            if t.get("parent") and e.get("plan") and e.get("plan") != t.get("parent"):
                 continue
             src_key = (
                 e.get("sales_invoice") or e.get("source_name"),
