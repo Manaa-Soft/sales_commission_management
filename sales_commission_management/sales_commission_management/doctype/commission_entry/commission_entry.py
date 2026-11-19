@@ -758,6 +758,13 @@ def generate_commission_entries(doc, method=None, force=False):
 
     fixed_invoice_rules_applied = set()
 
+    # Plan-level target value and cumulative target metric for the period.
+    _plan_target_value = _plan_target_value(plan)
+    _db_cumulative_metric = _plan_cumulative_metric(
+        plan, doc.company, getattr(doc, "posting_date", None)
+    )
+    _running_current_metric = [0.0]
+
     for item in doc.items or []:
         rule = _match_rule(plan, item.item_code, item.item_group)
         if not rule:
@@ -797,7 +804,28 @@ def generate_commission_entries(doc, method=None, force=False):
                 item_commission = flt(getattr(rule, "fixed_amount", 0))
                 fixed_invoice_rules_applied.add(getattr(rule, "name", None))
         elif getattr(rule, "use_slabs", 0) and slabs:
-            item_commission = _calculate_slab_amount(basis_company, slabs, slab_method)
+            if _plan_target_value and _plan_target_value > 0:
+                _prev_att = (
+                    (_db_cumulative_metric + _running_current_metric[0])
+                    / _plan_target_value
+                    * 100.0
+                )
+                _after_att = (
+                    (_db_cumulative_metric + _running_current_metric[0] + basis_company)
+                    / _plan_target_value
+                    * 100.0
+                )
+            else:
+                _prev_att = 0.0
+                _after_att = 0.0
+            item_commission = _calculate_slab_amount(
+                basis_company,
+                slabs,
+                slab_method,
+                attainment_pct=_after_att,
+                prev_attainment_pct=_prev_att,
+                target_value=_plan_target_value,
+            )
         else:
             rate = flt(getattr(rule, "rate_percentage", 0))
             if rate == 0 and not flt(getattr(rule, "fixed_amount", 0)):
@@ -811,6 +839,10 @@ def generate_commission_entries(doc, method=None, force=False):
             continue
 
         item_commission = _apply_floor_cap(item_commission, rule)
+
+        # Accumulate this item's basis into the period's running metric so
+        # subsequent items see the updated attainment.
+        _running_current_metric[0] += basis_company
 
         for rep in contributors:
             split_share = (flt(rep.get("allocated_percentage", 0)) or 0) / 100.0
@@ -913,19 +945,24 @@ def generate_commission_entries(doc, method=None, force=False):
                 )
 
 
-def _calculate_slab_amount(basis_amount, slabs, method="Progressive"):
+def _calculate_slab_amount(
+    basis_amount,
+    slabs,
+    method="Progressive",
+    attainment_pct=0.0,
+    prev_attainment_pct=0.0,
+    target_value=0.0,
+):
+    """Calculate commission for an invoice using attainment-based slabs.
+
+    Slabs are defined in attainment-percentage bands (min_attainment /
+    max_attainment). ``attainment_pct`` is the cumulative target attainment
+    including this invoice. ``prev_attainment_pct`` is the attainment before
+    this invoice (used for progressive marginal calculation).
+    """
     if not slabs:
         return 0.0
-    slabs = sorted(
-        slabs,
-        key=lambda s: flt(
-            s.min_attainment
-            if hasattr(s, "min_attainment")
-            else getattr(s, "from_amount", 0)
-        ),
-    )
 
-    # support both old (from_amount) and new (min_attainment) field names
     def _from(s):
         return flt(getattr(s, "min_attainment", None) or getattr(s, "from_amount", 0))
 
@@ -933,7 +970,7 @@ def _calculate_slab_amount(basis_amount, slabs, method="Progressive"):
         v = getattr(s, "max_attainment", None)
         if v is None:
             v = getattr(s, "to_amount", None)
-        return flt(v) if v else float("inf")
+        return flt(v) if v not in (None, 0) else float("inf")
 
     def _rate(s):
         return flt(getattr(s, "rate_percentage", 0))
@@ -946,27 +983,55 @@ def _calculate_slab_amount(basis_amount, slabs, method="Progressive"):
     if method == "Single":
         applicable = None
         for slab in slabs:
-            if _from(slab) <= basis_amount <= _to(slab):
+            if _from(slab) <= attainment_pct <= _to(slab):
                 applicable = slab
                 break
         if applicable is None and slabs:
-            applicable = slabs[-1]
+            if attainment_pct > _from(slabs[-1]):
+                applicable = slabs[-1]
+            else:
+                applicable = slabs[0]
         if not applicable:
             return 0.0
         rate = _rate(applicable) / 100.0
         fixed = _fixed(applicable)
         return flt(basis_amount * rate + fixed, 2)
 
+    # Progressive: marginal rates across attainment bands crossed by this invoice.
+    before = flt(prev_attainment_pct or 0.0)
+    after = flt(attainment_pct or 0.0)
+    if after < before:
+        after = before
+    if after <= before:
+        # No attainment movement; fall back to single rate at current attainment.
+        applicable = None
+        for slab in slabs:
+            if _from(slab) <= after <= _to(slab):
+                applicable = slab
+                break
+        if applicable is None and slabs:
+            applicable = slabs[-1] if after > _from(slabs[-1]) else slabs[0]
+        if not applicable:
+            return 0.0
+        return flt(basis_amount * (_rate(applicable) / 100.0) + _fixed(applicable), 2)
+
+    total_change = after - before
     total = 0.0
     for slab in slabs:
-        band_top = min(basis_amount, _to(slab))
-        band_amount = max(0.0, band_top - _from(slab))
-        if band_amount <= 0:
+        lo = max(_from(slab), before)
+        hi = min(_to(slab), after)
+        if hi <= lo:
             continue
+        band_width = hi - lo
+        portion = basis_amount * (band_width / total_change) if total_change else 0.0
         rate = _rate(slab) / 100.0
-        total += band_amount * rate
-    if slabs and _fixed(slabs[0]):
-        total += _fixed(slabs[0])
+        total += portion * rate
+    # Apply fixed bonus of the first crossed slab once.
+    for slab in slabs:
+        if _from(slab) <= after and before < _to(slab):
+            if _fixed(slab):
+                total += _fixed(slab)
+            break
     return flt(total, 2)
 
 
@@ -976,10 +1041,20 @@ def generate_commission_on_payment(payment_entry, method=None):
 
     Entries are only created if they do not already exist for the invoice.
     """
+    # Validate the payment entry is a genuine customer receipt.
+    if getattr(payment_entry, "payment_type", None) not in (None, "Receive"):
+        return
+    if getattr(payment_entry, "party_type", None) not in (None, "Customer"):
+        return
+    if getattr(payment_entry, "docstatus", 0) != 1:
+        return
+
     references = payment_entry.get("references") or []
     invoices = set()
     for ref in references:
         if ref.reference_doctype == "Sales Invoice" and ref.reference_name:
+            if flt(getattr(ref, "allocated_amount", 0)) <= 0:
+                continue
             invoices.add(ref.reference_name)
 
     for invoice_name in invoices:
@@ -1248,6 +1323,10 @@ def update_commission_payment_status(payment_entry, method=None):
                 continue
             if getattr(pe, "docstatus", 0) != 1:
                 continue
+            if getattr(pe, "payment_type", None) not in (None, "Receive"):
+                continue
+            if getattr(pe, "party_type", None) not in (None, "Customer"):
+                continue
             allocated_raw = flt(r.get("allocated_amount"))
             if allocated_raw == 0:
                 continue
@@ -1256,7 +1335,11 @@ def update_commission_payment_status(payment_entry, method=None):
                     allocated_raw, "Sales Invoice", invoice
                 )
             except Exception:
-                allocated = allocated_raw
+                frappe.log_error(
+                    frappe.get_traceback(),
+                    "Commission: currency conversion failed for payment {}".format(pe_name),
+                )
+                continue
             cumulative_allocated += abs(allocated)
 
         cumulative_ratio = min(max(cumulative_allocated / invoice_total, 0.0), 1.0)
@@ -1353,6 +1436,115 @@ def recompute_period_slabs():
             )
 
 
+def _sales_person_ancestors(name):
+    """Return list of ancestor (and self) Sales Person names via parent link."""
+    result = []
+    current = name
+    seen = set()
+    while current and current not in seen:
+        seen.add(current)
+        result.append(current)
+        try:
+            parent = frappe.get_cached_value("Sales Person", current, "parent_sales_person")
+        except Exception:
+            parent = None
+        if not parent or parent == current:
+            break
+        current = parent
+    return result
+
+
+def _period_range(posting_date, period_type):
+    """Return (from_date, to_date) for the period containing posting_date."""
+    from datetime import date, timedelta
+
+    d = getdate(posting_date)
+    pt = (period_type or "Monthly").strip()
+    if pt == "Quarterly":
+        q = (d.month - 1) // 3
+        start = date(d.year, q * 3 + 1, 1)
+        end_month = q * 3 + 3
+        if end_month == 12:
+            end = date(d.year, 12, 31)
+        else:
+            end = date(d.year, end_month + 1, 1) - timedelta(days=1)
+        return start, end
+    if pt == "Yearly":
+        return date(d.year, 1, 1), date(d.year, 12, 31)
+    if pt == "Per Invoice":
+        return d, d
+    # Monthly (default)
+    start = date(d.year, d.month, 1)
+    if d.month == 12:
+        end = date(d.year, 12, 31)
+    else:
+        end = date(d.year, d.month + 1, 1) - timedelta(days=1)
+    return start, end
+
+
+_METRIC_TO_BASIS = {
+    "Net Sales": "Net Total",
+    "Gross Profit": "Gross Profit",
+    "Collected Net Sales": "Net Total",
+}
+
+
+def _plan_target_value(plan):
+    """Sum target values from plan's targets child table."""
+    total = 0.0
+    for t in (plan.get("targets") or []):
+        total += flt(getattr(t, "target_value", 0))
+    return flt(total)
+
+
+def _plan_cumulative_metric(plan, company, posting_date):
+    """Aggregate target metric from existing (submitted) Commission Entries for
+    this plan within the period containing posting_date. Dedupes by source so
+    multi-contributor invoices are not double-counted."""
+    if not plan or not posting_date:
+        return 0.0
+    period_type = getattr(plan, "commission_period", None) or "Monthly"
+    pf, pt = _period_range(posting_date, period_type)
+    target_metric = getattr(plan, "target_metric", None)
+    basis_name = _METRIC_TO_BASIS.get(target_metric)
+
+    filters = {
+        "docstatus": 1,
+        "plan": plan.name,
+        "posting_date": ["between", [pf, pt]],
+    }
+    if company:
+        filters["company"] = company
+
+    try:
+        entries = frappe.get_all(
+            "Commission Entry",
+            filters=filters,
+            fields=[
+                "commission_basis",
+                "company_basis_amount",
+                "source_name",
+                "source_row",
+                "sales_invoice",
+            ],
+        )
+    except Exception:
+        return 0.0
+
+    # Dedupe by source invoice+row; keep one company_basis_amount per source.
+    seen = set()
+    total = 0.0
+    for e in entries or []:
+        if basis_name and e.get("commission_basis") != basis_name:
+            continue
+        key = (e.get("sales_invoice") or e.get("source_name"), e.get("source_row"))
+        if key in seen:
+            continue
+        seen.add(key)
+        total += flt(e.get("company_basis_amount"))
+    return flt(total)
+
+
 def _recompute_one_period(period):
     period_from = period.get("period_from")
     period_to = period.get("period_to")
@@ -1375,48 +1567,116 @@ def _recompute_one_period(period):
             "sales_person",
             "sales_partner",
             "commission_basis",
-            "earned_commission",
+            "company_basis_amount",
+            "source_name",
+            "source_row",
+            "sales_invoice",
             "company",
         ],
     )
 
-    # Aggregate earned amounts per (beneficiary_type, beneficiary).
+    # Aggregate target metric per (beneficiary_type, beneficiary), deduping by
+    # source invoice+row so multi-contributor invoices are not double-counted.
     attainment = {}
-    for e in entries:
+    seen_by_ben = {}
+    for e in entries or []:
         bt = e.get("beneficiary_type")
         ben = e.get("sales_person") if bt == "Sales Person" else e.get("sales_partner")
         if not ben:
             continue
-        key = (bt, ben)
-        attainment.setdefault(key, 0.0)
-        attainment[key] += flt(e.get("earned_commission"))
+        basis_name = e.get("commission_basis")
+        metric_key = (bt, ben)
+        seen = seen_by_ben.setdefault(metric_key, set())
+        src_key = (e.get("sales_invoice") or e.get("source_name"), e.get("source_row"))
+        if src_key in seen:
+            continue
+        seen.add(src_key)
+        attainment.setdefault(metric_key, 0.0)
+        attainment[metric_key] += flt(e.get("company_basis_amount"))
 
-    # Update matching Commission Targets (attainment is cached/rebuildable).
-    for (bt, ben), earned in attainment.items():
+    # Update matching Commission Targets. For group (Sales Person container)
+    # targets, aggregate across descendants.
+    # First, collect all targets in this period's company.
+    try:
+        all_targets = frappe.get_all(
+            "Commission Target",
+            filters={"docstatus": ["!=", 2]},
+            fields=["name", "beneficiary_type", "sales_person", "sales_partner",
+                    "target_value", "target_metric"],
+        )
+    except Exception:
+        all_targets = []
+
+    # Build a map from beneficiary to its descendants (for group expansion).
+    descendant_cache = {}
+
+    def _descendants(name):
+        if name in descendant_cache:
+            return descendant_cache[name]
         try:
-            targets = frappe.get_all(
-                "Commission Target",
-                filters={
-                    "beneficiary_type": bt,
-                    "sales_person" if bt == "Sales Person" else "sales_partner": ben,
-                    "docstatus": ["!=", 2],
-                },
-                fields=["name", "target_value", "target_metric"],
-            )
+            is_group = frappe.get_cached_value("Sales Person", name, "is_group")
         except Exception:
-            targets = []
-        for t in targets:
-            target_value = flt(t.get("target_value"))
-            if target_value <= 0:
-                continue
-            pct = (earned / target_value) * 100.0
+            is_group = 0
+        if not is_group:
+            res = [name]
+        else:
             try:
-                frappe.db.set_value(
-                    "Commission Target",
-                    t.get("name"),
-                    {"attainment_percentage": flt(pct, 2)},
-                    update_modified=False,
+                lft, rgt = frappe.get_cached_value(
+                    "Sales Person", name, ["lft", "rgt"]
                 )
             except Exception:
-                # Field may not exist on this schema version; ignore.
-                pass
+                lft, rgt = None, None
+            if not lft or not rgt:
+                res = [name]
+            else:
+                try:
+                    res = frappe.get_all(
+                        "Sales Person",
+                        filters={"lft": [">=", lft], "rgt": ["<=", rgt]},
+                        pluck="name",
+                    ) or [name]
+                except Exception:
+                    res = [name]
+        descendant_cache[name] = res
+        return res
+
+    for t in all_targets or []:
+        bt = t.get("beneficiary_type")
+        ben = t.get("sales_person") if bt == "Sales Person" else t.get("sales_partner")
+        if not ben:
+            continue
+        target_metric = t.get("target_metric")
+        target_basis = _METRIC_TO_BASIS.get(target_metric)
+        target_value = flt(t.get("target_value"))
+        if target_value <= 0:
+            continue
+        # Determine the set of beneficiaries to aggregate.
+        if bt == "Sales Person":
+            members = _descendants(ben)
+        else:
+            members = [ben]
+        total_metric = 0.0
+        seen2 = set()
+        for e in entries or []:
+            ebt = e.get("beneficiary_type")
+            eben = e.get("sales_person") if ebt == "Sales Person" else e.get("sales_partner")
+            if ebt != bt or eben not in members:
+                continue
+            if target_basis and e.get("commission_basis") != target_basis:
+                continue
+            src_key = (e.get("sales_invoice") or e.get("source_name"), e.get("source_row"))
+            if src_key in seen2:
+                continue
+            seen2.add(src_key)
+            total_metric += flt(e.get("company_basis_amount"))
+
+        pct = (total_metric / target_value) * 100.0
+        try:
+            frappe.db.set_value(
+                "Commission Target",
+                t.get("name"),
+                {"attainment_percentage": flt(pct, 2)},
+                update_modified=False,
+            )
+        except Exception:
+            pass
