@@ -1,4 +1,4 @@
-{
+﻿{
  "actions": [],
  "allow_rename": 0,
  "creation": "2026-01-01 00:00:00.000000",
@@ -39,6 +39,7 @@
   "company_currency",
   "company_basis_amount",
   "conversion_rate_snapshot",
+  "commission_to_company_rate",
   "commission_currency",
   "commission_rate",
   "fixed_amount_snapshot",
@@ -295,6 +296,13 @@
    "fieldtype": "Float",
    "label": "Conversion Rate Snapshot",
    "read_only": 1
+  },
+  {
+   "fieldname": "commission_to_company_rate",
+   "fieldtype": "Float",
+   "label": "Commission to Company Rate",
+   "read_only": 1,
+   "default": 1
   },
   {
    "fieldname": "commission_currency",

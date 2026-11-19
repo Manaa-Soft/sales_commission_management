@@ -478,6 +478,14 @@ def _insert_entry(
     # Store the calculation method from the actual Commission Rule.
     calculation_method = getattr(rule, "calculation_method", None) or "Percentage"
 
+    # Commission-to-company conversion rate snapshot.
+    if commission_currency == company_currency:
+        commission_to_company_rate = 1.0
+    elif commission_currency == txn_currency:
+        commission_to_company_rate = exchange_rate
+    else:
+        commission_to_company_rate = 1.0
+
     ev_key = _event_key(
         "Sales Invoice",
         doc.name,
@@ -531,6 +539,7 @@ def _insert_entry(
             "conversion_rate_snapshot": flt(exchange_rate),
             "commission_currency": commission_currency,
             "commission_rate": commission_rate,
+            "commission_to_company_rate": commission_to_company_rate,
             "fixed_amount_snapshot": fixed_amount,
             "earned_delta": flt(item_commission, 6),
             "payable_eligible_delta": 0,

@@ -169,15 +169,19 @@ class CommissionAccrualBatch(Document):
             if not getattr(row, "commission_currency", None):
                 row.commission_currency = getattr(entry, "commission_currency", None)
             currencies.add(row.commission_currency)
-            rate = flt(getattr(entry, "conversion_rate_snapshot", 1)) or 1.0
+            # Prefer the dedicated commission-to-company rate; fall back to the
+            # invoice conversion rate only when commission currency matches the
+            # transaction currency.
+            c2c_rate = flt(getattr(entry, "commission_to_company_rate", 0))
+            if not c2c_rate:
+                c2c_rate = flt(getattr(entry, "conversion_rate_snapshot", 1)) or 1.0
             if not getattr(row, "conversion_rate", None):
-                row.conversion_rate = rate
+                row.conversion_rate = c2c_rate
             # commission -> company conversion
             if row.commission_currency == self.accounting_currency:
                 row.company_amount = flt(row.accrual_amount, 6)
             else:
-                # commission currency equals transaction currency in the common case
-                row.company_amount = flt(flt(row.accrual_amount) * rate, 6)
+                row.company_amount = flt(flt(row.accrual_amount) * c2c_rate, 6)
         # enforce single currency per batch
         if currencies and None not in currencies and len(currencies) > 1:
             frappe.throw(
@@ -199,11 +203,11 @@ class CommissionAccrualBatch(Document):
         entry_names = sorted(
             {row.commission_ledger_entry for row in (self.items or []) if row.commission_ledger_entry}
         )
+        # Use Frappe Query Builder for portable row locking (for_update=True).
         for en in entry_names:
-            frappe.db.sql(
-                "SELECT name FROM `tabCommission Entry` WHERE name = %s FOR UPDATE",
-                (en,),
-            )
+            frappe.qb.from_("Commission Entry").select("name").where(
+                frappe.qb.Field("name") == en
+            ).for_update().run()
         for row in self.items or []:
             if not row.commission_ledger_entry:
                 frappe.throw(_("Commission Ledger Entry is required for each batch item."))
