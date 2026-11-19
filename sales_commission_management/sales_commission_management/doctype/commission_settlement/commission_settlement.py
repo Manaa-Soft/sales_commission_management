@@ -74,6 +74,24 @@ def _resolve_settlement_accounts(company):
             frappe.throw(
                 _("Account {0} is a group account, not a ledger account.").format(acct)
             )
+    # Validate account root types: accrued & payable are liabilities;
+    # expense & payroll_expense are expenses.
+    _expected_root = {
+        accrued: "Liability",
+        payable: "Liability",
+        expense: "Expense",
+        payroll_expense: "Expense",
+    }
+    for acct, expected in _expected_root.items():
+        if not acct:
+            continue
+        root_type = frappe.get_cached_value("Account", acct, "root_type")
+        if root_type and root_type != expected:
+            frappe.throw(
+                _("Account {0} must be a {1} account (found {2}).").format(
+                    acct, expected, root_type
+                )
+            )
     return accrued, payable, expense, cost_center, payroll_expense
 
 
@@ -247,6 +265,10 @@ class CommissionSettlement(Document):
         # converted to company (accounting) currency, and only up to the
         # accrued (unreclassified) balance of each entry.
         reclassify_total = 0.0
+        try:
+            from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import _accrued_for_entry as _batch_accrued_for_entry
+        except Exception:
+            _batch_accrued_for_entry = None
         for row in self.entries or []:
             entry_name = getattr(row, "commission_ledger_entry", None)
             if not entry_name:
@@ -255,7 +277,13 @@ class CommissionSettlement(Document):
                 entry = frappe.get_doc("Commission Entry", entry_name)
             except Exception:
                 continue
-            accrued = flt(getattr(entry, "accrued_amount", 0))
+            # Authoritative accrued balance comes from submitted Accrual Batches,
+            # not from Commission Entry.accrued_amount (which is never updated by
+            # the batch on_submit).
+            if _batch_accrued_for_entry is not None:
+                accrued = flt(_batch_accrued_for_entry(entry_name))
+            else:
+                accrued = flt(getattr(entry, "accrued_amount", 0))
             # Do not fall back to earned_commission: only reclassify amounts
             # that have actually been accrued in Periodic Accrual mode.
             if accrued <= 0.005:
@@ -263,11 +291,12 @@ class CommissionSettlement(Document):
             already = _reclassified_for_entry(
                 entry_name, exclude_settlement=self.name
             )
-            delta = flt(row.amount_included) - already
-            if delta <= 0.005:
+            # Correct partial reclassification: only reclassify up to the
+            # remaining (accrued but not yet reclassified) balance.
+            remaining_accrual = max(0.0, accrued - already)
+            if remaining_accrual <= 0.005:
                 continue
-            if delta > accrued - already + 0.005:
-                delta = accrued - already
+            delta = min(flt(row.amount_included), remaining_accrual)
             if delta <= 0.005:
                 continue
             rate = flt(getattr(entry, "conversion_rate_snapshot", 1)) or 1.0
@@ -320,18 +349,16 @@ class CommissionSettlement(Document):
             pass
 
     def on_cancel(self):
+        # Reverse linked financial documents first; abort (propagate) if any
+        # required reversal fails so we never leave a cancelled settlement
+        # with submitted Purchase Invoices / Payments behind it.
         self._cancel_settlement_document()
         # Reverse the accrued-liability journal entry created on submit.
         je_name = getattr(self, "settlement_journal_entry", None)
         if je_name:
-            try:
-                je = frappe.get_doc("Journal Entry", je_name)
-                if je.docstatus == 1:
-                    je.cancel()
-            except Exception:
-                frappe.log_error(
-                    frappe.get_traceback(), "Commission Settlement JE cancel failed"
-                )
+            je = frappe.get_doc("Journal Entry", je_name)
+            if je.docstatus == 1:
+                je.cancel()
         self.status = "Cancelled"
         self.save(ignore_permissions=True)
 
@@ -469,16 +496,41 @@ class CommissionSettlement(Document):
     def _cancel_settlement_document(self):
         if not self.settlement_document or not self.settlement_document_type:
             return
-        try:
-            doc = frappe.get_doc(
-                self.settlement_document_type, self.settlement_document
-            )
-            if doc.docstatus == 1:
-                doc.cancel()
-        except Exception:
-            frappe.log_error(
-                frappe.get_traceback(), "Commission Settlement cancel failed"
-            )
+        doc = frappe.get_doc(
+            self.settlement_document_type, self.settlement_document
+        )
+        if doc.docstatus == 1:
+            # For Purchase Invoices, guard against allocated payments: Frappe's
+            # own cancel() will raise if payments are allocated, which aborts
+            # the settlement cancellation transactionally.
+            if self.settlement_document_type == "Purchase Invoice":
+                payments = frappe.get_all(
+                    "Payment Entry Reference",
+                    filters={
+                        "reference_doctype": "Purchase Invoice",
+                        "reference_name": self.settlement_document,
+                    },
+                    fields=["parent"],
+                )
+                allocated = []
+                for r in payments or []:
+                    try:
+                        pe = frappe.get_doc("Payment Entry", r.get("parent"))
+                        if getattr(pe, "docstatus", 0) == 1:
+                            allocated.append(pe.name)
+                    except Exception:
+                        continue
+                if allocated:
+                    frappe.throw(
+                        _(
+                            "Cannot cancel settlement: Purchase Invoice {0} has "
+                            "allocated Payment Entries ({1}). Reverse the payments "
+                            "first."
+                        ).format(
+                            self.settlement_document, ", ".join(allocated)
+                        )
+                    )
+            doc.cancel()
 
 
 # ---------------------------------------------------------------------------
@@ -536,16 +588,40 @@ def _reclassified_for_entry(entry_name, exclude_settlement=None):
     if exclude_settlement:
         sett_filters["name"] = ["!=", exclude_settlement]
     settlements = frappe.get_all(
-        "Commission Settlement", filters=sett_filters, fields=["name"]
+        "Commission Settlement",
+        filters=sett_filters,
+        fields=["name", "settlement_journal_entry"],
     )
     if not settlements:
         return total
-    names = [s.name for s in settlements]
+    # Only count settlements whose reclassification Journal Entry was actually
+    # submitted (Periodic Accrual mode). A settlement without a submitted JE
+    # has not reclassified anything.
+    valid_names = []
+    for s in settlements:
+        je_name = getattr(s, "settlement_journal_entry", None)
+        if je_name:
+            try:
+                je_status = frappe.get_cached_value(
+                    "Journal Entry", je_name, "docstatus"
+                )
+            except Exception:
+                je_status = None
+            if je_status != 1:
+                continue
+        else:
+            # No JE recorded: only count in Subledger mode where no
+            # reclassification is expected. To be safe, skip entries without a
+            # submitted JE so we never over-claim reclassification.
+            continue
+        valid_names.append(s.name)
+    if not valid_names:
+        return total
     items = frappe.get_all(
         "Commission Settlement Item",
         filters={
             "commission_ledger_entry": entry_name,
-            "parent": ["in", names],
+            "parent": ["in", valid_names],
         },
         fields=["amount_included"],
     )
@@ -561,19 +637,22 @@ def _available_balance_for_entry(entry_name, exclude_settlement=None):
         collection_eligible = flt(getattr(entry, "payable_amount", 0))
 
     # Net in linked Return Adjustment events so returns reduce availability.
-    try:
-        returns = frappe.get_all(
-            "Commission Entry",
-            filters={"original_entry": entry_name, "docstatus": 1},
-            fields=[
-                "collection_eligible_amount",
-                "payable_amount",
-                "accrued_amount",
-                "earned_commission",
-            ],
-        )
-    except Exception:
-        returns = []
+    # Fail closed: a database error must propagate, not be silently treated as
+    # an empty return history.
+    returns = frappe.get_all(
+        "Commission Entry",
+        filters={
+            "original_entry": entry_name,
+            "docstatus": 1,
+            "event_type": "Return Adjustment",
+        },
+        fields=[
+            "collection_eligible_amount",
+            "payable_amount",
+            "accrued_amount",
+            "earned_commission",
+        ],
+    )
     for r in returns or []:
         ce = flt(r.get("collection_eligible_amount"))
         if ce == 0:

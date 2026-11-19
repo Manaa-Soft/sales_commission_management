@@ -56,19 +56,37 @@ def _reclassified_for_entry(entry_name, exclude_settlement=None):
         if exclude_settlement:
             sett_filters["name"] = ["!=", exclude_settlement]
         settlements = frappe.get_all(
-            "Commission Settlement", filters=sett_filters, fields=["name"]
+            "Commission Settlement",
+            filters=sett_filters,
+            fields=["name", "settlement_journal_entry"],
         )
     except Exception:
         settlements = []
     if not settlements:
         return total
-    names = [s.name for s in settlements]
+    valid_names = []
+    for s in settlements:
+        je_name = getattr(s, "settlement_journal_entry", None)
+        if je_name:
+            try:
+                je_status = frappe.get_cached_value(
+                    "Journal Entry", je_name, "docstatus"
+                )
+            except Exception:
+                je_status = None
+            if je_status != 1:
+                continue
+        else:
+            continue
+        valid_names.append(s.name)
+    if not valid_names:
+        return total
     try:
         items = frappe.get_all(
             "Commission Settlement Item",
             filters={
                 "commission_ledger_entry": entry_name,
-                "parent": ["in", names],
+                "parent": ["in", valid_names],
             },
             fields=["amount_included"],
         )
@@ -215,6 +233,11 @@ class CommissionAccrualBatch(Document):
                         )
 
             earned = flt(getattr(entry, "earned_delta", 0))
+            # For Return Adjustment entries, cap the accrual basis to the
+            # entry's accrued_amount so we never reverse more than actually accrued.
+            entry_accrued = flt(getattr(entry, "accrued_amount", 0))
+            if entry_accrued != 0 and abs(entry_accrued) < abs(earned):
+                earned = entry_accrued
             accrued = _accrued_for_entry(
                 row.commission_ledger_entry, exclude_batch=self.name
             )
@@ -361,6 +384,8 @@ def fetch_unaccrued_entries(company, period_from, period_to, exclude_batch=None)
             "sales_person",
             "sales_partner",
             "earned_delta",
+            "accrued_amount",
+            "event_type",
             "commission_currency",
             "conversion_rate_snapshot",
         ],
@@ -371,6 +396,12 @@ def fetch_unaccrued_entries(company, period_from, period_to, exclude_batch=None)
     result = []
     for e in entries:
         earned = flt(e.get("earned_delta"))
+        # For Return Adjustment entries, the accrual reversal is capped at the
+        # entry's accrued_amount (the actually accrued portion of the original),
+        # never the full earned clawback.
+        entry_accrued = flt(e.get("accrued_amount", 0))
+        if entry_accrued != 0 and abs(entry_accrued) < abs(earned):
+            earned = entry_accrued
         accrued = _accrued_for_entry(e.get("name"), exclude_batch=exclude_batch)
         unaccrued = earned - accrued
         if abs(unaccrued) <= 0.005:
