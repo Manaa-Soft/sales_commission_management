@@ -109,8 +109,10 @@ class CommissionAccrualBatch(Document):
 
     def on_cancel(self):
         self._cancel_journal_entry()
-        self.status = "Cancelled"
-        self.save(ignore_permissions=True)
+        frappe.db.set_value(
+            "Commission Accrual Batch", self.name,
+            {"status": "Cancelled"}, update_modified=False
+        )
 
     def _set_defaults(self):
         if not self.company:
@@ -365,7 +367,7 @@ def fetch_unaccrued_entries(company, period_from, period_to, exclude_batch=None)
             "docstatus": 1,
             "company": company,
             "posting_date": ["between", [period_from, period_to]],
-            "status": ["not in", ["Reversed", "Cancelled"]],
+            "event_type": ["in", ["Invoice Earned", "Return Adjustment"]],
         },
         fields=[
             "name",

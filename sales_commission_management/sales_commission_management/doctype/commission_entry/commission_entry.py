@@ -1264,12 +1264,10 @@ def handle_return_invoice(doc, method=None):
 
         # Reverse the accrued portion of the original entry proportionally so
         # Periodic Accrual settlement netting reflects the return.
-        try:
-            from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import _accrued_for_entry
+        from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import _accrued_for_entry
 
-            _orig_accrued = _accrued_for_entry(orig.name)
-        except Exception:
-            _orig_accrued = flt(getattr(orig, "accrued_amount", 0))
+        # Fail closed: do not fall back to stale accrued_amount.
+        _orig_accrued = _accrued_for_entry(orig.name)
         clawback_accrued = -1 * flt(_orig_accrued) * ratio
 
         ev_key = _event_key(
@@ -1357,19 +1355,14 @@ def reverse_commission_entries(doc, method=None):
     )
     for entry in existing_entries:
         original = frappe.get_doc("Commission Entry", entry.name)
-        try:
-            from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import _accrued_for_entry
+        from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import _accrued_for_entry
 
-            _total_accrued = _accrued_for_entry(original.name)
-        except Exception:
-            _total_accrued = flt(getattr(original, "accrued_amount", 0))
+        # Fail closed: do not fall back to stale accrued_amount.
+        _total_accrued = _accrued_for_entry(original.name)
         # Subtract amounts already reclassified to payable by submitted settlements.
-        try:
-            from sales_commission_management.sales_commission_management.doctype.commission_settlement.commission_settlement import _reclassified_for_entry
+        from sales_commission_management.sales_commission_management.doctype.commission_settlement.commission_settlement import _reclassified_for_entry
 
-            _already_reclassified = _reclassified_for_entry(original.name)
-        except Exception:
-            _already_reclassified = 0.0
+        _already_reclassified = _reclassified_for_entry(original.name)
         _orig_accrued = flt(_total_accrued - _already_reclassified)
         ev_key = _event_key(
             "Sales Invoice",

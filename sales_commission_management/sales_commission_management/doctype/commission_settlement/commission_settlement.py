@@ -37,14 +37,9 @@ def _resolve_settlement_accounts(company):
     expense = None
     cost_center = None
     payroll_expense = None
-    try:
-        settings = (
-            frappe.get_single("Commission Settings")
-            if frappe.db.exists("Commission Settings")
-            else None
-        )
-    except Exception:
-        settings = None
+    if not frappe.db.exists("Commission Settings"):
+        return accrued, payable, expense, cost_center, payroll_expense
+    settings = frappe.get_single("Commission Settings")
     if settings:
         for row in (getattr(settings, "account_mappings", None) or []):
             if getattr(row, "company", None) == company and getattr(row, "enabled", 1):
@@ -514,8 +509,13 @@ class CommissionSettlement(Document):
             "qty": 1,
             "rate": flt(self.total_payable),
         }
-        if debit_account:
-            item_row["expense_account"] = debit_account
+        if not debit_account:
+            frappe.throw(
+                _("The required commission account is not configured for company {0}.").format(
+                    self.company
+                )
+            )
+        item_row["expense_account"] = debit_account
         if _cc:
             item_row["cost_center"] = _cc
         doc = frappe.get_doc(
