@@ -125,27 +125,37 @@ class CommissionAccrualBatch(Document):
             self.accounting_currency = _company_currency(self.company)
         if not self.accrual_date:
             self.accrual_date = self.period_to or nowdate()
+        # Resolve accounts from company-specific mapping first.
+        accrued = None
+        expense = None
+        cost_center = None
+        try:
+            settings = (
+                frappe.get_single("Commission Settings")
+                if frappe.db.exists("Commission Settings")
+                else None
+            )
+        except Exception:
+            settings = None
+        if settings:
+            for row in (getattr(settings, "account_mappings", None) or []):
+                if getattr(row, "company", None) == self.company and getattr(row, "enabled", 1):
+                    accrued = getattr(row, "accrued_commission_payable_account", None) or accrued
+                    expense = getattr(row, "commission_expense_account", None) or expense
+                    cost_center = getattr(row, "cost_center", None) or cost_center
+                    break
+            if not expense:
+                expense = getattr(settings, "default_commission_expense_account", None)
+            if not accrued:
+                accrued = getattr(settings, "default_accrued_liability_account", None)
+            if not cost_center:
+                cost_center = getattr(settings, "default_cost_center", None)
         if not self.expense_account:
-            try:
-                self.expense_account = frappe.db.get_single_value(
-                    "Commission Settings", "default_commission_expense_account"
-                )
-            except Exception:
-                self.expense_account = None
+            self.expense_account = expense
         if not self.accrued_liability_account:
-            try:
-                self.accrued_liability_account = frappe.db.get_single_value(
-                    "Commission Settings", "default_accrued_liability_account"
-                )
-            except Exception:
-                self.accrued_liability_account = None
+            self.accrued_liability_account = accrued
         if not self.cost_center:
-            try:
-                self.cost_center = frappe.db.get_single_value(
-                    "Commission Settings", "default_cost_center"
-                )
-            except Exception:
-                self.cost_center = None
+            self.cost_center = cost_center
 
     def _compute_company_amounts(self):
         currencies = set()
@@ -184,6 +194,16 @@ class CommissionAccrualBatch(Document):
 
     def _validate_items(self):
         seen = set()
+        # Lock rows in a consistent order to prevent concurrent accrual batches
+        # from calculating the same unaccrued balance.
+        entry_names = sorted(
+            {row.commission_ledger_entry for row in (self.items or []) if row.commission_ledger_entry}
+        )
+        for en in entry_names:
+            frappe.db.sql(
+                "SELECT name FROM `tabCommission Entry` WHERE name = %s FOR UPDATE",
+                (en,),
+            )
         for row in self.items or []:
             if not row.commission_ledger_entry:
                 frappe.throw(_("Commission Ledger Entry is required for each batch item."))
