@@ -1631,7 +1631,12 @@ def update_commission_payment_status(payment_entry, method=None):
         invoice_total = abs(flt(inv.base_grand_total))
         if invoice_total <= 0:
             frappe.throw(_("Invalid invoice total for {0}.").format(invoice))
-            frappe.throw("Invalid invoice total for {0}".format(invoice))
+
+        # Lock the invoice row to serialize concurrent payment processing.
+        frappe.db.sql(
+            "SELECT name FROM `tabSales Invoice` WHERE name = %s FOR UPDATE",
+            (invoice,),
+        )
 
         # Compute cumulative collection ratio from all submitted Payment Entries
         # referencing this invoice, converted to invoice transaction currency.
@@ -1698,6 +1703,11 @@ def update_commission_payment_status(payment_entry, method=None):
                 "SELECT name FROM `tabCommission Entry` WHERE name = %s FOR UPDATE",
                 (e.name,),
             )
+            # Re-read current eligibility after acquiring the lock.
+            current_eligible = flt(
+                frappe.db.get_value("Commission Entry", e.name, "collection_eligible_amount")
+            )
+            e.collection_eligible_amount = current_eligible
             earned = flt(e.earned_commission)
             # Resolve payout_basis from the entry's plan.
             payout_basis = "On Collection"
