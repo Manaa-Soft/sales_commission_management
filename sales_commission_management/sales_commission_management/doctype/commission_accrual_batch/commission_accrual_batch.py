@@ -181,15 +181,26 @@ class CommissionAccrualBatch(Document):
                     c2c_rate = 1.0
                 elif comm_curr and txn_curr and comm_curr == txn_curr:
                     c2c_rate = flt(getattr(entry, "conversion_rate_snapshot", 1)) or 1.0
-                else:
-                    # No valid rate; leave as 0 to flag the issue.
-                    c2c_rate = 0.0
+            else:
+                # No valid rate available; reject the batch rather than
+                # substituting a foreign amount as company currency.
+                frappe.throw(
+                    _("Missing commission-to-company exchange rate for {0}.").format(
+                        row.commission_ledger_entry
+                    )
+                )
             if not getattr(row, "conversion_rate", None):
-                row.conversion_rate = c2c_rate or 1.0
+                row.conversion_rate = c2c_rate
             # commission -> company conversion
             if row.commission_currency == self.accounting_currency:
                 row.company_amount = flt(row.accrual_amount, 6)
             else:
+                if not c2c_rate or c2c_rate <= 0:
+                    frappe.throw(
+                        _("Missing commission-to-company exchange rate for {0}.").format(
+                            row.commission_ledger_entry
+                        )
+                    )
                 row.company_amount = flt(flt(row.accrual_amount) * c2c_rate, 6)
         # enforce single currency per batch
         if currencies and None not in currencies and len(currencies) > 1:
@@ -322,11 +333,12 @@ class CommissionAccrualBatch(Document):
         # Build per-row GL lines, grouping by (expense, liability, cost_center, project)
         lines = []
         for row in self.items or []:
-            amt = flt(getattr(row, "company_amount", None))
-            if amt is None:
+            raw_amt = getattr(row, "company_amount", None)
+            if raw_amt is None:
                 frappe.throw(
                     _("Company amount is not set for {0}.").format(row.commission_ledger_entry)
                 )
+            amt = flt(raw_amt)
             if amt == 0:
                 continue
             expense_account = getattr(row, "commission_expense_account", None) or self.expense_account
