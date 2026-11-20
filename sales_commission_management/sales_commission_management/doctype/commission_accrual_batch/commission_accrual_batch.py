@@ -1,4 +1,4 @@
-﻿import frappe
+import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, nowdate
@@ -12,16 +12,20 @@ def _company_currency(company):
     )
 
 
-def _accrued_for_entry(entry_name, exclude_batch=None, for_update=False):
+def _accrued_for_entry(entry_name, exclude_batch=None, for_update=False, use_company_amount=False):
     """Sum of accrual amounts already posted for an entry by submitted batches.
 
     Uses submitted Commission Accrual Batch Items as the allocation ledger,
     so an entry can be accrued across multiple batches.
+
+    If use_company_amount is True, sums company_amount (company currency)
+    instead of accrual_amount (commission currency). Used for GL reversals.
     """
     total = 0.0
     if for_update:
+        field_name = "company_amount" if use_company_amount else "accrual_amount"
         q = frappe.qb.from_("Commission Accrual Batch Item").select(
-            "accrual_amount", "parent"
+            field_name, "parent"
         )
         q = q.where(frappe.qb.Field("commission_ledger_entry") == entry_name)
         q = q.where(frappe.qb.Field("docstatus") == 1)
@@ -32,10 +36,11 @@ def _accrued_for_entry(entry_name, exclude_batch=None, for_update=False):
         filters = {"commission_ledger_entry": entry_name, "docstatus": 1}
         if exclude_batch:
             filters["parent"] = ["!=", exclude_batch]
+        field_name = "company_amount" if use_company_amount else "accrual_amount"
         items = frappe.get_all(
             "Commission Accrual Batch Item",
             filters=filters,
-            fields=["accrual_amount", "parent"],
+            fields=[field_name, "parent"],
         )
     if not items:
         return flt(total, 6)
@@ -43,7 +48,7 @@ def _accrued_for_entry(entry_name, exclude_batch=None, for_update=False):
         # Under locking reads, Frappe syncs parent docstatus into child rows,
         # so the docstatus=1 filter on child rows is sufficient. Sum directly.
         for i in items or []:
-            total += flt(i.get("accrual_amount"))
+            total += flt(i.get(field_name))
     else:
         # Non-locking preview path: verify parent batch is submitted.
         parents = frappe.get_all(
@@ -54,7 +59,7 @@ def _accrued_for_entry(entry_name, exclude_batch=None, for_update=False):
         submitted_parents = set(parents or [])
         for i in items or []:
             if i.get("parent") in submitted_parents:
-                total += flt(i.get("accrual_amount"))
+                total += flt(i.get(field_name))
     # If excluding a batch, we already filtered parent != exclude_batch above.
     return flt(total, 6)
 
@@ -190,15 +195,31 @@ class CommissionAccrualBatch(Document):
             # Prefer the dedicated commission-to-company rate; fall back to the
             # invoice conversion rate only when commission currency matches the
             # transaction currency.
+            import math
             c2c_rate = flt(getattr(entry, "commission_to_company_rate", 0))
+            # Validate non-finite or negative stored rates.
+            if c2c_rate and (not math.isfinite(c2c_rate) or c2c_rate <= 0):
+                frappe.throw(
+                    _("Invalid commission-to-company exchange rate for {0}.").format(
+                        row.commission_ledger_entry
+                    )
+                )
             if not c2c_rate:
                 comm_curr = getattr(entry, "commission_currency", None)
                 txn_curr = getattr(entry, "transaction_currency", None)
                 comp_curr = getattr(entry, "company_currency", None)
                 if comm_curr and comp_curr and comm_curr == comp_curr:
+                    # Identical currencies: rate is legitimately 1.0.
                     c2c_rate = 1.0
                 elif comm_curr and txn_curr and comm_curr == txn_curr:
-                    c2c_rate = flt(getattr(entry, "conversion_rate_snapshot", 1)) or 1.0
+                    snapshot = flt(getattr(entry, "conversion_rate_snapshot", 0))
+                    if not snapshot or not math.isfinite(snapshot) or snapshot <= 0:
+                        frappe.throw(
+                            _("Missing commission-to-company exchange rate for {0}.").format(
+                                row.commission_ledger_entry
+                            )
+                        )
+                    c2c_rate = snapshot
                 else:
                     # No valid rate available; reject the batch rather than
                     # substituting a foreign amount as company currency.
@@ -213,7 +234,7 @@ class CommissionAccrualBatch(Document):
             if row.commission_currency == self.accounting_currency:
                 row.company_amount = flt(row.accrual_amount, 6)
             else:
-                if not c2c_rate or c2c_rate <= 0:
+                if not c2c_rate or c2c_rate <= 0 or not math.isfinite(c2c_rate):
                     frappe.throw(
                         _("Missing commission-to-company exchange rate for {0}.").format(
                             row.commission_ledger_entry
@@ -448,7 +469,9 @@ def fetch_unaccrued_entries(company, period_from, period_to, exclude_batch=None)
 
     # Verify company access.
     user_companies = frappe.get_all("User Permission", filters={"user": frappe.session.user, "allow": "Company"}, pluck="for_value")
-    if user_companies and company not in user_companies:
+    if not user_companies:
+        frappe.throw(_("No company access configured for current user."), frappe.PermissionError)
+    if company not in user_companies:
         frappe.throw(_("No access to company {0}.").format(company), frappe.PermissionError)
     from frappe.utils import getdate
 

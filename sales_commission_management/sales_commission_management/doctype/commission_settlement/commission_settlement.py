@@ -1,4 +1,4 @@
-﻿import frappe
+import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, now_datetime, getdate
@@ -346,7 +346,14 @@ class CommissionSettlement(Document):
                 comm_curr = getattr(entry, "commission_currency", None)
                 txn_curr = getattr(entry, "transaction_currency", None)
                 if comm_curr and txn_curr and comm_curr == txn_curr:
-                    rate = flt(getattr(entry, "conversion_rate_snapshot", 1)) or 1.0
+                    snapshot = flt(getattr(entry, "conversion_rate_snapshot", 0))
+                    if not snapshot or snapshot <= 0:
+                        frappe.throw(
+                            _("Cannot resolve commission-to-company rate for entry {0}.").format(
+                                entry_name
+                            )
+                        )
+                    rate = snapshot
                 elif comm_curr == getattr(entry, "company_currency", None):
                     rate = 1.0
                 else:
@@ -478,14 +485,45 @@ class CommissionSettlement(Document):
                 else None
             )
 
+        # Resolve employee salary currency from Salary Structure Assignment.
+        salary_currency = None
+        if frappe.db.exists("DocType", "Salary Structure Assignment"):
+            ssa = frappe.get_all(
+                "Salary Structure Assignment",
+                filters={"employee": self.employee, "docstatus": 1},
+                fields=["currency"],
+                order_by="from_date desc",
+                limit=1,
+            )
+            if ssa:
+                salary_currency = ssa[0].get("currency")
+        if not salary_currency:
+            salary_currency = frappe.db.get_value("Company", self.company, "default_currency") or self.commission_currency
+
+        # Convert amount to salary currency if needed.
+        amount = flt(self.total_payable)
+        if salary_currency and self.commission_currency and salary_currency != self.commission_currency:
+            # Use ERPNext exchange rate.
+            from frappe.utils import get_exchange_rate
+            rate = get_exchange_rate(self.commission_currency, salary_currency, frappe.utils.nowdate())
+            if not rate or rate <= 0:
+                frappe.throw(
+                    _("Missing exchange rate from {0} to {1}.").format(
+                        self.commission_currency, salary_currency
+                    )
+                )
+            amount = flt(amount * rate, 2)
+
         doc = frappe.get_doc(
             {
                 "doctype": "Additional Salary",
                 "employee": self.employee,
                 "salary_component": salary_component,
-                "amount": flt(self.total_payable),
-                "pay_from_date": self.period_from,
-                "pay_to_date": self.period_to,
+                "amount": amount,
+                "currency": salary_currency,
+                "payroll_date": self.period_from or frappe.utils.nowdate(),
+                "from_date": self.period_from,
+                "to_date": self.period_to,
                 "company": self.company,
                 "ref_doctype": "Commission Settlement",
                 "ref_docname": self.name,
@@ -528,10 +566,28 @@ class CommissionSettlement(Document):
         else:
             debit_account = expense_account
 
+        # Resolve supplier currency for the Purchase Invoice.
+        supplier_currency = frappe.db.get_value("Supplier", self.supplier, "default_currency")
+        if not supplier_currency:
+            supplier_currency = frappe.db.get_value("Company", self.company, "default_currency")
+
+        # Convert settlement amount to supplier currency if needed.
+        pi_amount = flt(self.total_payable)
+        if supplier_currency and self.commission_currency and supplier_currency != self.commission_currency:
+            from frappe.utils import get_exchange_rate
+            rate = get_exchange_rate(self.commission_currency, supplier_currency, frappe.utils.nowdate())
+            if not rate or rate <= 0:
+                frappe.throw(
+                    _("Missing exchange rate from {0} to {1}.").format(
+                        self.commission_currency, supplier_currency
+                    )
+                )
+            pi_amount = flt(pi_amount * rate, 2)
+
         item_row = {
             "item_code": item_code,
             "qty": 1,
-            "rate": flt(self.total_payable),
+            "rate": pi_amount,
         }
         if not debit_account:
             frappe.throw(
@@ -547,6 +603,7 @@ class CommissionSettlement(Document):
                 "doctype": "Purchase Invoice",
                 "supplier": self.supplier,
                 "company": self.company,
+                "currency": supplier_currency,
                 "posting_date": frappe.utils.nowdate(),
                 "items": [item_row],
                 "remarks": f"Commission settlement {self.name}",
@@ -797,10 +854,12 @@ def get_eligible_commission_entries(
     if not beneficiary:
         frappe.throw(_("A beneficiary (sales person or sales partner) is required."))
 
-    # Verify company access.
+    # Verify company access for non-privileged users.
     if not is_privileged:
         user_companies = frappe.get_all("User Permission", filters={"user": frappe.session.user, "allow": "Company"}, pluck="for_value")
-        if user_companies and company not in user_companies:
+        if not user_companies:
+            frappe.throw(_("No company access configured for current user."), frappe.PermissionError)
+        if company not in user_companies:
             frappe.throw(_("No access to company {0}.").format(company), frappe.PermissionError)
 
     filters = {

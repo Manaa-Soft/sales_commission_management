@@ -1263,6 +1263,13 @@ def generate_commission_on_payment(payment_entry, method=None):
         return
     if getattr(payment_entry, "docstatus", 0) != 1:
         return
+    # Check settings.
+    if frappe.db.exists("Commission Settings"):
+        settings = frappe.get_single("Commission Settings")
+        if not getattr(settings, "enabled", 1):
+            return
+        if not getattr(settings, "enable_payment_entry", 1):
+            return
 
     references = payment_entry.get("references") or []
     invoices = set()
@@ -1498,7 +1505,7 @@ def reverse_commission_entries(doc, method=None):
         from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import _accrued_for_entry
 
         # Fail closed: do not fall back to stale accrued_amount.
-        _total_accrued = _accrued_for_entry(original.name)
+        _total_accrued = _accrued_for_entry(original.name, use_company_amount=True)
         # Subtract amounts already reclassified to payable by submitted settlements.
         from sales_commission_management.sales_commission_management.doctype.commission_settlement.commission_settlement import _reclassified_for_entry
 
@@ -1591,9 +1598,12 @@ def reverse_commission_entries(doc, method=None):
                         expense_account = getattr(settings, "default_commission_expense_account", None)
                     if not cost_center:
                         cost_center = getattr(settings, "default_cost_center", None)
-                if accrued_account and expense_account:
-                    amt = abs(_orig_accrued)
-                    je = frappe.get_doc(
+                if not accrued_account or not expense_account:
+                    frappe.throw(
+                        _("Accrued liability or expense account not configured for company {0}.").format(original.company)
+                    )
+                amt = abs(_orig_accrued)
+                je = frappe.get_doc(
                         {
                             "doctype": "Journal Entry",
                             "voucher_type": "Journal Entry",
@@ -1614,11 +1624,11 @@ def reverse_commission_entries(doc, method=None):
                             ),
                         }
                     )
-                    if cost_center:
-                        for a in je.accounts:
-                            a.cost_center = cost_center
-                    je.insert(ignore_permissions=True)
-                    je.submit()
+                if cost_center:
+                    for a in je.accounts:
+                        a.cost_center = cost_center
+                je.insert(ignore_permissions=True)
+                je.submit()
 
 
 def _is_lock_contention_error(exc):
