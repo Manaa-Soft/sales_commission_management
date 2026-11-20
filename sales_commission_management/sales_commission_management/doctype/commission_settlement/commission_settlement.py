@@ -166,10 +166,9 @@ class CommissionSettlement(Document):
             }
         )
         for name in entry_names:
-            frappe.db.sql(
-                "SELECT name FROM `tabCommission Entry` WHERE name = %s FOR UPDATE",
-                (name,),
-            )
+            frappe.qb.from_("Commission Entry").select("name").where(
+                frappe.qb.Field("name") == entry_name
+            ).for_update().run()
         for row in self.entries or []:
             entry_name = getattr(row, "commission_ledger_entry", None)
             if not entry_name:

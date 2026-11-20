@@ -51,6 +51,42 @@ def _company_currency(company):
     )
 
 
+def _resolve_commission_currency(plan, doc, company_currency, txn_currency, exchange_rate):
+    """Resolve commission currency and its rate to company currency.
+
+    Returns (commission_currency, commission_to_company_rate).
+    """
+    policy = getattr(plan, "commission_currency_policy", None) or "Company Currency"
+    if policy == "Transaction Currency":
+        commission_currency = txn_currency or company_currency
+    elif policy == "Fixed Currency":
+        commission_currency = getattr(plan, "commission_currency", None) or company_currency
+    else:
+        commission_currency = company_currency
+
+    if commission_currency == company_currency:
+        rate = 1.0
+    elif commission_currency == txn_currency:
+        rate = exchange_rate or 1.0
+    else:
+        # Fixed (third) currency: resolve actual exchange rate.
+        try:
+            from frappe.utils import get_exchange_rate
+            r = get_exchange_rate(
+                commission_currency, company_currency, getattr(doc, "posting_date", None)
+            )
+            if not r or flt(r) <= 0:
+                raise ValueError("no rate")
+            rate = flt(r)
+        except Exception:
+            frappe.throw(
+                _("Cannot resolve exchange rate from {0} to {1}.").format(
+                    commission_currency, company_currency
+                )
+            )
+    return commission_currency, (rate or 1.0)
+
+
 def _expand_sales_person(sales_person):
     """Return list of sales person names.
 
@@ -819,6 +855,11 @@ def generate_commission_entries(doc, method=None, force=False):
     company_currency = _company_currency(doc.company)
     txn_currency = getattr(doc, "currency", None) or company_currency
     exchange_rate = flt(getattr(doc, "conversion_rate", 1)) or 1.0
+
+    # Resolve commission currency and conversion rate once for this invoice.
+    commission_currency, commission_to_company_rate = _resolve_commission_currency(
+        plan, doc, company_currency, txn_currency, exchange_rate
+    )
 
     slabs = plan.get("slabs") or []
     slab_method = getattr(plan, "slab_calculation_method", None) or "Progressive"
