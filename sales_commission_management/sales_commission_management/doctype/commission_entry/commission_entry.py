@@ -1509,7 +1509,7 @@ def reverse_commission_entries(doc, method=None):
         # Subtract amounts already reclassified to payable by submitted settlements.
         from sales_commission_management.sales_commission_management.doctype.commission_settlement.commission_settlement import _reclassified_for_entry
 
-        _already_reclassified = _reclassified_for_entry(original.name)
+        _already_reclassified = _reclassified_for_entry(original.name, use_company_amount=True)
         _orig_accrued = flt(_total_accrued - _already_reclassified)
         ev_key = _event_key(
             "Sales Invoice",

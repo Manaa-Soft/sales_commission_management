@@ -1,4 +1,4 @@
-import frappe
+﻿import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, now_datetime, getdate
@@ -317,6 +317,8 @@ class CommissionSettlement(Document):
         # Track the actual reclassified (commission-currency) amount per entry
         # so it can be audited on the settlement item row.
         row_reclassified = {}
+        # Track the company-currency reclassified amount for GL reversal.
+        row_reclassified_company = {}
         for row in self.entries or []:
             entry_name = getattr(row, "commission_ledger_entry", None)
             if not entry_name:
@@ -340,7 +342,12 @@ class CommissionSettlement(Document):
             delta = min(flt(row.amount_included), remaining_accrual)
             if delta <= 0.005:
                 continue
+            import math
             rate = flt(getattr(entry, "commission_to_company_rate", 0))
+            if rate and (not math.isfinite(rate) or rate <= 0):
+                frappe.throw(
+                    _("Invalid commission-to-company rate for entry {0}.").format(entry_name)
+                )
             if not rate or rate <= 0:
                 # Fall back only when commission currency matches transaction currency.
                 comm_curr = getattr(entry, "commission_currency", None)
@@ -372,6 +379,7 @@ class CommissionSettlement(Document):
                 delta_company = flt(delta, 6)
             reclassify_total += delta_company
             row_reclassified[entry_name] = delta
+            row_reclassified_company[entry_name] = delta_company
 
         if reclassify_total <= 0.005:
             return
@@ -413,6 +421,13 @@ class CommissionSettlement(Document):
             entry_name = getattr(row, "commission_ledger_entry", None)
             if entry_name in row_reclassified:
                 row.reclassified_amount = flt(row_reclassified[entry_name], 6)
+                frappe.db.set_value(
+                    "Commission Settlement Item",
+                    row.name,
+                    "base_currency_amount",
+                    flt(row_reclassified_company.get(entry_name, 0), 6),
+                    update_modified=False,
+                )
 
     def on_cancel(self):
         # Reverse linked financial documents first; abort (propagate) if any
@@ -485,27 +500,45 @@ class CommissionSettlement(Document):
                 else None
             )
 
-        # Resolve employee salary currency from Salary Structure Assignment.
+        # Validate employee belongs to the settlement company.
+        emp_company = frappe.db.get_value("Employee", self.employee, "company")
+        if emp_company and emp_company != self.company:
+            frappe.throw(
+                _("Employee {0} does not belong to company {1}.").format(
+                    self.employee, self.company
+                )
+            )
+
+        # Resolve employee salary currency from Salary Structure Assignment
+        # applicable to the payroll date.
+        fx_date = self.period_from or frappe.utils.nowdate()
         salary_currency = None
         if frappe.db.exists("DocType", "Salary Structure Assignment"):
             ssa = frappe.get_all(
                 "Salary Structure Assignment",
-                filters={"employee": self.employee, "docstatus": 1},
-                fields=["currency"],
+                filters={
+                    "employee": self.employee,
+                    "docstatus": 1,
+                    "from_date": ["<=", fx_date],
+                },
+                fields=["currency", "from_date"],
                 order_by="from_date desc",
                 limit=1,
             )
             if ssa:
                 salary_currency = ssa[0].get("currency")
         if not salary_currency:
-            salary_currency = frappe.db.get_value("Company", self.company, "default_currency") or self.commission_currency
+            frappe.throw(
+                _("No applicable Salary Structure Assignment found for employee {0}.").format(
+                    self.employee
+                )
+            )
 
         # Convert amount to salary currency if needed.
         amount = flt(self.total_payable)
         if salary_currency and self.commission_currency and salary_currency != self.commission_currency:
-            # Use ERPNext exchange rate.
             from frappe.utils import get_exchange_rate
-            rate = get_exchange_rate(self.commission_currency, salary_currency, frappe.utils.nowdate())
+            rate = get_exchange_rate(self.commission_currency, salary_currency, fx_date)
             if not rate or rate <= 0:
                 frappe.throw(
                     _("Missing exchange rate from {0} to {1}.").format(
@@ -703,7 +736,7 @@ def _reserved_for_entry(entry_name, exclude_settlement=None):
     return result
 
 
-def _reclassified_for_entry(entry_name, exclude_settlement=None):
+def _reclassified_for_entry(entry_name, exclude_settlement=None, use_company_amount=False):
     total = 0.0
     sett_filters = {"docstatus": 1}
     if exclude_settlement:
@@ -734,21 +767,51 @@ def _reclassified_for_entry(entry_name, exclude_settlement=None):
         valid_names.append(s.name)
     if not valid_names:
         return total
+    fields = ["amount_included", "reclassified_amount", "base_currency_amount"]
     items = frappe.get_all(
-        "Commission Settlement Item",
-        filters={
-            "commission_ledger_entry": entry_name,
-            "parent": ["in", valid_names],
-        },
-        fields=["amount_included", "reclassified_amount"],
+    "Commission Settlement Item",
+    filters={
+    "commission_ledger_entry": entry_name,
+    "parent": ["in", valid_names],
+    },
+    fields=fields,
     )
     for r in items or []:
-        ra = r.get("reclassified_amount")
-        if ra is None or ra == "":
-            total += flt(r.get("amount_included"))
+        if use_company_amount:
+            ba = r.get("base_currency_amount")
+            if ba is not None and ba != "" and flt(ba) != 0:
+                total += flt(ba)
+            else:
+                # Fallback: convert reclassified_amount using entry rate.
+                ra = r.get("reclassified_amount")
+                if ra is None or ra == "":
+                    ra = r.get("amount_included")
+                # Look up the entry's rate for conversion.
+                entry_rate = flt(
+                    frappe.db.get_value("Commission Entry", entry_name, "commission_to_company_rate")
+                )
+                if not entry_rate or entry_rate <= 0:
+                        comm = frappe.db.get_value("Commission Entry", entry_name, "commission_currency")
+                        comp = frappe.db.get_value("Commission Entry", entry_name, "company_currency")
+                        if comm and comp and comm == comp:
+                            entry_rate = 1.0
+                        else:
+                            snapshot = flt(
+                                frappe.db.get_value("Commission Entry", entry_name, "conversion_rate_snapshot")
+                            )
+                            if not snapshot or snapshot <= 0:
+                                frappe.throw(
+                                    _("Cannot resolve commission-to-company rate for entry {0}.").format(entry_name)
+                                )
+                            entry_rate = snapshot
+                total += flt(flt(ra) * entry_rate, 6)
         else:
-            total += flt(ra)
-    return flt(total, 6)
+            ra = r.get("reclassified_amount")
+            if ra is None or ra == "":
+                total += flt(r.get("amount_included"))
+            else:
+                total += flt(ra)
+        return flt(total, 6)
 
 
 def _available_balance_for_entry(entry_name, exclude_settlement=None):
