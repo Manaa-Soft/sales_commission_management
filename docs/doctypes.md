@@ -311,6 +311,31 @@ All reports are `Report` DocType entries of type `Script Report` (one folder und
 
 DocType: `Workspace` (name: "Sales Commission Management"). Standard workspace (`standard = 1`), icon `percent`, module `Sales Commission Management`. Provides sidebar navigation (Plans & Rules, Commission Ledger, Settlements, Periods & Targets, Settings) and shortcuts to 18 of the 20 Script Reports. Synced to the site by `bench migrate`.
 
+## Commission Collection Event (child table)
+
+Child table on `Commission Entry` (`collection_events` field). Immutable audit record of each payment event that affects collection eligibility.
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `event_key` | Data (unique) | Idempotency key: `entry|payment_entry|payment_reference|Collection/Reversal` |
+| `payment_entry` | Link (Payment Entry) | The triggering payment |
+| `payment_reference` | Data | Payment Entry Reference row name |
+| `posting_date` | Date | Payment posting date |
+| `party_account_currency` | Link (Currency) | Currency of the original allocation |
+| `invoice_currency` | Link (Currency) | Sales Invoice currency |
+| `commission_currency` | Link (Currency) | Commission currency (from plan policy) |
+| `company_currency` | Link (Currency) | Company currency |
+| `allocated_amount` | Currency (party) | Allocated amount in party account currency |
+| `invoice_currency_allocated` | Currency (invoice) | Allocated amount converted to invoice currency |
+| `company_currency_allocated` | Currency (company) | Allocated amount converted to company currency |
+| `collection_ratio` | Percent | Cumulative collection ratio at time of event |
+| `eligibility_delta` | Currency (commission) | Change in collection eligibility from this event |
+| `is_reversal` | Check | 1 if the payment was cancelled |
+
+**Immutability**: Once inserted, no field may be modified or deleted (enforced by child controller `commission_collection_event.py` and parent `Commission Entry.validate`).
+
+**Idempotency**: The unique `event_key` constraint prevents duplicate events. Repeated hook execution skips existing events.
+
 ## Native-overlap hook
 
 `Commission Settings.block_native_hrms_overlap` gates the `before_submit` hook `neutralize_native_commission` on `Sales Invoice` (and `before_update_after_submit` -> `neutralize_native_commission_on_update`), which zeroes native ERPNext commission fields on the Sales Team to prevent double counting. See `docs/hooks.md`.

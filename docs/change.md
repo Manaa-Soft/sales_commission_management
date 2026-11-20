@@ -119,8 +119,23 @@ This file records changes to the Sales Commission Management for ERPNext app so 
 - `_available_balance_for_entry`: available = min(collection_available, accrual_available) where collection_available = eligible - reserved - settled, accrual_available = accrued - reclassified.
 - Calculation snapshot enhanced with `calculation_method`, `rate_percentage`, `fixed_amount`, `basis_after_split`, `conversion_rate`, `commission_currency`, `split_source`.
 
+## Commission Collection Event (audit trail)
+
+- Added `Commission Collection Event` child DocType (table on Commission Entry) for immutable audit records of each payment event.
+- `update_commission_payment_status`: creates one event per matching Payment Entry Reference row, with proportional eligibility delta distribution (last reference gets rounding remainder).
+- Idempotency via unique `event_key` (entry + payment_entry + payment_reference + event_type) enforced at DB level; duplicate events are skipped.
+- Currency fields: `party_account_currency`, `invoice_currency`, `commission_currency`, `company_currency` with corresponding monetary amounts (`allocated_amount`, `invoice_currency_allocated`, `company_currency_allocated`, `eligibility_delta`).
+- Event creation is mandatory (fail-closed): if event insertion fails, the entire Payment Entry transaction rolls back.
+- Child DocType controller (`commission_collection_event.py`) enforces immutability: `validate`, `before_save`, and `on_trash` reject any modification or deletion.
+- `collection_events` added to Commission Entry `validate` immutable_fields list.
+- Concurrency safety: invoice-level `FOR UPDATE` lock acquired in `before_submit`/`before_cancel` hooks (sorted invoice order) before Payment Entry row is saved; cumulative collection uses locking read on reference rows only (no PE parent locks); Payment Entry status read via `FOR UPDATE NOWAIT` with retry.
+- Payment Entry type guard: only `Receive` + `Customer` entries are processed.
+- Fail-closed historical calculation: invalid exchange rates, missing invoices, or retrieval failures abort the transaction.
+- `is_reversal` flag set when payment is cancelled.
+
 ## Notes for coders
 
 - Hook registration lives in `hooks.py` (`doc_events`, `scheduler_events`); run `bench migrate` + restart after changes.
 - Commission is stored in company currency; transaction currency and exchange rate are persisted for audit.
 - Reversal is append-only; never delete generated `Commission Entry` records.
+- `Commission Collection Event` records are immutable once created.

@@ -87,6 +87,7 @@ sales_commission_management/
 - **Multi-currency storage** — commission stored in company currency with transaction currency and exchange-rate snapshot preserved.
 - **Native-overlap guard** — blocks overlapping native HRMS commission payouts when enabled.
 - **Separated balance model** — earned, collection-eligible, reserved, settled, and available are tracked independently.
+- **Collection event audit trail** — immutable `Commission Collection Event` records track each payment event with proportional eligibility deltas, currency conversion, and idempotency keys.
 
 ## Extension points
 

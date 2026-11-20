@@ -17,17 +17,23 @@ doc_events = {
         "on_cancel": "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.reverse_commission_entries",
     },
     "Payment Entry": {
-        "on_submit": "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.update_commission_payment_status",
+        "before_submit": "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.lock_referenced_invoices",
+        "before_cancel": "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.lock_referenced_invoices",
+        "on_submit": [
+            "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.generate_commission_on_payment",
+            "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.update_commission_payment_status",
+        ],
         "on_cancel": "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.update_commission_payment_status",
     },
 }
 ```
 
-- **Sales Invoice before_submit** → neutralizes native ERPNext commission fields when the native-overlap guard is enabled.
-- **Sales Invoice / POS Invoice on_submit** → generates commission entries.
-- **Sales Invoice / POS Invoice on_cancel** → creates clawback (negative) entries.
-- **Sales Invoice before_update_after_submit** → neutralizes native ERPNext commission fields on the Sales Team when the native-overlap guard is enabled.
-- **Payment Entry on_submit / on_cancel** → allocates paid amounts to commission entries and updates paid/outstanding/status.
+- **Sales Invoice before_submit** — neutralizes native ERPNext commission fields when the native-overlap guard is enabled.
+- **Sales Invoice / POS Invoice on_submit** — generates commission entries.
+- **Sales Invoice / POS Invoice on_cancel** — creates clawback (negative) entries.
+- **Sales Invoice before_update_after_submit** — neutralizes native ERPNext commission fields on the Sales Team when the native-overlap guard is enabled.
+- **Payment Entry before_submit / before_cancel** — acquires sorted invoice locks to prevent deadlocks during concurrent payment processing.
+- **Payment Entry on_submit / on_cancel** — allocates paid amounts to commission entries, updates paid/outstanding/status, and records immutable Commission Collection Events.
 
 ## Scheduler events
 
@@ -55,3 +61,5 @@ Daily job: aggregates Commission Entry earned amounts per beneficiary within eac
 - Heavy work should be queued via `frappe.enqueue` to avoid blocking the request.
 - POS Invoice support requires branch-specific testing before enabling in production.
 - Payment Entry allocation is proportional across linked commission entries.
+- `lock_referenced_invoices` acquires sorted invoice locks before the Payment Entry row is saved (in `before_submit`/`before_cancel`), preventing deadlocks.
+- Commission Collection Events are immutable audit records created during `update_commission_payment_status`.

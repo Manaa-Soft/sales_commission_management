@@ -11,6 +11,7 @@ Commission engine for ERPNext v15/v16. Calculates sales commission when a Sales 
 - **Automatic generation** — `on_submit` of a Sales Invoice or POS Invoice creates `Commission Entry` records
 - **Clawback** — `on_cancel` reverses entries (negative commission); returns create proportional adjustments
 - **Payment allocation** — `Payment Entry` submit/cancel updates paid/outstanding amounts on entries
+- **Collection event audit trail** — immutable `Commission Collection Event` records track each payment event with proportional eligibility deltas, currency conversion, and idempotency keys
 - **Settlement** — settlement runs create Additional Salary (internal) or Purchase Invoice (external) documents
 - **Accrual batches** — periodic GL accrual batches with balanced Journal Entries
 - **Periods** — open/close/reopen audit controls with mandatory reopen reason
@@ -30,6 +31,7 @@ Commission engine for ERPNext v15/v16. Calculates sales commission when a Sales 
 | Commission Slab | Child Table | Tiered rate slab (from/to amount) |
 | Commission Contributor | Child Table | Multi-rep split (Sales Person/Partner + role + %) |
 | Commission Entry | Submittable Document | Generated commission record per contributor per invoice |
+| Commission Collection Event | Child Table | Immutable audit record of each payment event affecting collection eligibility |
 | Commission Settings | Single | Engine ownership, accounting mode, native-overlap guard, account mappings |
 | Commission Account Mapping | Child Table | Company-level GL account mapping for commission accruals |
 | Commission Target | Document | Beneficiary target (net sales / gross profit / collected / quantity) |
