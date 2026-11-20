@@ -1604,6 +1604,31 @@ def reverse_commission_entries(doc, method=None):
                     je.submit()
 
 
+def _is_lock_contention_error(exc):
+    """Check if an exception is a MariaDB lock contention error (1205).
+
+    Frappe v15/v16 wraps PyMySQL exceptions in frappe.QueryTimeoutError,
+    so we need to unwrap the exception chain to find the original error code.
+    """
+    pending = [exc]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if not isinstance(current, BaseException) or id(current) in seen:
+            continue
+        seen.add(id(current))
+        args = getattr(current, "args", ()) or ()
+        if args and args[0] in (1205, "1205"):
+            return True
+        if args and isinstance(args[0], BaseException):
+            pending.append(args[0])
+        for attr in ("orig", "__cause__", "__context__"):
+            nested = getattr(current, attr, None)
+            if isinstance(nested, BaseException):
+                pending.append(nested)
+    return False
+
+
 def lock_referenced_invoices(payment_entry, method=None):
     """Acquire sorted invoice locks before the Payment Entry is saved.
 
@@ -1705,13 +1730,8 @@ def update_commission_payment_status(payment_entry, method=None):
                         pe_cache[pe_name] = locked_pe[0] if locked_pe else None
                         break
                     except Exception as e:
-                        # Only retry on lock contention (MariaDB error 1205).
-                        # Re-raise all other errors immediately.
-                        err_code = getattr(e, "args", [None])[0] if getattr(e, "args", None) else None
-                        # Also check nested pymysql error.
-                        if err_code is None and hasattr(e, "orig"):
-                            err_code = getattr(e.orig, "args", [None])[0]
-                        if err_code not in (1205, "1205"):
+                        # Unwrap Frappe's QueryTimeoutError to find MariaDB error 1205.
+                        if not _is_lock_contention_error(e):
                             raise
                         if attempt < 2:
                             import time
