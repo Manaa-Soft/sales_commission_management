@@ -1,6 +1,7 @@
 import frappe
 from frappe import _
 from frappe.model.document import Document
+from sales_commission_management.sales_commission_management.utils import currency_precision as _cp
 from frappe.utils import flt, now_datetime, getdate
 
 
@@ -410,11 +411,11 @@ class CommissionSettlement(Document):
                 "accounts": [
                     {
                         "account": accrued_account,
-                        "debit_in_account_currency": flt(reclassify_total, 2),
+                        "debit_in_account_currency": flt(reclassify_total, _cp(self.company_currency or frappe.db.get_value("Company", self.company, "default_currency"))),
                     },
                     {
                         "account": payable_account,
-                        "credit_in_account_currency": flt(reclassify_total, 2),
+                        "credit_in_account_currency": flt(reclassify_total, _cp(self.company_currency or frappe.db.get_value("Company", self.company, "default_currency"))),
                     },
                 ],
                 "user_remark": f"Clear accrued commission liability for settlement {self.name}",
@@ -558,7 +559,8 @@ class CommissionSettlement(Document):
                     )
                 )
             fx_rate = rate
-            amount = flt(amount * rate, 2)
+            from sales_commission_management.sales_commission_management.utils import currency_precision as _cp
+            amount = flt(amount * rate, _cp(salary_currency))
 
         # Persist FX snapshot on the settlement for audit.
         self.settlement_fx_rate = fx_rate
@@ -639,7 +641,8 @@ class CommissionSettlement(Document):
                     )
                 )
             pi_fx_rate = rate
-            pi_amount = flt(pi_amount * rate, 2)
+            from sales_commission_management.sales_commission_management.utils import currency_precision as _cp
+            pi_amount = flt(pi_amount * rate, _cp(supplier_currency))
 
         # Persist FX snapshot on the settlement for audit.
         self.settlement_fx_rate = pi_fx_rate

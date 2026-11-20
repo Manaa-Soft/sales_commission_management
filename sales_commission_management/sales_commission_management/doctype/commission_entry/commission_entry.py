@@ -1,5 +1,6 @@
 import frappe
 from frappe import _
+from sales_commission_management.sales_commission_management.utils import currency_precision as _cp
 from frappe.model.document import Document
 from frappe.utils import flt, getdate
 
@@ -1612,11 +1613,11 @@ def reverse_commission_entries(doc, method=None):
                             "accounts": [
                                 {
                                     "account": accrued_account,
-                                    "debit_in_account_currency": flt(amt, 2),
+                                    "debit_in_account_currency": flt(amt, _cp(original.company_currency)),
                                 },
                                 {
                                     "account": expense_account,
-                                    "credit_in_account_currency": flt(amt, 2),
+                                    "credit_in_account_currency": flt(amt, _cp(original.company_currency)),
                                 },
                             ],
                             "user_remark": "Reverse accrued commission for cancelled invoice {0}".format(

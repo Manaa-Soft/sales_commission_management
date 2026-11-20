@@ -272,7 +272,9 @@ class CommissionAccrualBatch(Document):
                     )
                 )
             total += flt(company_amount)
-        self.total_amount = flt(total, 2)
+        from sales_commission_management.sales_commission_management.utils import currency_precision
+        prec = currency_precision(self.accounting_currency)
+        self.total_amount = flt(total, prec)
 
     def _validate_items(self):
         seen = set()
@@ -421,10 +423,12 @@ class CommissionAccrualBatch(Document):
         accounts = []
         for (kind, acct, cc, proj), amt in agg.items():
             row = {"account": acct}
+            from sales_commission_management.sales_commission_management.utils import currency_precision
+            prec = currency_precision(self.accounting_currency)
             if kind == "debit":
-                row["debit_in_account_currency"] = flt(amt, 2)
+                row["debit_in_account_currency"] = flt(amt, prec)
             else:
-                row["credit_in_account_currency"] = flt(amt, 2)
+                row["credit_in_account_currency"] = flt(amt, prec)
             if cc:
                 row["cost_center"] = cc
             if proj:
