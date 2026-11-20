@@ -1,4 +1,4 @@
-import frappe
+﻿import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, now_datetime, getdate
@@ -771,12 +771,37 @@ def get_eligible_commission_entries(
     available balance are returned. Each entry is enriched with the balance
     fields used by the Commission Settlement Item child table.
     """
+    # Authorization: require authentication and appropriate role.
+    if frappe.session.user == "Guest":
+        frappe.throw(_("Authentication required."), frappe.PermissionError)
+
+    privileged = {"System Manager", "Accounts Manager", "Sales Manager"}
+    user_roles = set(frappe.get_roles(frappe.session.user))
+    is_privileged = bool(privileged & user_roles)
+
     if not company or not beneficiary_type:
         frappe.throw(_("Company and beneficiary type are required."))
+
+    # Non-privileged users may only query their own linked beneficiary.
+    if not is_privileged:
+        if beneficiary_type == "Sales Person":
+            linked = frappe.db.get_value("Sales Person", {"user": frappe.session.user}, "name")
+            if linked:
+                sales_person = linked
+            else:
+                frappe.throw(_("No linked Sales Person for current user."), frappe.PermissionError)
+        else:
+            frappe.throw(_("Insufficient permissions for partner settlements."), frappe.PermissionError)
 
     beneficiary = sales_person if beneficiary_type == "Sales Person" else sales_partner
     if not beneficiary:
         frappe.throw(_("A beneficiary (sales person or sales partner) is required."))
+
+    # Verify company access.
+    if not is_privileged:
+        user_companies = frappe.get_all("User Permission", filters={"user": frappe.session.user, "allow": "Company"}, pluck="for_value")
+        if user_companies and company not in user_companies:
+            frappe.throw(_("No access to company {0}.").format(company), frappe.PermissionError)
 
     filters = {
         "docstatus": 1,

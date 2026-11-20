@@ -1,4 +1,4 @@
-import frappe
+﻿import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, nowdate
@@ -199,14 +199,14 @@ class CommissionAccrualBatch(Document):
                     c2c_rate = 1.0
                 elif comm_curr and txn_curr and comm_curr == txn_curr:
                     c2c_rate = flt(getattr(entry, "conversion_rate_snapshot", 1)) or 1.0
-            else:
-                # No valid rate available; reject the batch rather than
-                # substituting a foreign amount as company currency.
-                frappe.throw(
-                    _("Missing commission-to-company exchange rate for {0}.").format(
-                        row.commission_ledger_entry
+                else:
+                    # No valid rate available; reject the batch rather than
+                    # substituting a foreign amount as company currency.
+                    frappe.throw(
+                        _("Missing commission-to-company exchange rate for {0}.").format(
+                            row.commission_ledger_entry
+                        )
                     )
-                )
             if not getattr(row, "conversion_rate", None):
                 row.conversion_rate = c2c_rate
             # commission -> company conversion
@@ -435,8 +435,21 @@ class CommissionAccrualBatch(Document):
 @frappe.whitelist()
 def fetch_unaccrued_entries(company, period_from, period_to, exclude_batch=None):
     """Return submitted Commission Entries with unaccrued balance within period."""
+    if frappe.session.user == "Guest":
+        frappe.throw(_("Authentication required."), frappe.PermissionError)
+
+    privileged = {"System Manager", "Accounts Manager", "Sales Manager"}
+    user_roles = set(frappe.get_roles(frappe.session.user))
+    if not (privileged & user_roles):
+        frappe.throw(_("Insufficient permissions for accrual operations."), frappe.PermissionError)
+
     if not company or not period_from or not period_to:
         frappe.throw(_("Company and period are required."))
+
+    # Verify company access.
+    user_companies = frappe.get_all("User Permission", filters={"user": frappe.session.user, "allow": "Company"}, pluck="for_value")
+    if user_companies and company not in user_companies:
+        frappe.throw(_("No access to company {0}.").format(company), frappe.PermissionError)
     from frappe.utils import getdate
 
     entries = frappe.get_all(
