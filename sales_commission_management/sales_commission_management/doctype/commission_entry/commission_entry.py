@@ -1679,17 +1679,26 @@ def update_commission_payment_status(payment_entry, method=None):
             ("Sales Invoice", invoice),
             as_dict=True,
         )
-        # Cache PE details to avoid repeated lookups.
+        # Cache PE details using a locking read to get current committed data.
         pe_cache = {}
         for r in locked_refs or []:
             pe_name = r.parent
             if pe_name not in pe_cache:
-                pe_cache[pe_name] = frappe.get_value(
-                    "Payment Entry",
-                    pe_name,
-                    ["docstatus", "payment_type", "party_type", "source_exchange_rate"],
+                locked_pe = frappe.db.sql(
+                    """
+                    SELECT
+                        docstatus,
+                        payment_type,
+                        party_type,
+                        source_exchange_rate
+                    FROM `tabPayment Entry`
+                    WHERE name = %s
+                    FOR UPDATE
+                    """,
+                    (pe_name,),
                     as_dict=True,
                 )
+                pe_cache[pe_name] = locked_pe[0] if locked_pe else None
             pe = pe_cache[pe_name]
             if not pe or pe.docstatus != 1:
                 continue
