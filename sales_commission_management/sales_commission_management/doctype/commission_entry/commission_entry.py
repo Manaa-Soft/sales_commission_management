@@ -1684,21 +1684,34 @@ def update_commission_payment_status(payment_entry, method=None):
         for r in locked_refs or []:
             pe_name = r.parent
             if pe_name not in pe_cache:
-                locked_pe = frappe.db.sql(
-                    """
-                    SELECT
-                        docstatus,
-                        payment_type,
-                        party_type,
-                        source_exchange_rate
-                    FROM `tabPayment Entry`
-                    WHERE name = %s
-                    FOR UPDATE
-                    """,
-                    (pe_name,),
-                    as_dict=True,
-                )
-                pe_cache[pe_name] = locked_pe[0] if locked_pe else None
+                # Use NOWAIT to fail fast instead of waiting (deadlock prevention).
+                # Retry a few times before giving up.
+                for attempt in range(3):
+                    try:
+                        locked_pe = frappe.db.sql(
+                            """
+                            SELECT
+                                docstatus,
+                                payment_type,
+                                party_type,
+                                source_exchange_rate
+                            FROM `tabPayment Entry`
+                            WHERE name = %s
+                            FOR UPDATE NOWAIT
+                            """,
+                            (pe_name,),
+                            as_dict=True,
+                        )
+                        pe_cache[pe_name] = locked_pe[0] if locked_pe else None
+                        break
+                    except Exception as e:
+                        if attempt < 2:
+                            import time
+                            time.sleep(0.1)
+                            continue
+                        frappe.throw(
+                            _("Could not obtain lock on Payment Entry {0}. Please retry.").format(pe_name)
+                        )
             pe = pe_cache[pe_name]
             if not pe or pe.docstatus != 1:
                 continue
