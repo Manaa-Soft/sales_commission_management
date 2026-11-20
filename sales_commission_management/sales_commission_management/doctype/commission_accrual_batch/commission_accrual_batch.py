@@ -1,4 +1,4 @@
-import frappe
+﻿import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, nowdate
@@ -174,9 +174,18 @@ class CommissionAccrualBatch(Document):
             # transaction currency.
             c2c_rate = flt(getattr(entry, "commission_to_company_rate", 0))
             if not c2c_rate:
-                c2c_rate = flt(getattr(entry, "conversion_rate_snapshot", 1)) or 1.0
+                comm_curr = getattr(entry, "commission_currency", None)
+                txn_curr = getattr(entry, "transaction_currency", None)
+                comp_curr = getattr(entry, "company_currency", None)
+                if comm_curr and comp_curr and comm_curr == comp_curr:
+                    c2c_rate = 1.0
+                elif comm_curr and txn_curr and comm_curr == txn_curr:
+                    c2c_rate = flt(getattr(entry, "conversion_rate_snapshot", 1)) or 1.0
+                else:
+                    # No valid rate; leave as 0 to flag the issue.
+                    c2c_rate = 0.0
             if not getattr(row, "conversion_rate", None):
-                row.conversion_rate = c2c_rate
+                row.conversion_rate = c2c_rate or 1.0
             # commission -> company conversion
             if row.commission_currency == self.accounting_currency:
                 row.company_amount = flt(row.accrual_amount, 6)

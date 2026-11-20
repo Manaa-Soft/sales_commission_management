@@ -1,4 +1,4 @@
-import frappe
+﻿import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, getdate
@@ -441,6 +441,8 @@ def _insert_entry(
     company_currency,
     txn_currency,
     exchange_rate,
+    commission_currency=None,
+    commission_to_company_rate=None,
     selected_slab_rate=0.0,
     attainment_before_pct=0.0,
     attainment_after_pct=0.0,
@@ -465,13 +467,35 @@ def _insert_entry(
         except Exception:
             supplier = None
 
-    commission_currency = company_currency
-    if getattr(plan, "commission_currency_policy", None) == "Transaction Currency":
-        commission_currency = txn_currency
-    elif getattr(plan, "commission_currency_policy", None) == "Fixed Currency":
-        commission_currency = (
-            getattr(plan, "commission_currency", None) or company_currency
-        )
+    # Resolve commission currency and rate (passed from caller or fallback).
+    if commission_currency is None:
+        policy = getattr(plan, "commission_currency_policy", None) or "Company Currency"
+        if policy == "Transaction Currency":
+            commission_currency = txn_currency or company_currency
+        elif policy == "Fixed Currency":
+            commission_currency = getattr(plan, "commission_currency", None) or company_currency
+        else:
+            commission_currency = company_currency
+    if commission_to_company_rate is None:
+        if commission_currency == company_currency:
+            commission_to_company_rate = 1.0
+        elif commission_currency == txn_currency:
+            commission_to_company_rate = exchange_rate
+        else:
+            try:
+                from frappe.utils import get_exchange_rate
+                rate = get_exchange_rate(
+                    commission_currency, company_currency, getattr(doc, "posting_date", None)
+                )
+                if not rate or flt(rate) <= 0:
+                    raise ValueError("no rate")
+                commission_to_company_rate = flt(rate)
+            except Exception:
+                frappe.throw(
+                    _("Cannot resolve exchange rate from {0} to {1}.").format(
+                        commission_currency, company_currency
+                    )
+                )
 
     commission_rate = flt(getattr(rule, "rate_percentage", 0))
     fixed_amount = flt(getattr(rule, "fixed_amount", 0))
@@ -906,11 +930,12 @@ def generate_commission_entries(doc, method=None, force=False):
 
             if ctype == "Sales Partner":
                 partner = rep.get("sales_partner")
-                rate = flt(getattr(rule, "rate_percentage", 0))
-                if not partner or not rate:
+                if not partner:
                     continue
+                # Use the common calculation pipeline; do not skip fixed/slab
+                # rules whose base rate_percentage is zero.
                 rep_commission = item_commission * split_share
-                if rep_commission <= 0:
+                if rep_commission <= 0 and not flt(getattr(rule, "fixed_amount", 0)):
                     continue
                 _insert_entry(
                     doc,
@@ -930,6 +955,8 @@ def generate_commission_entries(doc, method=None, force=False):
                     company_currency,
                     txn_currency,
                     exchange_rate,
+                    commission_currency=commission_currency,
+                    commission_to_company_rate=commission_to_company_rate,
                     selected_slab_rate=_selected_slab_rate_val,
                     attainment_before_pct=_prev_att_item,
                     attainment_after_pct=_after_att_item,
@@ -964,6 +991,8 @@ def generate_commission_entries(doc, method=None, force=False):
                 company_currency,
                 txn_currency,
                 exchange_rate,
+                commission_currency=commission_currency,
+                commission_to_company_rate=commission_to_company_rate,
                 selected_slab_rate=_selected_slab_rate_val,
                 attainment_before_pct=_prev_att_item,
                 attainment_after_pct=_after_att_item,
@@ -977,11 +1006,9 @@ def generate_commission_entries(doc, method=None, force=False):
             if getattr(pc, "contributor_type", "") == "Sales Partner"
         }
         if external_partner and external_partner not in plan_partner_beneficiaries:
-            # Plan rule rate is the single commission-rate source; do not use the
-            # native Sales Partner rate from the invoice.
-            partner_commission = basis_company * (
-                flt(getattr(rule, "rate_percentage", 0)) / 100.0
-            )
+            # Use the common calculation pipeline (item_commission), not a
+            # percentage-only formula, so fixed/slab/currency conversion apply.
+            partner_commission = item_commission
             if partner_commission > 0:
                 _insert_entry(
                     doc,
@@ -1001,6 +1028,8 @@ def generate_commission_entries(doc, method=None, force=False):
                     company_currency,
                     txn_currency,
                     exchange_rate,
+                    commission_currency=commission_currency,
+                    commission_to_company_rate=commission_to_company_rate,
                     selected_slab_rate=_selected_slab_rate_val,
                     attainment_before_pct=_prev_att_item,
                     attainment_after_pct=_after_att_item,

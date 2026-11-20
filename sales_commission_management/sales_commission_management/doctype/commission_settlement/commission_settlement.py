@@ -1,4 +1,4 @@
-import frappe
+﻿import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, now_datetime, getdate
@@ -341,9 +341,21 @@ class CommissionSettlement(Document):
             delta = min(flt(row.amount_included), remaining_accrual)
             if delta <= 0.005:
                 continue
-            rate = flt(getattr(entry, "commission_to_company_rate", 1)) or 1.0
+            rate = flt(getattr(entry, "commission_to_company_rate", 0))
             if not rate or rate <= 0:
-                rate = flt(getattr(entry, "conversion_rate_snapshot", 1)) or 1.0
+                # Fall back only when commission currency matches transaction currency.
+                comm_curr = getattr(entry, "commission_currency", None)
+                txn_curr = getattr(entry, "transaction_currency", None)
+                if comm_curr and txn_curr and comm_curr == txn_curr:
+                    rate = flt(getattr(entry, "conversion_rate_snapshot", 1)) or 1.0
+                elif comm_curr == getattr(entry, "company_currency", None):
+                    rate = 1.0
+                else:
+                    frappe.throw(
+                        _("Cannot resolve commission-to-company rate for entry {0}.").format(
+                            entry_name
+                        )
+                    )
             commission_currency = getattr(entry, "commission_currency", None)
             company_currency = getattr(entry, "company_currency", None)
             if not company_currency:
