@@ -1616,6 +1616,10 @@ def update_commission_payment_status(payment_entry, method=None):
     invoice, so multiple payments, partial payments, and cancellations are
     handled correctly and idempotently.
     """
+    if getattr(payment_entry, "payment_type", None) != "Receive":
+        return
+    if getattr(payment_entry, "party_type", None) != "Customer":
+        return
     references = payment_entry.get("references") or []
     invoices = set()
     for ref in references:
@@ -1623,34 +1627,25 @@ def update_commission_payment_status(payment_entry, method=None):
             invoices.add(ref.reference_name)
 
     for invoice in invoices:
-        try:
-            inv = frappe.get_doc("Sales Invoice", invoice)
-        except Exception:
-            continue
+        inv = frappe.get_doc("Sales Invoice", invoice)
         invoice_total = abs(flt(inv.base_grand_total)) or 1.0
         if invoice_total <= 0:
-            continue
+            frappe.throw("Invalid invoice total for {0}".format(invoice))
 
         # Compute cumulative collection ratio from all submitted Payment Entries
         # referencing this invoice, converted to invoice transaction currency.
         cumulative_allocated = 0.0
-        try:
-            all_refs = frappe.get_all(
-                "Payment Entry Reference",
-                filters={
-                    "reference_doctype": "Sales Invoice",
-                    "reference_name": invoice,
-                },
-                fields=["allocated_amount", "parent"],
-            )
-        except Exception:
-            all_refs = []
+        all_refs = frappe.get_all(
+            "Payment Entry Reference",
+            filters={
+                "reference_doctype": "Sales Invoice",
+                "reference_name": invoice,
+            },
+            fields=["allocated_amount", "parent"],
+        )
         for r in all_refs or []:
             pe_name = r.get("parent")
-            try:
-                pe = frappe.get_doc("Payment Entry", pe_name)
-            except Exception:
-                continue
+            pe = frappe.get_doc("Payment Entry", pe_name)
             if getattr(pe, "docstatus", 0) != 1:
                 continue
             if getattr(pe, "payment_type", None) not in (None, "Receive"):
@@ -1660,27 +1655,18 @@ def update_commission_payment_status(payment_entry, method=None):
             allocated_raw = flt(r.get("allocated_amount"))
             if allocated_raw == 0:
                 continue
-            try:
-                # allocated_raw is denominated in the party (receivable) account
-                # currency; convert to company currency using the source exchange
-                # rate (paid-from -> company), NOT the target (paid-to -> company)
-                # rate, which would mis-scale foreign-currency collections.
-                source_rate = flt(getattr(pe, "source_exchange_rate", 0))
-                if source_rate <= 0:
-                    frappe.throw(
-                        _("Invalid source exchange rate in Payment Entry {0}.").format(
-                            pe.name
-                        )
+            # allocated_raw is denominated in the party (receivable) account
+            # currency; convert to company currency using the source exchange
+            # rate (paid-from -> company), NOT the target (paid-to -> company)
+            # rate, which would mis-scale foreign-currency collections.
+            source_rate = flt(getattr(pe, "source_exchange_rate", 0))
+            if source_rate <= 0:
+                frappe.throw(
+                    _("Invalid source exchange rate in Payment Entry {0}.").format(
+                        pe.name
                     )
-                allocated = allocated_raw * source_rate
-            except Exception:
-                frappe.log_error(
-                    frappe.get_traceback(),
-                    "Commission: currency conversion failed for payment {}".format(
-                        pe_name
-                    ),
                 )
-                continue
+            allocated = allocated_raw * source_rate
             cumulative_allocated += abs(allocated)
 
         cumulative_ratio = min(max(cumulative_allocated / invoice_total, 0.0), 1.0)
@@ -1701,6 +1687,7 @@ def update_commission_payment_status(payment_entry, method=None):
                 "accrual_status",
                 "collection_status",
                 "settlement_status",
+                "commission_currency",
             ],
         )
         for e in entries:
@@ -1771,15 +1758,36 @@ def update_commission_payment_status(payment_entry, method=None):
             ]
 
             # The eligibility delta for THIS payment event.
-            add_eligible = target_eligible - flt(e.collection_eligible_amount)
+            total_add_eligible = target_eligible - flt(e.collection_eligible_amount)
+
+            # Distribute the eligibility delta proportionally across reference rows.
+            total_raw = sum(
+                flt(getattr(r, "allocated_amount", 0)) if r else 0.0
+                for r in (matching_refs or [])
+            )
+            if not total_raw:
+                total_raw = 1.0
+
+            remaining_delta = flt(total_add_eligible, 6)
 
             # Record one immutable collection event per reference row.
-            for matching_ref in (matching_refs or [None]):
+            for idx, matching_ref in enumerate(matching_refs or [None]):
                 ref_allocated_raw = flt(getattr(matching_ref, "allocated_amount", 0)) if matching_ref else 0.0
                 # Fail closed: do not fall back to raw amount on conversion failure.
                 ref_allocated = payment_entry.get_allocated_amount_in_transaction_currency(
                     ref_allocated_raw, "Sales Invoice", invoice
                 )
+
+                # Proportional share of the eligibility delta.
+                if total_raw:
+                    share = ref_allocated_raw / total_raw
+                else:
+                    share = 1.0
+                if idx == len(matching_refs or [None]) - 1:
+                    ref_delta = flt(remaining_delta, 6)
+                else:
+                    ref_delta = flt(total_add_eligible * share, 6)
+                    remaining_delta = flt(remaining_delta - ref_delta, 6)
 
                 event_key = "|".join([
                     e.name or "",
@@ -1797,6 +1805,10 @@ def update_commission_payment_status(payment_entry, method=None):
                 if existing:
                     continue
 
+                source_rate = flt(getattr(payment_entry, "source_exchange_rate", 0))
+                if source_rate <= 0:
+                    frappe.throw("Invalid source exchange rate for Payment Entry {0}".format(payment_entry.name))
+
                 frappe.get_doc({
                     "doctype": "Commission Collection Event",
                     "event_key": event_key,
@@ -1809,11 +1821,12 @@ def update_commission_payment_status(payment_entry, method=None):
                     "party_account_currency": getattr(payment_entry, "party_account_currency", None),
                     "invoice_currency": frappe.get_value("Sales Invoice", invoice, "currency"),
                     "commission_currency": getattr(e, "commission_currency", None),
+                    "company_currency": getattr(e, "company_currency", None),
                     "allocated_amount": flt(ref_allocated_raw, 6),
                     "invoice_currency_allocated": flt(ref_allocated, 6),
-                    "company_currency_allocated": flt(ref_allocated_raw * flt(getattr(payment_entry, "source_exchange_rate", 1) or 1), 6),
+                    "company_currency_allocated": flt(ref_allocated_raw * source_rate, 6),
                     "collection_ratio": flt(cumulative_ratio * 100.0, 6),
-                    "eligibility_delta": flt(add_eligible, 6),
+                    "eligibility_delta": flt(ref_delta, 6),
                     "is_reversal": 1 if is_cancel else 0,
                 }).insert(ignore_permissions=True)
 

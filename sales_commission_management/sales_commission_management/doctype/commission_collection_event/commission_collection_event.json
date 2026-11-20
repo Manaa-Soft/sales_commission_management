@@ -27,9 +27,10 @@
   {"fieldname": "party_account_currency", "fieldtype": "Link", "label": "Party Account Currency", "options": "Currency", "read_only": 1},
   {"fieldname": "invoice_currency", "fieldtype": "Link", "label": "Invoice Currency", "options": "Currency", "read_only": 1},
   {"fieldname": "commission_currency", "fieldtype": "Link", "label": "Commission Currency", "options": "Currency", "read_only": 1},
+  {"fieldname": "company_currency", "fieldtype": "Link", "label": "Company Currency", "options": "Currency", "read_only": 1},
   {"fieldname": "allocated_amount", "fieldtype": "Currency", "label": "Allocated Amount (Party Currency)", "read_only": 1, "options": "party_account_currency"},
   {"fieldname": "invoice_currency_allocated", "fieldtype": "Currency", "label": "Allocated (Invoice Currency)", "read_only": 1, "options": "invoice_currency"},
-  {"fieldname": "company_currency_allocated", "fieldtype": "Currency", "label": "Allocated (Company Currency)", "read_only": 1, "options": "commission_currency"},
+  {"fieldname": "company_currency_allocated", "fieldtype": "Currency", "label": "Allocated (Company Currency)", "read_only": 1, "options": "company_currency"},
   {"fieldname": "collection_ratio", "fieldtype": "Percent", "label": "Collection Ratio", "read_only": 1},
   {"fieldname": "eligibility_delta", "fieldtype": "Currency", "label": "Eligibility Delta", "read_only": 1, "options": "commission_currency"},
   {"fieldname": "is_reversal", "fieldtype": "Check", "label": "Is Reversal", "read_only": 1, "default": "0"}
