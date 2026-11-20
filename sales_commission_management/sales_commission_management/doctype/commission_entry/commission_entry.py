@@ -15,6 +15,21 @@ class CommissionEntry(Document):
             immutable_fields = {
                 "earned_commission",
                 "commission_basis_amount",
+                "transaction_basis_amount",
+                "company_basis_amount",
+                "commission_rate",
+                "commission_to_company_rate",
+                "fixed_amount_snapshot",
+                "commission_currency",
+                "transaction_currency",
+                "company_currency",
+                "conversion_rate_snapshot",
+                "exchange_rate",
+                "earned_delta",
+                "basis_name",
+                "item_code",
+                "item_group",
+                "source_qty",
                 "sales_invoice",
                 "posting_date",
                 "company",
@@ -22,6 +37,10 @@ class CommissionEntry(Document):
                 "sales_partner",
                 "commission_plan",
                 "commission_rule",
+                "pool_code",
+                "beneficiary_type",
+                "event_type",
+                "event_key",
             }
             for f in immutable_fields:
                 if self.has_value_changed(f):
@@ -67,7 +86,13 @@ def _resolve_commission_currency(plan, doc, company_currency, txn_currency, exch
     if commission_currency == company_currency:
         rate = 1.0
     elif commission_currency == txn_currency:
-        rate = exchange_rate or 1.0
+        if not exchange_rate or flt(exchange_rate) <= 0:
+            frappe.throw(
+                _("Cannot resolve exchange rate from {0} to {1}.").format(
+                    txn_currency, company_currency
+                )
+            )
+        rate = flt(exchange_rate)
     else:
         # Fixed (third) currency: resolve actual exchange rate.
         try:

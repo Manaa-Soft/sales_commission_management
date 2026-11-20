@@ -202,7 +202,14 @@ class CommissionAccrualBatch(Document):
     def _compute_total(self):
         total = 0.0
         for row in self.items or []:
-            total += flt(getattr(row, "company_amount", None) or row.accrual_amount)
+            company_amount = getattr(row, "company_amount", None)
+            if company_amount is None:
+                frappe.throw(
+                    _("Company amount is not set for Commission Entry {0}.").format(
+                        row.commission_ledger_entry
+                    )
+                )
+            total += flt(company_amount)
         self.total_amount = flt(total, 2)
 
     def _validate_items(self):
@@ -315,7 +322,11 @@ class CommissionAccrualBatch(Document):
         # Build per-row GL lines, grouping by (expense, liability, cost_center, project)
         lines = []
         for row in self.items or []:
-            amt = flt(getattr(row, "company_amount", None) or row.accrual_amount)
+            amt = flt(getattr(row, "company_amount", None))
+            if amt is None:
+                frappe.throw(
+                    _("Company amount is not set for {0}.").format(row.commission_ledger_entry)
+                )
             if amt == 0:
                 continue
             expense_account = getattr(row, "commission_expense_account", None) or self.expense_account

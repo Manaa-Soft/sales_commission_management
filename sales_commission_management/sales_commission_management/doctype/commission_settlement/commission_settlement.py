@@ -165,7 +165,7 @@ class CommissionSettlement(Document):
                 if getattr(r, "commission_ledger_entry", None)
             }
         )
-        for name in entry_names:
+        for entry_name in entry_names:
             frappe.qb.from_("Commission Entry").select("name").where(
                 frappe.qb.Field("name") == entry_name
             ).for_update().run()
