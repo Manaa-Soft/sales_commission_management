@@ -1,4 +1,4 @@
-import frappe
+﻿import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, getdate
@@ -892,7 +892,7 @@ def generate_commission_entries(doc, method=None, force=False):
     fixed_invoice_rules_applied = set()
 
     # Plan-level target value and cumulative target metric for the period.
-    _plan_target_value = _plan_target_value(plan)
+    _target_value = _plan_target_value(plan)
     _db_cumulative_metric = _plan_cumulative_metric(
         plan, doc.company, getattr(doc, "posting_date", None)
     )
@@ -940,15 +940,15 @@ def generate_commission_entries(doc, method=None, force=False):
                 item_commission = flt(getattr(rule, "fixed_amount", 0))
                 fixed_invoice_rules_applied.add(getattr(rule, "name", None))
         elif getattr(rule, "use_slabs", 0) and slabs:
-            if _plan_target_value and _plan_target_value > 0:
+            if _target_value and _target_value > 0:
                 _prev_att = (
                     (_db_cumulative_metric + _running_current_metric[0])
-                    / _plan_target_value
+                    / _target_value
                     * 100.0
                 )
                 _after_att = (
                     (_db_cumulative_metric + _running_current_metric[0] + basis_company)
-                    / _plan_target_value
+                    / _target_value
                     * 100.0
                 )
             else:
@@ -963,7 +963,7 @@ def generate_commission_entries(doc, method=None, force=False):
                 slab_method,
                 attainment_pct=_after_att,
                 prev_attainment_pct=_prev_att,
-                target_value=_plan_target_value,
+                target_value=_target_value,
             )
         else:
             rate = flt(getattr(rule, "rate_percentage", 0))
