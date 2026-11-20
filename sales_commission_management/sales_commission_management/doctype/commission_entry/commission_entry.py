@@ -1628,8 +1628,9 @@ def update_commission_payment_status(payment_entry, method=None):
 
     for invoice in invoices:
         inv = frappe.get_doc("Sales Invoice", invoice)
-        invoice_total = abs(flt(inv.base_grand_total)) or 1.0
+        invoice_total = abs(flt(inv.base_grand_total))
         if invoice_total <= 0:
+            frappe.throw(_("Invalid invoice total for {0}.").format(invoice))
             frappe.throw("Invalid invoice total for {0}".format(invoice))
 
         # Compute cumulative collection ratio from all submitted Payment Entries
@@ -1688,23 +1689,26 @@ def update_commission_payment_status(payment_entry, method=None):
                 "collection_status",
                 "settlement_status",
                 "commission_currency",
+                "company_currency",
             ],
         )
         for e in entries:
+            # Lock the entry row to prevent concurrent payment processing.
+            frappe.db.sql(
+                "SELECT name FROM `tabCommission Entry` WHERE name = %s FOR UPDATE",
+                (e.name,),
+            )
             earned = flt(e.earned_commission)
             # Resolve payout_basis from the entry's plan.
             payout_basis = "On Collection"
-            try:
-                plan_name = frappe.get_cached_value("Commission Entry", e.name, "plan")
-                if plan_name:
-                    payout_basis = (
-                        frappe.get_cached_value(
-                            "Commission Plan", plan_name, "payout_basis"
-                        )
-                        or "On Collection"
+            plan_name = frappe.get_cached_value("Commission Entry", e.name, "plan")
+            if plan_name:
+                payout_basis = (
+                    frappe.get_cached_value(
+                        "Commission Plan", plan_name, "payout_basis"
                     )
-            except Exception:
-                payout_basis = "On Collection"
+                    or "On Collection"
+                )
             if payout_basis == "Accrued":
                 # Commission is eligible immediately upon earning (no payment gate).
                 target_eligible = earned
