@@ -1641,35 +1641,47 @@ def update_commission_payment_status(payment_entry, method=None):
         # Compute cumulative collection ratio from all submitted Payment Entries
         # referencing this invoice, converted to invoice transaction currency.
         cumulative_allocated = 0.0
-        all_refs = frappe.get_all(
-            "Payment Entry Reference",
-            filters={
-                "reference_doctype": "Sales Invoice",
-                "reference_name": invoice,
-            },
-            fields=["allocated_amount", "parent"],
+        # Locking read: retrieve allocation data via FOR UPDATE so we see
+        # the latest committed data under REPEATABLE READ isolation.
+        locked_refs = frappe.db.sql(
+            """
+            SELECT
+                per.allocated_amount,
+                per.parent,
+                pe.docstatus,
+                pe.payment_type,
+                pe.party_type,
+                pe.source_exchange_rate
+            FROM `tabPayment Entry Reference` per
+            INNER JOIN `tabPayment Entry` pe
+                ON pe.name = per.parent
+            WHERE
+                per.reference_doctype = %s
+                AND per.reference_name = %s
+            FOR UPDATE
+            """,
+            ("Sales Invoice", invoice),
+            as_dict=True,
         )
-        for r in all_refs or []:
-            pe_name = r.get("parent")
-            pe = frappe.get_doc("Payment Entry", pe_name)
-            if getattr(pe, "docstatus", 0) != 1:
+        for r in locked_refs or []:
+            if r.docstatus != 1:
                 continue
-            if getattr(pe, "payment_type", None) not in (None, "Receive"):
+            if r.payment_type not in (None, "Receive"):
                 continue
-            if getattr(pe, "party_type", None) not in (None, "Customer"):
+            if r.party_type not in (None, "Customer"):
                 continue
-            allocated_raw = flt(r.get("allocated_amount"))
+            allocated_raw = flt(r.allocated_amount)
             if allocated_raw == 0:
                 continue
             # allocated_raw is denominated in the party (receivable) account
             # currency; convert to company currency using the source exchange
             # rate (paid-from -> company), NOT the target (paid-to -> company)
             # rate, which would mis-scale foreign-currency collections.
-            source_rate = flt(getattr(pe, "source_exchange_rate", 0))
+            source_rate = flt(r.source_exchange_rate)
             if source_rate <= 0:
                 frappe.throw(
                     _("Invalid source exchange rate in Payment Entry {0}.").format(
-                        pe.name
+                        r.parent
                     )
                 )
             allocated = allocated_raw * source_rate
@@ -1698,16 +1710,29 @@ def update_commission_payment_status(payment_entry, method=None):
             ],
         )
         for e in entries:
-            # Lock the entry row to prevent concurrent payment processing.
-            frappe.db.sql(
-                "SELECT name FROM `tabCommission Entry` WHERE name = %s FOR UPDATE",
+            # Lock the entry row and retrieve current values in one locking read.
+            locked = frappe.db.sql(
+                """
+                SELECT
+                    name,
+                    earned_commission,
+                    collection_eligible_amount,
+                    commission_currency,
+                    company_currency
+                FROM `tabCommission Entry`
+                WHERE name = %s
+                FOR UPDATE
+                """,
                 (e.name,),
+                as_dict=True,
             )
-            # Re-read current eligibility after acquiring the lock.
-            current_eligible = flt(
-                frappe.db.get_value("Commission Entry", e.name, "collection_eligible_amount")
-            )
-            e.collection_eligible_amount = current_eligible
+            if not locked:
+                continue
+            le = locked[0]
+            e.earned_commission = flt(le.earned_commission)
+            e.collection_eligible_amount = flt(le.collection_eligible_amount)
+            e.commission_currency = le.commission_currency
+            e.company_currency = le.company_currency
             earned = flt(e.earned_commission)
             # Resolve payout_basis from the entry's plan.
             payout_basis = "On Collection"
