@@ -1,4 +1,4 @@
-import frappe
+﻿import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, now_datetime, getdate
@@ -286,6 +286,10 @@ class CommissionSettlement(Document):
             update["settlement_document"] = self.settlement_document
         if getattr(self, "settlement_journal_entry", None):
             update["settlement_journal_entry"] = self.settlement_journal_entry
+        if getattr(self, "settlement_fx_rate", None) is not None:
+            update["settlement_fx_rate"] = self.settlement_fx_rate
+        if getattr(self, "settlement_fx_date", None) is not None:
+            update["settlement_fx_date"] = self.settlement_fx_date
         frappe.db.set_value(
             "Commission Settlement", self.name, update, update_modified=False
         )
@@ -348,6 +352,9 @@ class CommissionSettlement(Document):
                 frappe.throw(
                     _("Invalid commission-to-company rate for entry {0}.").format(entry_name)
                 )
+            import math
+            if rate and (not math.isfinite(rate) or rate <= 0):
+                frappe.throw(_("Invalid exchange rate."))
             if not rate or rate <= 0:
                 # Fall back only when commission currency matches transaction currency.
                 comm_curr = getattr(entry, "commission_currency", None)
@@ -540,6 +547,9 @@ class CommissionSettlement(Document):
         if salary_currency and self.commission_currency and salary_currency != self.commission_currency:
             from frappe.utils import get_exchange_rate
             rate = get_exchange_rate(self.commission_currency, salary_currency, fx_date)
+            import math
+            if rate and (not math.isfinite(rate) or rate <= 0):
+                frappe.throw(_("Invalid exchange rate."))
             if not rate or rate <= 0:
                 frappe.throw(
                     _("Missing exchange rate from {0} to {1}.").format(
@@ -618,6 +628,9 @@ class CommissionSettlement(Document):
         if supplier_currency and self.commission_currency and supplier_currency != self.commission_currency:
             from frappe.utils import get_exchange_rate
             rate = get_exchange_rate(self.commission_currency, supplier_currency, pi_date)
+            import math
+            if rate and (not math.isfinite(rate) or rate <= 0):
+                frappe.throw(_("Invalid exchange rate."))
             if not rate or rate <= 0:
                 frappe.throw(
                     _("Missing exchange rate from {0} to {1}.").format(
