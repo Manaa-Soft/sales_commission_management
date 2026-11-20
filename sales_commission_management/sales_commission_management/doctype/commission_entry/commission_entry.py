@@ -1604,6 +1604,28 @@ def reverse_commission_entries(doc, method=None):
                     je.submit()
 
 
+def lock_referenced_invoices(payment_entry, method=None):
+    """Acquire sorted invoice locks before the Payment Entry is saved.
+
+    Called from before_submit and before_cancel hooks to establish a
+    consistent lock order (Sales Invoice -> Payment Entry -> ...) and
+    prevent deadlocks during concurrent payment processing.
+    """
+    references = payment_entry.get("references") or []
+    invoices = sorted(
+        {
+            ref.reference_name
+            for ref in references
+            if ref.reference_doctype == "Sales Invoice" and ref.reference_name
+        }
+    )
+    for invoice in invoices:
+        frappe.db.sql(
+            "SELECT name FROM `tabSales Invoice` WHERE name = %s FOR UPDATE",
+            (invoice,),
+        )
+
+
 def update_commission_payment_status(payment_entry, method=None):
     """On Payment Entry submit/cancel, recompute collection eligibility.
 
@@ -1626,11 +1648,18 @@ def update_commission_payment_status(payment_entry, method=None):
         if ref.reference_doctype == "Sales Invoice" and ref.reference_name:
             invoices.add(ref.reference_name)
 
-    for invoice in invoices:
-        inv = frappe.get_doc("Sales Invoice", invoice)
-        invoice_total = abs(flt(inv.base_grand_total))
+    for invoice in sorted(invoices):
+        # Read invoice total via locking read after acquiring the invoice lock.
+        locked_inv = frappe.db.sql(
+            "SELECT base_grand_total FROM `tabSales Invoice` WHERE name = %s FOR UPDATE",
+            (invoice,),
+            as_dict=True,
+        )
+        inv_total = flt(locked_inv[0].base_grand_total) if locked_inv else 0.0
+        invoice_total = abs(inv_total)
         if invoice_total <= 0:
             frappe.throw(_("Invalid invoice total for {0}.").format(invoice))
+        inv = frappe.get_doc("Sales Invoice", invoice)
 
         # Lock the invoice row to serialize concurrent payment processing.
         frappe.db.sql(
