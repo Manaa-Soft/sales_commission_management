@@ -536,6 +536,7 @@ class CommissionSettlement(Document):
 
         # Convert amount to salary currency if needed.
         amount = flt(self.total_payable)
+        fx_rate = 1.0
         if salary_currency and self.commission_currency and salary_currency != self.commission_currency:
             from frappe.utils import get_exchange_rate
             rate = get_exchange_rate(self.commission_currency, salary_currency, fx_date)
@@ -545,7 +546,12 @@ class CommissionSettlement(Document):
                         self.commission_currency, salary_currency
                     )
                 )
+            fx_rate = rate
             amount = flt(amount * rate, 2)
+
+        # Persist FX snapshot on the settlement for audit.
+        self.settlement_fx_rate = fx_rate
+        self.settlement_fx_date = fx_date
 
         doc = frappe.get_doc(
             {
@@ -604,18 +610,26 @@ class CommissionSettlement(Document):
         if not supplier_currency:
             supplier_currency = frappe.db.get_value("Company", self.company, "default_currency")
 
+        pi_date = frappe.utils.nowdate()
+
         # Convert settlement amount to supplier currency if needed.
         pi_amount = flt(self.total_payable)
+        pi_fx_rate = 1.0
         if supplier_currency and self.commission_currency and supplier_currency != self.commission_currency:
             from frappe.utils import get_exchange_rate
-            rate = get_exchange_rate(self.commission_currency, supplier_currency, frappe.utils.nowdate())
+            rate = get_exchange_rate(self.commission_currency, supplier_currency, pi_date)
             if not rate or rate <= 0:
                 frappe.throw(
                     _("Missing exchange rate from {0} to {1}.").format(
                         self.commission_currency, supplier_currency
                     )
                 )
+            pi_fx_rate = rate
             pi_amount = flt(pi_amount * rate, 2)
+
+        # Persist FX snapshot on the settlement for audit.
+        self.settlement_fx_rate = pi_fx_rate
+        self.settlement_fx_date = pi_date
 
         item_row = {
             "item_code": item_code,
@@ -790,6 +804,11 @@ def _reclassified_for_entry(entry_name, exclude_settlement=None, use_company_amo
                 entry_rate = flt(
                     frappe.db.get_value("Commission Entry", entry_name, "commission_to_company_rate")
                 )
+                import math
+                if entry_rate and (not math.isfinite(entry_rate) or entry_rate <= 0):
+                    frappe.throw(
+                        _("Invalid commission-to-company rate for entry {0}.").format(entry_name)
+                    )
                 if not entry_rate or entry_rate <= 0:
                     comm = frappe.db.get_value("Commission Entry", entry_name, "commission_currency")
                     comp = frappe.db.get_value("Commission Entry", entry_name, "company_currency")
@@ -801,7 +820,8 @@ def _reclassified_for_entry(entry_name, exclude_settlement=None, use_company_amo
                         snapshot = flt(
                             frappe.db.get_value("Commission Entry", entry_name, "conversion_rate_snapshot")
                         )
-                        if not snapshot or snapshot <= 0:
+                        import math
+                        if not snapshot or not math.isfinite(snapshot) or snapshot <= 0:
                             frappe.throw(
                                 _("Cannot resolve commission-to-company rate for entry {0}.").format(entry_name)
                             )

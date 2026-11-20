@@ -1,4 +1,4 @@
-{
+﻿{
  "actions": [],
  "allow_rename": 0,
  "creation": "2026-01-01 00:00:00.000000",
@@ -17,6 +17,8 @@
   "period_from",
   "period_to",
   "commission_currency",
+  "settlement_fx_rate",
+  "settlement_fx_date",
   "settlement_method",
   "total_earned",
   "total_payable",
@@ -103,6 +105,19 @@
    "fieldtype": "Link",
    "label": "Commission Currency",
    "options": "Currency"
+  },
+  {
+   "fieldname": "settlement_fx_rate",
+   "fieldtype": "Float",
+   "label": "Settlement FX Rate",
+   "read_only": 1,
+   "precision": "6"
+  },
+  {
+   "fieldname": "settlement_fx_date",
+   "fieldtype": "Date",
+   "label": "Settlement FX Date",
+   "read_only": 1
   },
   {
    "fieldname": "settlement_method",
