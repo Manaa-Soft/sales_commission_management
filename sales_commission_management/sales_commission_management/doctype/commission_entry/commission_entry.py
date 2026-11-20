@@ -1659,45 +1659,43 @@ def update_commission_payment_status(payment_entry, method=None):
         invoice_total = abs(inv_total)
         if invoice_total <= 0:
             frappe.throw(_("Invalid invoice total for {0}.").format(invoice))
-        inv = frappe.get_doc("Sales Invoice", invoice)
-
-        # Lock the invoice row to serialize concurrent payment processing.
-        frappe.db.sql(
-            "SELECT name FROM `tabSales Invoice` WHERE name = %s FOR UPDATE",
-            (invoice,),
-        )
-
         # Compute cumulative collection ratio from all submitted Payment Entries
         # referencing this invoice, converted to invoice transaction currency.
         cumulative_allocated = 0.0
-        # Locking read: retrieve allocation data via FOR UPDATE so we see
-        # the latest committed data under REPEATABLE READ isolation.
+        # Lock only Payment Entry Reference rows (not Payment Entry parent rows)
+        # to avoid deadlocks with concurrent Payment Entry submissions.
+        # Read PE details separately without locking PE rows.
         locked_refs = frappe.db.sql(
             """
             SELECT
-                per.allocated_amount,
-                per.parent,
-                pe.docstatus,
-                pe.payment_type,
-                pe.party_type,
-                pe.source_exchange_rate
-            FROM `tabPayment Entry Reference` per
-            INNER JOIN `tabPayment Entry` pe
-                ON pe.name = per.parent
+                allocated_amount,
+                parent
+            FROM `tabPayment Entry Reference`
             WHERE
-                per.reference_doctype = %s
-                AND per.reference_name = %s
+                reference_doctype = %s
+                AND reference_name = %s
             FOR UPDATE
             """,
             ("Sales Invoice", invoice),
             as_dict=True,
         )
+        # Cache PE details to avoid repeated lookups.
+        pe_cache = {}
         for r in locked_refs or []:
-            if r.docstatus != 1:
+            pe_name = r.parent
+            if pe_name not in pe_cache:
+                pe_cache[pe_name] = frappe.get_value(
+                    "Payment Entry",
+                    pe_name,
+                    ["docstatus", "payment_type", "party_type", "source_exchange_rate"],
+                    as_dict=True,
+                )
+            pe = pe_cache[pe_name]
+            if not pe or pe.docstatus != 1:
                 continue
-            if r.payment_type not in (None, "Receive"):
+            if pe.payment_type not in (None, "Receive"):
                 continue
-            if r.party_type not in (None, "Customer"):
+            if pe.party_type not in (None, "Customer"):
                 continue
             allocated_raw = flt(r.allocated_amount)
             if allocated_raw == 0:
@@ -1706,11 +1704,11 @@ def update_commission_payment_status(payment_entry, method=None):
             # currency; convert to company currency using the source exchange
             # rate (paid-from -> company), NOT the target (paid-to -> company)
             # rate, which would mis-scale foreign-currency collections.
-            source_rate = flt(r.source_exchange_rate)
+            source_rate = flt(pe.source_exchange_rate)
             if source_rate <= 0:
                 frappe.throw(
                     _("Invalid source exchange rate in Payment Entry {0}.").format(
-                        r.parent
+                        pe_name
                     )
                 )
             allocated = allocated_raw * source_rate
