@@ -12,21 +12,31 @@ def _company_currency(company):
     )
 
 
-def _accrued_for_entry(entry_name, exclude_batch=None):
+def _accrued_for_entry(entry_name, exclude_batch=None, for_update=False):
     """Sum of accrual amounts already posted for an entry by submitted batches.
 
     Uses submitted Commission Accrual Batch Items as the allocation ledger,
     so an entry can be accrued across multiple batches.
     """
     total = 0.0
-    filters = {"commission_ledger_entry": entry_name, "docstatus": 1}
-    if exclude_batch:
-        filters["parent"] = ["!=", exclude_batch]
-    items = frappe.get_all(
-        "Commission Accrual Batch Item",
-        filters=filters,
-        fields=["accrual_amount", "parent"],
-    )
+    if for_update:
+        q = frappe.qb.from_("Commission Accrual Batch Item").select(
+            "accrual_amount", "parent"
+        )
+        q = q.where(frappe.qb.Field("commission_ledger_entry") == entry_name)
+        q = q.where(frappe.qb.Field("docstatus") == 1)
+        if exclude_batch:
+            q = q.where(frappe.qb.Field("parent") != exclude_batch)
+        items = q.for_update().run(as_dict=True)
+    else:
+        filters = {"commission_ledger_entry": entry_name, "docstatus": 1}
+        if exclude_batch:
+            filters["parent"] = ["!=", exclude_batch]
+        items = frappe.get_all(
+            "Commission Accrual Batch Item",
+            filters=filters,
+            fields=["accrual_amount", "parent"],
+        )
     if not items:
         return flt(total, 6)
     # Only count items whose parent batch is submitted.
@@ -290,7 +300,7 @@ class CommissionAccrualBatch(Document):
             elif entry_accrued != 0 and abs(entry_accrued) < abs(earned):
                 earned = entry_accrued
             accrued = _accrued_for_entry(
-                row.commission_ledger_entry, exclude_batch=self.name
+                row.commission_ledger_entry, exclude_batch=self.name, for_update=True
             )
             unaccrued = earned - accrued
             # sign consistency
