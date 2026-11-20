@@ -39,16 +39,22 @@ def _accrued_for_entry(entry_name, exclude_batch=None, for_update=False):
         )
     if not items:
         return flt(total, 6)
-    # Only count items whose parent batch is submitted.
-    parents = frappe.get_all(
-        "Commission Accrual Batch",
-        filters={"name": ["in", [i["parent"] for i in items]], "docstatus": 1},
-        pluck="name",
-    )
-    submitted_parents = set(parents or [])
-    for i in items or []:
-        if i.get("parent") in submitted_parents:
+    if for_update:
+        # Under locking reads, Frappe syncs parent docstatus into child rows,
+        # so the docstatus=1 filter on child rows is sufficient. Sum directly.
+        for i in items or []:
             total += flt(i.get("accrual_amount"))
+    else:
+        # Non-locking preview path: verify parent batch is submitted.
+        parents = frappe.get_all(
+            "Commission Accrual Batch",
+            filters={"name": ["in", [i["parent"] for i in items]], "docstatus": 1},
+            pluck="name",
+        )
+        submitted_parents = set(parents or [])
+        for i in items or []:
+            if i.get("parent") in submitted_parents:
+                total += flt(i.get("accrual_amount"))
     # If excluding a batch, we already filtered parent != exclude_batch above.
     return flt(total, 6)
 
@@ -173,7 +179,9 @@ class CommissionAccrualBatch(Document):
             if not row.commission_ledger_entry:
                 continue
             try:
-                entry = frappe.get_doc("Commission Entry", row.commission_ledger_entry)
+                entry = frappe.get_doc(
+                    "Commission Entry", row.commission_ledger_entry, for_update=True
+                )
             except Exception:
                 continue
             if not getattr(row, "commission_currency", None):
