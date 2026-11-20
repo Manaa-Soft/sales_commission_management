@@ -1,4 +1,4 @@
-{
+﻿{
  "actions": [],
  "allow_rename": 0,
  "creation": "2026-01-01 00:00:00.000000",
@@ -62,6 +62,7 @@
   "paid_amount",
   "settled_amount",
   "outstanding_amount",
+  "collection_events",
   "status",
   "accrual_status",
   "collection_status",
@@ -454,6 +455,13 @@
    "label": "Outstanding Amount",
    "read_only": 1,
    "options": "commission_currency"
+  },
+  {
+   "fieldname": "collection_events",
+   "fieldtype": "Table",
+   "label": "Collection Events",
+   "options": "Commission Collection Event",
+   "read_only": 1
   },
   {
    "fieldname": "status",

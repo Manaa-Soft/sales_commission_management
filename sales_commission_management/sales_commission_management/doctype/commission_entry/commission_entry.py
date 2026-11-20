@@ -1,4 +1,4 @@
-﻿import frappe
+﻿﻿import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, getdate
@@ -1759,6 +1759,27 @@ def update_commission_payment_status(payment_entry, method=None):
                 update_modified=False,
             )
 
+            # Record an immutable collection event for audit trail.
+            try:
+                frappe.get_doc({
+                    "doctype": "Commission Collection Event",
+                    "parent": e.name,
+                    "parentfield": "collection_events",
+                    "parenttype": "Commission Entry",
+                    "payment_entry": payment_entry.name,
+                    "payment_reference": getattr(ref, "name", None),
+                    "posting_date": getattr(payment_entry, "posting_date", None),
+                    "allocated_amount": flt(allocated_raw, 6),
+                    "invoice_currency_allocated": flt(allocated, 6),
+                    "collection_ratio": flt(cumulative_ratio * 100.0, 6),
+                    "eligibility_delta": flt(add_eligible, 6),
+                    "is_reversal": 1 if is_cancel else 0,
+                }).insert(ignore_permissions=True)
+            except Exception:
+                frappe.log_error(
+                    frappe.get_traceback(),
+                    "Commission: failed to record collection event for {0}".format(e.name),
+                )
 
 def recompute_period_slabs():
     """Scheduled daily job: recompute period attainment per beneficiary and metric.
