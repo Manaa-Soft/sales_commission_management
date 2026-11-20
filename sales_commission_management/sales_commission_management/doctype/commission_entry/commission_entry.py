@@ -796,8 +796,25 @@ def neutralize_native_commission_on_update(doc, method=None):
             pass
 
 
+def _source_enabled(doc):
+    """Check if commission generation is enabled for the given source document."""
+    if not frappe.db.exists("Commission Settings"):
+        return True
+    settings = frappe.get_single("Commission Settings")
+    if not getattr(settings, "enabled", 1):
+        return False
+    dt = getattr(doc, "doctype", None)
+    if dt == "Sales Invoice" and not getattr(settings, "enable_sales_invoice", 1):
+        return False
+    if dt == "POS Invoice" and not getattr(settings, "enable_pos_invoice", 1):
+        return False
+    return True
+
+
 def generate_commission_entries(doc, method=None, force=False):
     """Triggered on Sales Invoice / POS Invoice on_submit. Creates Commission Entry records."""
+    if not _source_enabled(doc):
+        return
     if _is_return(doc):
         handle_return_invoice(doc, method)
         return
@@ -1667,6 +1684,12 @@ def update_commission_payment_status(payment_entry, method=None):
         return
     if getattr(payment_entry, "party_type", None) != "Customer":
         return
+    if frappe.db.exists("Commission Settings"):
+        settings = frappe.get_single("Commission Settings")
+        if not getattr(settings, "enabled", 1):
+            return
+        if not getattr(settings, "enable_payment_entry", 1):
+            return
     references = payment_entry.get("references") or []
     invoices = set()
     for ref in references:
