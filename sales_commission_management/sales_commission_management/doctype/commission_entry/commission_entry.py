@@ -484,7 +484,21 @@ def _insert_entry(
     elif commission_currency == txn_currency:
         commission_to_company_rate = exchange_rate
     else:
-        commission_to_company_rate = 1.0
+        # Fixed (third) currency: resolve actual exchange rate.
+        try:
+            from frappe.utils import get_exchange_rate
+            rate = get_exchange_rate(
+                commission_currency, company_currency, getattr(doc, "posting_date", None)
+            )
+            if not rate or flt(rate) <= 0:
+                raise ValueError("no rate")
+            commission_to_company_rate = flt(rate)
+        except Exception:
+            frappe.throw(
+                _("Cannot resolve exchange rate from {0} to {1}.").format(
+                    commission_currency, company_currency
+                )
+            )
 
     ev_key = _event_key(
         "Sales Invoice",
@@ -874,6 +888,10 @@ def generate_commission_entries(doc, method=None, force=False):
             continue
 
         item_commission = _apply_floor_cap(item_commission, rule)
+
+        # Convert from company currency to the selected commission currency.
+        if commission_to_company_rate and commission_to_company_rate != 1.0:
+            item_commission = flt(item_commission) / commission_to_company_rate
 
         # Accumulate this item's basis into the period's running metric so
         # subsequent items see the updated attainment.

@@ -72,6 +72,15 @@ def _resolve_settlement_accounts(company):
                     acct, company
                 )
             )
+        # Validate account currency matches company currency.
+        acct_currency = frappe.get_cached_value("Account", acct, "account_currency")
+        company_currency = frappe.get_cached_value("Company", company, "default_currency")
+        if acct_currency and company_currency and acct_currency != company_currency:
+            frappe.throw(
+                _("Account {0} uses currency {1}, but company currency is {2}.").format(
+                    acct, acct_currency, company_currency
+                )
+            )
         disabled = frappe.get_cached_value("Account", acct, "disabled")
         if disabled:
             frappe.throw(
@@ -332,7 +341,9 @@ class CommissionSettlement(Document):
             delta = min(flt(row.amount_included), remaining_accrual)
             if delta <= 0.005:
                 continue
-            rate = flt(getattr(entry, "conversion_rate_snapshot", 1)) or 1.0
+            rate = flt(getattr(entry, "commission_to_company_rate", 1)) or 1.0
+            if not rate or rate <= 0:
+                rate = flt(getattr(entry, "conversion_rate_snapshot", 1)) or 1.0
             commission_currency = getattr(entry, "commission_currency", None)
             company_currency = getattr(entry, "company_currency", None)
             if not company_currency:
