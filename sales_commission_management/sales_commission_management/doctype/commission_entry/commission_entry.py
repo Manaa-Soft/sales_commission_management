@@ -1,4 +1,4 @@
-import frappe
+﻿import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, getdate
@@ -1763,39 +1763,59 @@ def update_commission_payment_status(payment_entry, method=None):
             # Determine if this is a cancellation/reversal.
             is_cancel = getattr(payment_entry, "docstatus", 0) == 2
 
-            # Find the matching reference row for this invoice from the current
+            # Find ALL matching reference rows for this invoice from the current
             # payment entry (not a stale ref from an earlier loop).
-            matching_ref = None
-            for r in (payment_entry.get("references") or []):
-                if r.reference_doctype == "Sales Invoice" and r.reference_name == invoice:
-                    matching_ref = r
-                    break
-            ref_allocated_raw = flt(getattr(matching_ref, "allocated_amount", 0)) if matching_ref else 0.0
-            try:
-                ref_allocated = payment_entry.get_allocated_amount_in_transaction_currency(
-                    ref_allocated_raw, "Sales Invoice", invoice
-                )
-            except Exception:
-                ref_allocated = ref_allocated_raw
+            matching_refs = [
+                r for r in (payment_entry.get("references") or [])
+                if r.reference_doctype == "Sales Invoice" and r.reference_name == invoice
+            ]
 
             # The eligibility delta for THIS payment event.
             add_eligible = target_eligible - flt(e.collection_eligible_amount)
 
-            # Record an immutable collection event (mandatory, fail-closed).
-            frappe.get_doc({
-                "doctype": "Commission Collection Event",
-                "parent": e.name,
-                "parentfield": "collection_events",
-                "parenttype": "Commission Entry",
-                "payment_entry": payment_entry.name,
-                "payment_reference": getattr(matching_ref, "name", None),
-                "posting_date": getattr(payment_entry, "posting_date", None),
-                "allocated_amount": flt(ref_allocated_raw, 6),
-                "invoice_currency_allocated": flt(ref_allocated, 6),
-                "collection_ratio": flt(cumulative_ratio * 100.0, 6),
-                "eligibility_delta": flt(add_eligible, 6),
-                "is_reversal": 1 if is_cancel else 0,
-            }).insert(ignore_permissions=True)
+            # Record one immutable collection event per reference row.
+            for matching_ref in (matching_refs or [None]):
+                ref_allocated_raw = flt(getattr(matching_ref, "allocated_amount", 0)) if matching_ref else 0.0
+                # Fail closed: do not fall back to raw amount on conversion failure.
+                ref_allocated = payment_entry.get_allocated_amount_in_transaction_currency(
+                    ref_allocated_raw, "Sales Invoice", invoice
+                )
+
+                event_key = "|".join([
+                    e.name or "",
+                    payment_entry.name or "",
+                    getattr(matching_ref, "name", None) or "",
+                    "Collection" if not is_cancel else "Reversal",
+                ])
+
+                # Idempotency: skip if event already exists.
+                existing = frappe.db.get_value(
+                    "Commission Collection Event",
+                    {"event_key": event_key, "parent": e.name},
+                    "name",
+                )
+                if existing:
+                    continue
+
+                frappe.get_doc({
+                    "doctype": "Commission Collection Event",
+                    "event_key": event_key,
+                    "parent": e.name,
+                    "parentfield": "collection_events",
+                    "parenttype": "Commission Entry",
+                    "payment_entry": payment_entry.name,
+                    "payment_reference": getattr(matching_ref, "name", None),
+                    "posting_date": getattr(payment_entry, "posting_date", None),
+                    "party_account_currency": getattr(payment_entry, "party_account_currency", None),
+                    "invoice_currency": frappe.get_value("Sales Invoice", invoice, "currency"),
+                    "commission_currency": getattr(e, "commission_currency", None),
+                    "allocated_amount": flt(ref_allocated_raw, 6),
+                    "invoice_currency_allocated": flt(ref_allocated, 6),
+                    "company_currency_allocated": flt(ref_allocated_raw * flt(getattr(payment_entry, "source_exchange_rate", 1) or 1), 6),
+                    "collection_ratio": flt(cumulative_ratio * 100.0, 6),
+                    "eligibility_delta": flt(add_eligible, 6),
+                    "is_reversal": 1 if is_cancel else 0,
+                }).insert(ignore_permissions=True)
 
 def recompute_period_slabs():
     """Scheduled daily job: recompute period attainment per beneficiary and metric.
