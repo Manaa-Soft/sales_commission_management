@@ -1705,6 +1705,14 @@ def update_commission_payment_status(payment_entry, method=None):
                         pe_cache[pe_name] = locked_pe[0] if locked_pe else None
                         break
                     except Exception as e:
+                        # Only retry on lock contention (MariaDB error 1205).
+                        # Re-raise all other errors immediately.
+                        err_code = getattr(e, "args", [None])[0] if getattr(e, "args", None) else None
+                        # Also check nested pymysql error.
+                        if err_code is None and hasattr(e, "orig"):
+                            err_code = getattr(e.orig, "args", [None])[0]
+                        if err_code not in (1205, "1205"):
+                            raise
                         if attempt < 2:
                             import time
                             time.sleep(0.1)
