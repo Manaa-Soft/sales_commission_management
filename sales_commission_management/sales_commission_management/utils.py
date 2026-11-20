@@ -1,26 +1,25 @@
-import math
-import frappe
+﻿import frappe
+from frappe.utils import cint
 
 
-def currency_precision(currency):
-    """Return the decimal precision for a given currency.
+def currency_precision(currency=None):
+    """Return the decimal precision for financial amounts.
 
-    Uses ERPNext's Currency fraction units. Falls back to system-wide
-    currency precision, then to 2.
+    Uses ERPNext's established precision logic:
+    1. System Settings currency_precision (if configured).
+    2. Number format decimal places from System Settings.
+    3. Falls back to 2.
+
+    This is the system-wide accounting precision, not a per-currency
+    display precision. All GL and settlement amounts use this precision.
     """
-    if not currency:
-        return frappe.db.get_default("currency_precision") or 2
-    fraction_units = frappe.db.get_value("Currency", currency, "fraction_units")
-    if fraction_units is None:
-        fraction_units = 100
-    if fraction_units <= 0:
-        fraction_units = 100
-    # Convert fraction units to decimal places.
-    precision = 0
-    fu = fraction_units
-    while fu > 1:
-        fu = fu / 10
-        precision += 1
-    if precision == 0:
-        precision = 2
-    return precision
+    currency_precision = frappe.db.get_default("currency_precision")
+    if currency_precision not in (None, ""):
+        return cint(currency_precision)
+
+    number_format = frappe.db.get_default("number_format") or "#,###.##"
+    try:
+        from frappe.utils import get_number_format_info
+        return get_number_format_info(number_format)[2]
+    except Exception:
+        return 2
