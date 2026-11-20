@@ -1,4 +1,4 @@
-﻿import frappe
+import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, now_datetime, getdate
@@ -360,8 +360,9 @@ class CommissionSettlement(Document):
                 comm_curr = getattr(entry, "commission_currency", None)
                 txn_curr = getattr(entry, "transaction_currency", None)
                 if comm_curr and txn_curr and comm_curr == txn_curr:
+                    import math
                     snapshot = flt(getattr(entry, "conversion_rate_snapshot", 0))
-                    if not snapshot or snapshot <= 0:
+                    if not snapshot or not math.isfinite(snapshot) or snapshot <= 0:
                         frappe.throw(
                             _("Cannot resolve commission-to-company rate for entry {0}.").format(
                                 entry_name
