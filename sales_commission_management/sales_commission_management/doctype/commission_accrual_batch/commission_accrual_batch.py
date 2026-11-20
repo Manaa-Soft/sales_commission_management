@@ -142,8 +142,8 @@ class CommissionAccrualBatch(Document):
     def _set_defaults(self):
         if not self.company:
             return
-        if not self.accounting_currency:
-            self.accounting_currency = _company_currency(self.company)
+        # Always derive accounting_currency from the company (server-side).
+        self.accounting_currency = _company_currency(self.company)
         if not self.accrual_date:
             self.accrual_date = self.period_to or nowdate()
         # Resolve accounts from company-specific mapping first.
@@ -183,14 +183,26 @@ class CommissionAccrualBatch(Document):
         for row in self.items or []:
             if not row.commission_ledger_entry:
                 continue
-            try:
-                entry = frappe.get_doc(
-                    "Commission Entry", row.commission_ledger_entry, for_update=True
+            # Fail closed: entry must exist.
+            entry = frappe.get_doc(
+                "Commission Entry", row.commission_ledger_entry, for_update=True
+            )
+            # Validate entry belongs to this batch's company.
+            if getattr(entry, "company", None) and entry.company != self.company:
+                frappe.throw(
+                    _("Commission Entry {0} does not belong to company {1}.").format(
+                        row.commission_ledger_entry, self.company
+                    )
                 )
-            except Exception:
-                continue
-            if not getattr(row, "commission_currency", None):
-                row.commission_currency = getattr(entry, "commission_currency", None)
+            # Validate entry company currency matches batch accounting currency.
+            if getattr(entry, "company_currency", None) and entry.company_currency != self.accounting_currency:
+                frappe.throw(
+                    _("Commission Entry {0} company currency {1} does not match batch accounting currency {2}.").format(
+                        row.commission_ledger_entry, entry.company_currency, self.accounting_currency
+                    )
+                )
+            # Always derive commission_currency from the linked entry (server-side).
+            row.commission_currency = getattr(entry, "commission_currency", None)
             currencies.add(row.commission_currency)
             # Prefer the dedicated commission-to-company rate; fall back to the
             # invoice conversion rate only when commission currency matches the
@@ -228,8 +240,8 @@ class CommissionAccrualBatch(Document):
                             row.commission_ledger_entry
                         )
                     )
-            if not getattr(row, "conversion_rate", None):
-                row.conversion_rate = c2c_rate
+            # Always overwrite conversion_rate with the authoritative rate used.
+            row.conversion_rate = c2c_rate
             # commission -> company conversion
             if row.commission_currency == self.accounting_currency:
                 row.company_amount = flt(row.accrual_amount, 6)

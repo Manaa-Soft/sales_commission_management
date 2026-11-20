@@ -1,4 +1,4 @@
-﻿import frappe
+import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, now_datetime, getdate
@@ -791,19 +791,26 @@ def _reclassified_for_entry(entry_name, exclude_settlement=None, use_company_amo
                     frappe.db.get_value("Commission Entry", entry_name, "commission_to_company_rate")
                 )
                 if not entry_rate or entry_rate <= 0:
-                        comm = frappe.db.get_value("Commission Entry", entry_name, "commission_currency")
-                        comp = frappe.db.get_value("Commission Entry", entry_name, "company_currency")
-                        if comm and comp and comm == comp:
-                            entry_rate = 1.0
-                        else:
-                            snapshot = flt(
-                                frappe.db.get_value("Commission Entry", entry_name, "conversion_rate_snapshot")
+                    comm = frappe.db.get_value("Commission Entry", entry_name, "commission_currency")
+                    comp = frappe.db.get_value("Commission Entry", entry_name, "company_currency")
+                    txn = frappe.db.get_value("Commission Entry", entry_name, "transaction_currency")
+                    if comm and comp and comm == comp:
+                        entry_rate = 1.0
+                    elif comm and txn and comm == txn:
+                        # Only use transaction snapshot when commission == transaction currency.
+                        snapshot = flt(
+                            frappe.db.get_value("Commission Entry", entry_name, "conversion_rate_snapshot")
+                        )
+                        if not snapshot or snapshot <= 0:
+                            frappe.throw(
+                                _("Cannot resolve commission-to-company rate for entry {0}.").format(entry_name)
                             )
-                            if not snapshot or snapshot <= 0:
-                                frappe.throw(
-                                    _("Cannot resolve commission-to-company rate for entry {0}.").format(entry_name)
-                                )
-                            entry_rate = snapshot
+                        entry_rate = snapshot
+                    else:
+                        # Third-currency commission: cannot use transaction snapshot.
+                        frappe.throw(
+                            _("Cannot resolve commission-to-company rate for entry {0}.").format(entry_name)
+                        )
                 total += flt(flt(ra) * entry_rate, 6)
         else:
             ra = r.get("reclassified_amount")
@@ -811,7 +818,7 @@ def _reclassified_for_entry(entry_name, exclude_settlement=None, use_company_amo
                 total += flt(r.get("amount_included"))
             else:
                 total += flt(ra)
-        return flt(total, 6)
+    return flt(total, 6)
 
 
 def _available_balance_for_entry(entry_name, exclude_settlement=None):
