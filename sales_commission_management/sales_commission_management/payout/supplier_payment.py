@@ -132,16 +132,28 @@ def get_supplier_settlement_for_reference(payment_entry, payment_reference):
         return None
 
     # The reference row must exist among the Payment Entry's references.
+    # Fail closed when the reference collection is missing or empty.
     refs = _pe_references(payment_entry)
+    if not refs:
+        return None
+
     ref_identity_ok = False
     pr_name = _get_attr(payment_reference, "name", None)
     pr_doctype = _get_attr(payment_reference, "reference_doctype", None)
     pr_refname = _get_attr(payment_reference, "reference_name", None)
     pr_allocated = flt(_get_attr(payment_reference, "allocated_amount", 0))
+
     if pr_name:
         for r in refs:
             if _get_attr(r, "name", None) == pr_name:
-                ref_identity_ok = True
+                # The supplied row must also agree with the actual child row's
+                # doctype, reference name, and allocated amount.
+                if (
+                    _get_attr(r, "reference_doctype", None) == pr_doctype
+                    and _get_attr(r, "reference_name", None) == pr_refname
+                    and flt(_get_attr(r, "allocated_amount", 0)) == pr_allocated
+                ):
+                    ref_identity_ok = True
                 break
     else:
         for r in refs:
@@ -152,10 +164,9 @@ def get_supplier_settlement_for_reference(payment_entry, payment_reference):
             ):
                 ref_identity_ok = True
                 break
-    if not ref_identity_ok and refs:
-        return None
-    # If no references list is exposed, fall back to parent check already done.
 
+    if not ref_identity_ok:
+        return None
     # --- Payment Entry must be submitted. ---
     if _get_attr(payment_entry, "docstatus", None) != 1:
         return None
@@ -509,16 +520,33 @@ def _allocate_core(
 
     weights = [p["remaining"] for p in allocatable]
     sett_dist = _largest_remainder_distribution(payment_minor, weights, prec)
-    source_dist = _largest_remainder_distribution(source_minor_total, weights, prec)
-    commission_dist = _largest_remainder_distribution(commission_minor_total, weights, prec)
-    company_dist = _largest_remainder_distribution(company_minor_total, weights, prec)
+
+    # Only items that receive a positive settlement allocation are eligible
+    # for the other currency distributions. Distributing independently across
+    # all items would let zero-settlement items silently drop their share of
+    # the other currencies.
+    eligible_indices = [i for i, v in enumerate(sett_dist) if v > 0]
+    if not eligible_indices:
+        raise ValueError("No positive settlement allocations produced.")
+
+    eligible_weights = [allocatable[i]["remaining"] for i in eligible_indices]
+    source_dist = _largest_remainder_distribution(
+        source_minor_total, eligible_weights, prec
+    )
+    commission_dist = _largest_remainder_distribution(
+        commission_minor_total, eligible_weights, prec
+    )
+    company_dist = _largest_remainder_distribution(
+        company_minor_total, eligible_weights, prec
+    )
 
     result = []
-    for idx, p in enumerate(allocatable):
-        sett_alloc_minor = sett_dist[idx]
-        src_alloc_minor = source_dist[idx]
-        comm_alloc_minor = commission_dist[idx]
-        comp_alloc_minor = company_dist[idx]
+    for k, i in enumerate(eligible_indices):
+        p = allocatable[i]
+        sett_alloc_minor = sett_dist[i]
+        src_alloc_minor = source_dist[k]
+        comm_alloc_minor = commission_dist[k]
+        comp_alloc_minor = company_dist[k]
 
         sett_alloc = _from_minor(sett_alloc_minor, prec)
         src_alloc = _from_minor(src_alloc_minor, prec)
@@ -526,7 +554,6 @@ def _allocate_core(
         comp_alloc = _from_minor(comp_alloc_minor, prec)
 
         if sett_alloc <= 0:
-            # Skip zero-share items; they receive no allocation.
             continue
         if sett_alloc > p["remaining"]:
             raise ValueError(
@@ -677,44 +704,56 @@ def allocate_supplier_payment_across_items(*args, **kwargs):
         settlement_fx_rate = args[3]
         items = args[4]
     else:
-        payment_allocation = (
-            kwargs.get("payment_allocation")
-            or kwargs.get("payment_allocation_settlement")
-            or kwargs.get("settlement_payment_allocation")
-            or kwargs.get("allocation")
-            or kwargs.get("amount")
-            or kwargs.get("payment_amount")
-        )
-        source_allocation = (
-            kwargs.get("source_allocation")
-            or kwargs.get("source_amount")
-            or kwargs.get("source_allocation_amount")
-        )
-        target_exchange_rate = (
-            kwargs.get("target_exchange_rate")
-            or kwargs.get("target_rate")
-            or kwargs.get("exchange_rate")
-            or kwargs.get("payment_entry_target_exchange_rate")
-        )
-        settlement_fx_rate = (
-            kwargs.get("settlement_fx_rate")
-            or kwargs.get("settlement_fx")
-            or kwargs.get("fx_rate")
-            or kwargs.get("settlement_fx_snapshot")
-        )
-        items = (
-            kwargs.get("items")
-            or kwargs.get("settlement_items")
-            or kwargs.get("item_list")
-            or kwargs.get("settlement_items_list")
-        )
+        payment_allocation = kwargs.get("payment_allocation")
+        if payment_allocation is None:
+            payment_allocation = kwargs.get("payment_allocation_settlement")
+        if payment_allocation is None:
+            payment_allocation = kwargs.get("settlement_payment_allocation")
+        if payment_allocation is None:
+            payment_allocation = kwargs.get("allocation")
+        if payment_allocation is None:
+            payment_allocation = kwargs.get("amount")
+        if payment_allocation is None:
+            payment_allocation = kwargs.get("payment_amount")
 
+        source_allocation = kwargs.get("source_allocation")
+        if source_allocation is None:
+            source_allocation = kwargs.get("source_amount")
+        if source_allocation is None:
+            source_allocation = kwargs.get("source_allocation_amount")
+
+        target_exchange_rate = kwargs.get("target_exchange_rate")
+        if target_exchange_rate is None:
+            target_exchange_rate = kwargs.get("target_rate")
+        if target_exchange_rate is None:
+            target_exchange_rate = kwargs.get("exchange_rate")
+        if target_exchange_rate is None:
+            target_exchange_rate = kwargs.get("payment_entry_target_exchange_rate")
+
+        settlement_fx_rate = kwargs.get("settlement_fx_rate")
+        if settlement_fx_rate is None:
+            settlement_fx_rate = kwargs.get("settlement_fx")
+        if settlement_fx_rate is None:
+            settlement_fx_rate = kwargs.get("fx_rate")
+        if settlement_fx_rate is None:
+            settlement_fx_rate = kwargs.get("settlement_fx_snapshot")
+
+        items = kwargs.get("items")
+        if items is None:
+            items = kwargs.get("settlement_items")
+        if items is None:
+            items = kwargs.get("item_list")
+        if items is None:
+            items = kwargs.get("settlement_items_list")
+
+    # Do not silently substitute missing financial inputs. Missing source
+    # allocation or exchange rates are rejected downstream.
     if source_allocation is None:
-        source_allocation = payment_allocation
+        raise ValueError("Source allocation is required.")
     if target_exchange_rate is None:
-        target_exchange_rate = 1
+        raise ValueError("Target exchange rate is required.")
     if settlement_fx_rate is None:
-        settlement_fx_rate = 1
+        raise ValueError("Settlement FX rate is required.")
 
     items = _normalize_items(items)
     return _allocate_core(
