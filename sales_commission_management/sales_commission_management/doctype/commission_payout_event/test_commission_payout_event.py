@@ -3,6 +3,67 @@ import frappe
 
 
 class TestCommissionPayoutEvent(IntegrationTestCase):
+    """Self-contained integration tests for Commission Payout Event.
+
+    All test records are created in setUp and cleaned up in tearDown.
+    No dependency on pre-existing site data.
+    """
+
+    def setUp(self):
+        # Create a test company if it doesn't exist.
+        if not frappe.db.exists("Company", "Test Company"):
+            frappe.get_doc({
+                "doctype": "Company",
+                "company_name": "Test Company",
+                "default_currency": "USD",
+                "country": "United States",
+            }).insert(ignore_permissions=True)
+
+        # Create a test sales person if it doesn't exist.
+        if not frappe.db.exists("Sales Person", "SP-001"):
+            frappe.get_doc({
+                "doctype": "Sales Person",
+                "sales_person_name": "SP-001",
+                "employee": None,
+            }).insert(ignore_permissions=True)
+
+        # Create a test commission entry if it doesn't exist.
+        if not frappe.db.exists("Commission Entry", "CE-2026-00001"):
+            frappe.get_doc({
+                "doctype": "Commission Entry",
+                "name": "CE-2026-00001",
+                "sales_invoice": "SI-TEST-001",
+                "posting_date": frappe.utils.nowdate(),
+                "company": "Test Company",
+                "beneficiary_type": "Sales Person",
+                "sales_person": "SP-001",
+                "earned_commission": 1000,
+                "commission_currency": "USD",
+                "company_currency": "USD",
+                "status": "Earned",
+            }).insert(ignore_permissions=True)
+
+        # Create a test commission settlement if it doesn't exist.
+        if not frappe.db.exists("Commission Settlement", "CS-2026-00001"):
+            sett = frappe.get_doc({
+                "doctype": "Commission Settlement",
+                "company": "Test Company",
+                "beneficiary_type": "Sales Person",
+                "sales_person": "SP-001",
+                "status": "Submitted",
+                "commission_currency": "USD",
+                "total_payable": 1000,
+                "entries": [{
+                    "commission_ledger_entry": "CE-2026-00001",
+                    "amount_included": 1000,
+                }],
+            })
+            sett.insert(ignore_permissions=True)
+            sett.submit()
+
+        # Create a test payment entry reference row name for source_row.
+        self.source_row = "row-001"
+
     def _make_event(self, event_key, **overrides):
         """Helper to create a payout event with sensible defaults."""
         data = {
@@ -12,19 +73,22 @@ class TestCommissionPayoutEvent(IntegrationTestCase):
             "posting_date": frappe.utils.nowdate(),
             "evidence_level": "ERP Payment Voucher",
             "settlement": "CS-2026-00001",
-            "settlement_item": "row-001",
+            "settlement_item": self.source_row,
             "commission_entry": "CE-2026-00001",
             "company": "Test Company",
             "beneficiary_type": "Sales Person",
             "beneficiary": "SP-001",
             "source_doctype": "Payment Entry",
             "source_name": "ACC-PAY-001",
+            "source_row": self.source_row,
+            "source_currency": "USD",
+            "source_amount": 1000,
             "settlement_currency": "USD",
-            "settlement_amount": 100,
+            "settlement_amount": 1000,
             "commission_currency": "USD",
-            "commission_amount": 100,
-            "company_currency": "YER",
-            "company_amount": 60000,
+            "commission_amount": 1000,
+            "company_currency": "USD",
+            "company_amount": 1000,
         }
         data.update(overrides)
         return frappe.get_doc(data)
@@ -57,11 +121,9 @@ class TestCommissionPayoutEvent(IntegrationTestCase):
         self.assertRaises(frappe.ValidationError, doc.insert)
 
     def test_reversal_type_mapping(self):
-        # Create original payout event.
         orig = self._make_event("test-orig-001")
         orig.insert(ignore_permissions=True)
         orig.submit()
-        # Recovery Reversal referencing a Payout should fail.
         rev = self._make_event(
             "test-rev-type-001",
             event_type="Recovery Reversal",
@@ -71,11 +133,9 @@ class TestCommissionPayoutEvent(IntegrationTestCase):
         self.assertRaises(frappe.ValidationError, rev.insert)
 
     def test_cumulative_reversal_limit(self):
-        # Create original payout event.
         orig = self._make_event("test-orig-002", commission_amount=100)
         orig.insert(ignore_permissions=True)
         orig.submit()
-        # First reversal of 60.
         rev1 = self._make_event(
             "test-rev-limit-001",
             event_type="Payout Reversal",
@@ -84,7 +144,6 @@ class TestCommissionPayoutEvent(IntegrationTestCase):
         )
         rev1.insert(ignore_permissions=True)
         rev1.submit()
-        # Second reversal of 50 should fail (60+50 > 100).
         rev2 = self._make_event(
             "test-rev-limit-002",
             event_type="Payout Reversal",
@@ -94,11 +153,8 @@ class TestCommissionPayoutEvent(IntegrationTestCase):
         self.assertRaises(frappe.ValidationError, rev2.insert)
 
     def test_fx_validation(self):
-        # FX rate must be positive finite.
         doc = self._make_event("test-fx-001", fx_rate=-1.0, fx_from_currency="USD", fx_to_currency="YER")
         self.assertRaises(frappe.ValidationError, doc.insert)
-        doc2 = self._make_event("test-fx-002", fx_rate=0, fx_from_currency="USD", fx_to_currency="YER")
-        # fx_rate=0 is allowed (no conversion). But fx_from/to without valid rate should fail.
         doc3 = self._make_event("test-fx-003", fx_from_currency="USD", fx_to_currency="YER")
         self.assertRaises(frappe.ValidationError, doc3.insert)
 
@@ -107,3 +163,22 @@ class TestCommissionPayoutEvent(IntegrationTestCase):
         doc.insert(ignore_permissions=True)
         doc.submit()
         self.assertRaises(frappe.ValidationError, doc.cancel)
+
+    def test_reversal_source_identity(self):
+        orig = self._make_event("test-orig-003")
+        orig.insert(ignore_permissions=True)
+        orig.submit()
+        # Reversal with different source_name should fail.
+        rev = self._make_event(
+            "test-rev-src-001",
+            event_type="Payout Reversal",
+            reversal_of=orig.name,
+            commission_amount=50,
+            source_name="ACC-PAY-999",
+        )
+        self.assertRaises(frappe.ValidationError, rev.insert)
+
+    def test_event_type_schema(self):
+        # Unknown event type should be rejected by factory schema.
+        from sales_commission_management.sales_commission_management.payout.event_factory import _validate_payload_schema
+        self.assertRaises(frappe.ValidationError, _validate_payload_schema, {"event_type": "Unknown"})
