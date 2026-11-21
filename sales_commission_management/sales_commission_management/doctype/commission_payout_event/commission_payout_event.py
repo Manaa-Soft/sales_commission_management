@@ -1,8 +1,9 @@
-import frappe
+﻿import frappe
 import hashlib
 import json
 from frappe import _
 from frappe.model.document import Document
+from frappe.utils import flt
 
 
 class CommissionPayoutEvent(Document):
@@ -35,6 +36,9 @@ class CommissionPayoutEvent(Document):
         """Validate relationships between settlement, entry, company, beneficiary."""
         if self.settlement:
             sett = frappe.get_doc("Commission Settlement", self.settlement)
+            # Settlement must be submitted.
+            if sett.docstatus != 1:
+                frappe.throw(_("Settlement must be submitted."))
             if self.company and sett.company != self.company:
                 frappe.throw(_("Company must match the settlement's company."))
             if self.beneficiary_type and sett.beneficiary_type != self.beneficiary_type:
@@ -45,6 +49,10 @@ class CommissionPayoutEvent(Document):
                 entry = frappe.get_doc("Commission Entry", self.commission_entry)
                 if entry.company != sett.company:
                     frappe.throw(_("Commission Entry company must match settlement company."))
+                # Verify beneficiary matches entry.
+                entry_beneficiary = entry.sales_person or entry.sales_partner
+                if entry_beneficiary and self.beneficiary and entry_beneficiary != self.beneficiary:
+                    frappe.throw(_("Beneficiary must match the commission entry's beneficiary."))
                 # Verify settlement item belongs to the referenced settlement AND entry.
                 if self.settlement_item:
                     item = frappe.get_value(
@@ -59,22 +67,35 @@ class CommissionPayoutEvent(Document):
                         frappe.throw(_("Settlement item does not belong to the referenced settlement."))
                     if item.commission_ledger_entry != self.commission_entry:
                         frappe.throw(_("Settlement item does not match the referenced commission entry."))
+                else:
+                    # Require settlement_item for item-level payouts.
+                    frappe.throw(_("Settlement item is required for payout events."))
         # Reversal validation.
         if self.event_type in ("Payout Reversal", "Recovery Reversal"):
             if not self.reversal_of:
                 frappe.throw(_("Reversal events must reference the original event."))
-            # Validate original event exists and is submitted.
-            orig = frappe.get_doc("Commission Payout Event", self.reversal_of)
+            # Lock the original event row for concurrency-safe cumulative check.
+            orig = frappe.db.sql(
+                "SELECT * FROM 	abCommission Payout Event WHERE name = %s FOR UPDATE",
+                (self.reversal_of,),
+                as_dict=True,
+            )
+            if not orig:
+                frappe.throw(_("Original event not found."))
+            orig = orig[0]
             if orig.docstatus != 1:
                 frappe.throw(_("Original event must be submitted."))
-            if orig.event_type not in ("Payout", "Recovery"):
-                frappe.throw(_("Reversal type must match original event type."))
+            # Exact type mapping.
+            if self.event_type == "Payout Reversal" and orig.event_type != "Payout":
+                frappe.throw(_("Payout Reversal must reference a Payout event."))
+            if self.event_type == "Recovery Reversal" and orig.event_type != "Recovery":
+                frappe.throw(_("Recovery Reversal must reference a Recovery event."))
             if orig.company != self.company:
                 frappe.throw(_("Company must match original event."))
             if orig.beneficiary != self.beneficiary:
                 frappe.throw(_("Beneficiary must match original event."))
-            if orig.settlement_currency != self.settlement_currency:
-                frappe.throw(_("Settlement currency must match original event."))
+            if orig.commission_currency != self.commission_currency:
+                frappe.throw(_("Commission currency must match original event."))
             # Check cumulative reversal doesn't exceed original.
             existing_reversals = frappe.get_all(
                 "Commission Payout Event",
