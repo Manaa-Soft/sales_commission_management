@@ -147,6 +147,11 @@ class CommissionPayoutEvent(Document):
             frappe.throw(_("Commission currency is required when commission amount is set."))
         if self.company_amount and not self.company_currency:
             frappe.throw(_("Company currency is required when company amount is set."))
+
+        # Positive amount validation for Payout and Recovery events.
+        if self.event_type in ("Payout", "Recovery"):
+            if flt(self.commission_amount) <= 0:
+                frappe.throw(_("Payout and Recovery events must have a positive commission amount."))
         # FX snapshot consistency.
         if self.fx_from_currency or self.fx_to_currency or self.fx_rate:
             if not self.fx_from_currency or not self.fx_to_currency:

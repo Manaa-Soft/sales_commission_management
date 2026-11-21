@@ -1,7 +1,22 @@
 import frappe
 import hashlib
 import json
+import time
 from frappe import _
+
+# Required payload fields by event type.
+REQUIRED_PAYOUT_FIELDS = {
+    "event_type", "posting_date", "evidence_level",
+    "settlement", "settlement_item", "commission_entry",
+    "company", "beneficiary_type", "beneficiary",
+    "source_doctype", "source_name",
+    "source_currency", "source_amount",
+    "settlement_currency", "settlement_amount",
+    "commission_currency", "commission_amount",
+    "company_currency", "company_amount",
+}
+
+REQUIRED_REVERSAL_FIELDS = REQUIRED_PAYOUT_FIELDS | {"reversal_of"}
 
 
 def generate_event_key(source_doctype, source_name, source_row, settlement, settlement_item, commission_entry, event_type, reversal_of=None):
@@ -25,13 +40,76 @@ def generate_event_key(source_doctype, source_name, source_row, settlement, sett
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _normalize_value(fieldname, value):
+    """Normalize a value for comparison based on the DocType field type.
+
+    Database values (dates, decimals) may have different Python
+    representations than the values supplied by the caller. This
+    function normalizes both sides to a consistent representation.
+    """
+    if value is None:
+        return None
+    try:
+        field = frappe.get_meta("Commission Payout Event").get_field(fieldname)
+    except Exception:
+        field = None
+    ft = getattr(field, "fieldtype", None) if field else None
+
+    if ft in ("Date",):
+        from frappe.utils import getdate
+        if isinstance(value, str):
+            try:
+                return str(getdate(value))
+            except Exception:
+                return value
+        return str(value) if value else None
+    if ft in ("Datetime",):
+        from frappe.utils import get_datetime
+        if isinstance(value, str):
+            try:
+                return str(get_datetime(value))
+            except Exception:
+                return value
+        return str(value) if value else None
+    if ft in ("Currency", "Float", "Percent"):
+        from frappe.utils import flt
+        return flt(value, 6)
+    if ft in ("Int", "Check"):
+        return int(value) if value is not None else 0
+    if ft == "Link":
+        return str(value) if value is not None else None
+    return value
+
+
+def _validate_payload_schema(event_data):
+    """Validate that event_data contains all required fields for its event type.
+
+    Rejects unexpected fields and missing required fields.
+    """
+    event_type = event_data.get("event_type", "")
+    if event_type in ("Payout Reversal", "Recovery Reversal"):
+        required = REQUIRED_REVERSAL_FIELDS
+    else:
+        required = REQUIRED_PAYOUT_FIELDS
+
+    missing = required - set(event_data.keys())
+    if missing:
+        frappe.throw(_("Missing required payload fields: {0}").format(", ".join(sorted(missing))))
+
+    # Reject unexpected fields (only allow known DocType fields + event_key).
+    meta = frappe.get_meta("Commission Payout Event")
+    known_fields = {f.fieldname for f in meta.fields} | {"event_key", "doctype"}
+    unexpected = set(event_data.keys()) - known_fields
+    if unexpected:
+        frappe.throw(_("Unexpected payload fields: {0}").format(", ".join(sorted(unexpected))))
+
+
 def get_or_create_payout_event(event_data):
     """Retrieve an existing payout event or create a new one.
 
     Idempotent: calling twice with the same key returns the same event.
-    event_data must be a dict containing at minimum 'event_key' and the
-    financial/source fields. The same canonical data is used for both
-    insertion and later comparison.
+    event_data must be a dict containing at minimum 'event_key' and all
+    required financial/source fields for the event type.
 
     Handles concurrent inserts by catching DuplicateEntryError and
     retrieving the existing event using a locking read. Verifies that
@@ -42,12 +120,15 @@ def get_or_create_payout_event(event_data):
     if not event_data.get("event_key"):
         frappe.throw(_("Event Key is required in event data."))
 
+    # Validate payload schema.
+    _validate_payload_schema(event_data)
+
     event_key = event_data["event_key"]
 
     # Canonical payload: all fields except doctype and event_key.
     canonical_payload = {k: v for k, v in event_data.items() if k not in ("doctype", "event_key")}
 
-    # Use locking read to get current data (avoids stale snapshot).
+    # First attempt: locking read.
     locked = frappe.db.sql(
         """
         SELECT name
@@ -72,56 +153,33 @@ def get_or_create_payout_event(event_data):
         doc.insert(ignore_permissions=True)
         return doc.name
     except frappe.DuplicateEntryError:
-        # Race condition: another worker inserted first. Use locking read.
-        locked = frappe.db.sql(
-            """
-            SELECT name
-            FROM `tabCommission Payout Event`
-            WHERE event_key = %s
-            FOR UPDATE
-            """,
-            (event_key,),
-            as_dict=True,
-        )
-        if locked:
-            existing = locked[0].name
-            _verify_payload_match(existing, canonical_payload)
-            return existing
-        raise
-
-
-def _normalize_value(fieldname, value):
-    """Normalize a value for comparison based on the DocType field type.
-
-    Database values (dates, decimals) may have different Python
-    representations than the values supplied by the caller. This
-    function normalizes both sides to a consistent representation.
-    """
-    if value is None:
-        return None
-    # Get field type from DocType.
-    try:
-        field = frappe.get_meta("Commission Payout Event").get_field(fieldname)
-    except Exception:
-        field = None
-    ft = getattr(field, "fieldtype", None) if field else None
-
-    if ft in ("Date", "Datetime"):
-        from frappe.utils import getdate
-        if isinstance(value, str):
+        # Race condition: another worker inserted first. Use locking read with retry.
+        for attempt in range(3):
             try:
-                return str(getdate(value))
-            except Exception:
-                return value
-        return str(value) if value else None
-    if ft in ("Currency", "Float", "Percent"):
-        from frappe.utils import flt
-        return flt(value, 6)
-    if ft in ("Int", "Check"):
-        return int(value) if value is not None else 0
-    if ft == "Link":
-        return str(value) if value is not None else None
-    return value
+                locked = frappe.db.sql(
+                    """
+                    SELECT name
+                    FROM `tabCommission Payout Event`
+                    WHERE event_key = %s
+                    FOR UPDATE
+                    """,
+                    (event_key,),
+                    as_dict=True,
+                )
+                if locked:
+                    existing = locked[0].name
+                    _verify_payload_match(existing, canonical_payload)
+                    return existing
+                # If still not found, retry.
+                if attempt < 2:
+                    time.sleep(0.1)
+                    continue
+                frappe.throw(_("Could not retrieve existing payout event for key {0}.").format(event_key))
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(0.1)
+                    continue
+                raise
 
 
 def _verify_payload_match(existing_name, payload):
