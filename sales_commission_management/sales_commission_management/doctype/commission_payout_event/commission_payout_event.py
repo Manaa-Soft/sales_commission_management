@@ -126,7 +126,7 @@ class CommissionPayoutEvent(Document):
             # Concurrency-safe: use locking read for existing reversals.
             existing_reversals = frappe.db.sql(
                 """
-                SELECT commission_amount
+                SELECT commission_amount, settlement_amount, company_amount
                 FROM `tabCommission Payout Event`
                 WHERE reversal_of = %s
                   AND docstatus = 1
@@ -135,9 +135,15 @@ class CommissionPayoutEvent(Document):
                 (self.reversal_of,),
                 as_dict=True,
             )
-            total_reversed = sum(flt(r.commission_amount) for r in (existing_reversals or []))
-            if total_reversed + flt(self.commission_amount) > flt(orig.commission_amount):
+            total_reversed_comm = sum(flt(r.commission_amount) for r in (existing_reversals or []))
+            total_reversed_sett = sum(flt(r.settlement_amount) for r in (existing_reversals or []))
+            total_reversed_comp = sum(flt(r.company_amount) for r in (existing_reversals or []))
+            if total_reversed_comm + flt(self.commission_amount) > flt(orig.commission_amount):
                 frappe.throw(_("Cumulative reversal exceeds original event amount."))
+            if total_reversed_sett + flt(self.settlement_amount) > flt(orig.settlement_amount):
+                frappe.throw(_("Cumulative reversal exceeds original settlement amount."))
+            if total_reversed_comp + flt(self.company_amount) > flt(orig.company_amount):
+                frappe.throw(_("Cumulative reversal exceeds original company amount."))
         else:
             if self.reversal_of:
                 frappe.throw(_("Only reversal events may reference an original event."))
