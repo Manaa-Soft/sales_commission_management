@@ -184,10 +184,7 @@ def get_or_create_payout_event(event_data, lookup_barrier=None):
             # concurrent workers both observe an empty lookup before either
             # attempts to insert (exercises the duplicate-insert/contention path).
             if lookup_barrier is not None:
-                try:
-                    lookup_barrier.wait(timeout=30)
-                except Exception:
-                    pass
+                lookup_barrier.wait(timeout=30)
 
             # No existing event: attempt insertion.
             doc = frappe.get_doc(doc_data)

@@ -621,6 +621,8 @@ class TestPayoutLifecycle(IntegrationTestCase):
             t0.join(timeout=30)
             t1.join(timeout=30)
             frappe.local.db = primary
+            self.assertFalse(t0.is_alive(), "concurrent creation worker 0 did not terminate")
+            self.assertFalse(t1.is_alive(), "concurrent creation worker 1 did not terminate")
             try:
                 frappe.db.sql("DELETE FROM `tabCommission Payout Event` WHERE event_key = %s", (event_key,))
                 frappe.db.commit()
@@ -773,6 +775,8 @@ class TestPayoutLifecycle(IntegrationTestCase):
             t0.join(timeout=30)
             t1.join(timeout=30)
             frappe.local.db = primary
+            self.assertFalse(t0.is_alive(), "concurrent reversal worker 0 did not terminate")
+            self.assertFalse(t1.is_alive(), "concurrent reversal worker 1 did not terminate")
             try:
                 frappe.db.sql("DELETE FROM `tabCommission Payout Event` WHERE name = %s", (orig_name,))
                 frappe.db.sql("DELETE FROM `tabCommission Payout Event` WHERE reversal_of = %s", (orig_name,))
