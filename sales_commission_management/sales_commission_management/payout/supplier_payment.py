@@ -819,6 +819,7 @@ def _previously_paid_for_item(settlement_item_name):
         filters={
             "settlement_item": settlement_item_name,
             "docstatus": 1,
+            "event_type": ["in", ["Payout", "Payout Reversal"]],
         },
         fields=["event_type", "settlement_amount"],
     )
@@ -868,6 +869,44 @@ def _get_settlement_items(settlement):
     ) or []
 
 
+def lock_commission_settlement(settlement_name):
+    """Acquire a FOR UPDATE lock on a single Commission Settlement.
+
+    Returns the locked row. Raises (via frappe.throw) when the settlement
+    does not exist. Database errors propagate so callers can roll back.
+
+    This is the shared settlement-level serialization primitive used by every
+    operation that changes the net payout balance (initial payout, cancellation
+    reversal, recovery). All such operations MUST acquire this lock before
+    reading payout events or calculating outstanding balances.
+    """
+    if not settlement_name:
+        frappe.throw(_("Commission Settlement name is required for locking."))
+    rows = frappe.db.sql(
+        "SELECT name FROM `tabCommission Settlement` WHERE name = %s FOR UPDATE",
+        (settlement_name,),
+    )
+    if not rows:
+        frappe.throw(
+            _("Commission Settlement {0} not found.").format(settlement_name)
+        )
+    return rows
+
+
+def lock_commission_settlements(settlement_names):
+    """Acquire FOR UPDATE locks on multiple Commission Settlements in a
+    deterministic (sorted) order to reduce deadlock risk.
+
+    Returns the list of locked settlement names.
+    """
+    names = sorted({n for n in (settlement_names or []) if n})
+    locked = []
+    for name in names:
+        lock_commission_settlement(name)
+        locked.append(name)
+    return locked
+
+
 def process_supplier_payment_entry(payment_entry):
     """Process a submitted Pay / Supplier Payment Entry and generate one
     Commission Payout Event per eligible settlement item.
@@ -875,13 +914,14 @@ def process_supplier_payment_entry(payment_entry):
     Steps:
       1. Validate the Payment Entry is a submitted supplier Pay.
       2. For each reference, match to a single submitted Commission Settlement.
-      3. Resolve currencies.
-      4. Lock the Payment Entry Reference row (concurrency protection).
-      5. Skip references already fully allocated (idempotency).
-      6. Derive per-item previous payments from submitted events.
-      7. Allocate across settlement items.
-      8. Create + submit one payout event per allocation.
-      9. Reconcile aggregate totals against the reference allocation.
+      3. Lock the Payment Entry Reference row (concurrency protection).
+      4. Acquire a shared FOR UPDATE lock on the matching Commission Settlement.
+      5. Resolve currencies.
+      6. Skip references already fully allocated (idempotency).
+      7. Derive per-item previous payments from submitted events.
+      8. Allocate across settlement items.
+      9. Create + submit one payout event per allocation.
+      10. Reconcile aggregate totals against the reference allocation.
 
     All work happens in the surrounding Payment Entry transaction; any
     failure propagates so the transaction cannot leave a partial record.
@@ -908,6 +948,18 @@ def process_supplier_payment_entry(payment_entry):
     references = _pe_references(pe)
     if not references:
         return []
+
+    # Deterministic ordering of references (by doctype / reference name) so
+    # that Payment Entries involving multiple settlements acquire settlement
+    # locks in a consistent order, reducing deadlock risk.
+    references = sorted(
+        references,
+        key=lambda r: (
+            _get_attr(r, "reference_doctype", "") or "",
+            _get_attr(r, "reference_name", "") or "",
+            _get_attr(r, "name", "") or "",
+        ),
+    )
 
     if generate_event_key is None or create_and_submit_payout_event is None:
         frappe.throw(_("Payout event factory is unavailable."))
@@ -946,6 +998,15 @@ def process_supplier_payment_entry(payment_entry):
         if settlement is None:
             continue
 
+        # --- Shared settlement-level lock. ---
+        # Different Payment Entries referencing the same Commission Settlement
+        # must be serialized against each other, not just against repeated
+        # processing of the same Payment Entry Reference. Acquire the
+        # settlement lock before reading payout events or calculating
+        # outstanding balances.
+        sett_name = _get_attr(settlement, "name", None)
+        lock_commission_settlement(sett_name)
+
         resolved = resolve_supplier_payment_currencies(pe, pr)
 
         # --- Idempotency: validate existing events before skipping. ---
@@ -958,6 +1019,7 @@ def process_supplier_payment_entry(payment_entry):
                     "source_name": _get_attr(pe, "name", None),
                     "source_row": ref_name,
                     "docstatus": 1,
+                    "event_type": ["in", ["Payout", "Payout Reversal"]],
                 },
                 fields=[
                     "event_type",
@@ -1180,3 +1242,7 @@ allocate_payment_across_items = allocate_supplier_payment_across_items
 get_settlement_for_reference = get_supplier_settlement_for_reference
 resolve_currencies = resolve_supplier_payment_currencies
 resolve_supplier_payment_currency = resolve_supplier_payment_currencies
+
+# Locking helpers (shared settlement-level serialization protocol).
+lock_settlement = lock_commission_settlement
+lock_settlements = lock_commission_settlements
