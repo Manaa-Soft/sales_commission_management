@@ -216,6 +216,15 @@ class CommissionSettlement(Document):
                 row.already_settled_amount = flt(
                     getattr(entry, "settled_amount", 0) or 0
                 )
+                if not getattr(row, "source_currency", None) and getattr(row, "original_source_invoice", None):
+                    try:
+                        row.source_currency = frappe.db.get_value(
+                            "Sales Invoice", row.original_source_invoice, "currency"
+                        )
+                    except Exception:
+                        row.source_currency = None
+                if not getattr(row, "company_currency", None):
+                    row.company_currency = _company_currency(self.company)
                 if not row.beneficiary:
                     row.beneficiary = entry.sales_person or entry.sales_partner
                 if not row.original_source_invoice:

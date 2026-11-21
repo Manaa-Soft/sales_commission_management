@@ -1,99 +1,122 @@
 {
- "actions": [],
- "creation": "2026-01-01 00:00:00.000000",
- "doctype": "DocType",
- "editable_grid": 1,
- "engine": "InnoDB",
- "field_order": [
-  "commission_ledger_entry",
-  "original_source_invoice",
-  "beneficiary",
-  "earned_balance",
-  "eligible_balance",
-  "reserved_amount",
-  "already_settled_amount",
-  "amount_included",
-  "reclassified_amount",
-  "source_currency_amount",
-  "base_currency_amount"
- ],
- "fields": [
-  {
-   "fieldname": "commission_ledger_entry",
-   "fieldtype": "Link",
-   "label": "Commission Ledger Entry",
-   "options": "Commission Entry",
-   "reqd": 1
-  },
-  {
-   "fieldname": "original_source_invoice",
-   "fieldtype": "Link",
-   "label": "Original Source Invoice",
-   "options": "Sales Invoice"
-  },
-  {
-   "fieldname": "beneficiary",
-   "fieldtype": "Data",
-   "label": "Beneficiary"
-  },
-  {
-   "fieldname": "earned_balance",
-   "fieldtype": "Currency",
-   "label": "Earned Balance",
-   "read_only": 1
-  },
-  {
-   "fieldname": "eligible_balance",
-   "fieldtype": "Currency",
-   "label": "Eligible Balance",
-   "read_only": 1
-  },
-  {
-   "fieldname": "reserved_amount",
-   "fieldtype": "Currency",
-   "label": "Reserved Amount",
-   "read_only": 1
-  },
-  {
-   "fieldname": "already_settled_amount",
-   "fieldtype": "Currency",
-   "label": "Already Settled Amount",
-   "read_only": 1
-  },
-  {
-   "fieldname": "amount_included",
-   "fieldtype": "Currency",
-   "label": "Amount Included",
-   "reqd": 1
-  },
-  {
-   "fieldname": "reclassified_amount",
-   "fieldtype": "Currency",
-   "label": "Reclassified Amount",
-   "options": "commission_currency",
-   "read_only": 1
-  },
-  {
-   "fieldname": "source_currency_amount",
-   "fieldtype": "Currency",
-   "label": "Source Currency Amount"
-  },
-  {
-   "fieldname": "base_currency_amount",
-   "fieldtype": "Currency",
-   "label": "Base Currency Amount"
-  }
- ],
- "istable": 1,
- "links": [],
- "modified": "2026-01-01 00:00:00.000000",
- "modified_by": "Administrator",
- "module": "Sales Commission Management",
- "name": "Commission Settlement Item",
- "owner": "Administrator",
- "permissions": [],
- "sort_field": "creation",
- "sort_order": "ASC",
- "states": [],
- "track_changes": 1
+  "actions": [],
+  "creation": "2026-01-01 00:00:00.000000",
+  "doctype": "DocType",
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "commission_ledger_entry",
+    "original_source_invoice",
+    "beneficiary",
+    "earned_balance",
+    "eligible_balance",
+    "reserved_amount",
+    "already_settled_amount",
+    "amount_included",
+    "reclassified_amount",
+    "source_currency",
+    "source_currency_amount",
+    "company_currency",
+    "base_currency_amount"
+  ],
+  "fields": [
+    {
+      "fieldname": "commission_ledger_entry",
+      "fieldtype": "Link",
+      "label": "Commission Ledger Entry",
+      "options": "Commission Entry",
+      "reqd": 1
+    },
+    {
+      "fieldname": "original_source_invoice",
+      "fieldtype": "Link",
+      "label": "Original Source Invoice",
+      "options": "Sales Invoice"
+    },
+    {
+      "fieldname": "beneficiary",
+      "fieldtype": "Data",
+      "label": "Beneficiary"
+    },
+    {
+      "fieldname": "earned_balance",
+      "fieldtype": "Currency",
+      "label": "Earned Balance",
+      "read_only": 1,
+      "options": "commission_currency"
+    },
+    {
+      "fieldname": "eligible_balance",
+      "fieldtype": "Currency",
+      "label": "Eligible Balance",
+      "read_only": 1,
+      "options": "commission_currency"
+    },
+    {
+      "fieldname": "reserved_amount",
+      "fieldtype": "Currency",
+      "label": "Reserved Amount",
+      "read_only": 1,
+      "options": "commission_currency"
+    },
+    {
+      "fieldname": "already_settled_amount",
+      "fieldtype": "Currency",
+      "label": "Already Settled Amount",
+      "read_only": 1,
+      "options": "commission_currency"
+    },
+    {
+      "fieldname": "amount_included",
+      "fieldtype": "Currency",
+      "label": "Amount Included",
+      "reqd": 1,
+      "options": "commission_currency"
+    },
+    {
+      "fieldname": "reclassified_amount",
+      "fieldtype": "Currency",
+      "label": "Reclassified Amount",
+      "options": "commission_currency",
+      "read_only": 1
+    },
+    {
+      "fieldname": "source_currency",
+      "fieldtype": "Link",
+      "label": "Source Currency",
+      "options": "Currency",
+      "read_only": 1
+    },
+    {
+      "fieldname": "source_currency_amount",
+      "fieldtype": "Currency",
+      "label": "Source Currency Amount",
+      "options": "source_currency"
+    },
+    {
+      "fieldname": "company_currency",
+      "fieldtype": "Link",
+      "label": "Company Currency",
+      "options": "Currency",
+      "read_only": 1
+    },
+    {
+      "fieldname": "base_currency_amount",
+      "fieldtype": "Currency",
+      "label": "Base Currency Amount",
+      "options": "company_currency"
+    }
+  ],
+  "istable": 1,
+  "links": [],
+  "modified": "2026-01-01 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Sales Commission Management",
+  "name": "Commission Settlement Item",
+  "owner": "Administrator",
+  "permissions": [],
+  "sort_field": "creation",
+  "sort_order": "ASC",
+  "states": [],
+  "track_changes": 1
 }
