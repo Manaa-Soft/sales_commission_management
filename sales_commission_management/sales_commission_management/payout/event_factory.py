@@ -1,4 +1,4 @@
-﻿import frappe
+import frappe
 import hashlib
 import json
 import time
@@ -168,7 +168,7 @@ def get_or_create_payout_event(event_data):
             locked = frappe.db.sql(
                 """
                 SELECT name
-                FROM 	abCommission Payout Event
+                FROM `tabCommission Payout Event`
                 WHERE event_key = %s
                 FOR UPDATE
                 """,
@@ -211,7 +211,7 @@ def get_or_create_payout_event(event_data):
                 locked = frappe.db.sql(
                     """
                     SELECT name
-                FROM 	abCommission Payout Event
+                FROM `tabCommission Payout Event`
                     WHERE event_key = %s
                     FOR UPDATE
                     """,
@@ -238,7 +238,7 @@ def _verify_payload_match(existing_name, payload):
     locked = frappe.db.sql(
         """
         SELECT *
-                FROM 	abCommission Payout Event
+                FROM `tabCommission Payout Event`
         WHERE name = %s
         FOR UPDATE
         """,
