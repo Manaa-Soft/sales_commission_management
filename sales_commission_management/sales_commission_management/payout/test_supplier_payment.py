@@ -395,7 +395,6 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
                 "sales_person": self.sales_person,
                 "supplier": self.supplier,
                 "status": "Draft",
-                "settlement_method": "Supplier Purchase Invoice",
                 "commission_currency": "USD",
                 "total_payable": 1000,
                 "entries": [{
@@ -407,10 +406,8 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
             sett.submit()
         else:
             frappe.db.set_value("Commission Settlement", sett_name, "supplier", self.supplier, update_modified=False)
-            frappe.db.set_value("Commission Settlement", sett_name, "settlement_method", "Supplier Purchase Invoice", update_modified=False)
         self.settlement = sett_name
         frappe.db.set_value("Commission Settlement", self.settlement, "supplier", self.supplier, update_modified=False)
-        frappe.db.set_value("Commission Settlement", self.settlement, "settlement_method", "Supplier Purchase Invoice", update_modified=False)
 
         self.settlement_item = frappe.db.get_value(
             "Commission Settlement Item",
@@ -431,12 +428,6 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
             pi.insert(ignore_permissions=True)
             pi.submit()
         self.purchase_invoice = pi_name
-
-        frappe.db.set_value("Commission Settlement", self.settlement, {
-            "settlement_document_type": "Purchase Invoice",
-            "settlement_document": self.purchase_invoice,
-            "settlement_method": "Supplier Purchase Invoice",
-        }, update_modified=False)
 
         bank_account = frappe.db.get_value("Account", {"account_type": "Bank", "company": self.company}, "name")
         payable_account = frappe.db.get_value("Account", {"account_type": "Payable", "company": self.company}, "name")
@@ -474,6 +465,16 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
             "name",
         )
 
+        # Enable supplier settlement matching only after the primary Payment Entry
+        # has been submitted, so the on_submit hook does not auto-process it.
+        frappe.db.set_value("Commission Settlement", self.settlement, {
+            "settlement_document_type": "Purchase Invoice",
+            "settlement_document": self.purchase_invoice,
+            "settlement_method": "Supplier Purchase Invoice",
+            "settlement_fx_rate": 1,
+            "settlement_fx_date": frappe.utils.nowdate(),
+        }, update_modified=False)
+
     def _cleanup_uid_records(self, commit=False):
         uid = getattr(self, "uid", None)
         try:
@@ -482,11 +483,12 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
                     "DELETE FROM `tabCommission Payout Event` WHERE event_key LIKE %s",
                     (f"%{uid}%",),
                 )
-        except Exception:
+        except Exception as _ce:
+            print("CLEANUP ERROR:", _ce)
             try:
                 frappe.db.rollback()
-            except Exception:
-                pass
+            except Exception as _ce2:
+                print("CLEANUP ERROR:", _ce2)
 
         for doctype, attr in [
             ("Payment Entry", "payment_entry"),
@@ -502,11 +504,11 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
                     if getattr(doc, "docstatus", 0) == 1:
                         try:
                             doc.cancel()
-                        except Exception:
-                            pass
+                        except Exception as _ce:
+                            print("CLEANUP ERROR:", _ce)
                     frappe.delete_doc(doctype, name, ignore_permissions=True)
-                except Exception:
-                    pass
+                except Exception as _ce:
+                    print("CLEANUP ERROR:", _ce)
 
         # second payment entry if created
         pe2 = getattr(self, "payment_entry_2", None)
@@ -516,11 +518,11 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
                 if getattr(doc, "docstatus", 0) == 1:
                     try:
                         doc.cancel()
-                    except Exception:
-                        pass
+                    except Exception as _ce:
+                        print("CLEANUP ERROR:", _ce)
                 frappe.delete_doc("Payment Entry", pe2, ignore_permissions=True)
-            except Exception:
-                pass
+            except Exception as _ce:
+                print("CLEANUP ERROR:", _ce)
 
         for doctype, attr in [
             ("Supplier", "supplier"),
@@ -532,8 +534,8 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
             if name and frappe.db.exists(doctype, name):
                 try:
                     frappe.delete_doc(doctype, name, ignore_permissions=True)
-                except Exception:
-                    pass
+                except Exception as _ce:
+                    print("CLEANUP ERROR:", _ce)
 
         try:
             cs = frappe.get_single("Commission Settings")
@@ -542,24 +544,25 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
             if getattr(self, "_original_cs_accounting_mode", None) is not None:
                 cs.accounting_mode = self._original_cs_accounting_mode
             cs.save(ignore_permissions=True)
-        except Exception:
-            pass
+        except Exception as _ce:
+            print("CLEANUP ERROR:", _ce)
 
         if getattr(self, "_commission_item_created", False):
             try:
                 if frappe.db.exists("Item", "Commission"):
                     frappe.delete_doc("Item", "Commission", ignore_permissions=True)
-            except Exception:
-                pass
+            except Exception as _ce:
+                print("CLEANUP ERROR:", _ce)
 
         if commit:
             try:
                 frappe.db.commit()
-            except Exception:
+            except Exception as _ce:
+                print("CLEANUP ERROR:", _ce)
                 try:
                     frappe.db.rollback()
-                except Exception:
-                    pass
+                except Exception as _ce2:
+                    print("CLEANUP ERROR:", _ce2)
 
     def tearDown(self):
         self._cleanup_uid_records()
@@ -612,8 +615,8 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
                     if getattr(d, "docstatus", 0) == 1:
                         d.cancel()
                     frappe.delete_doc("Commission Settlement", sett2_name, ignore_permissions=True)
-            except Exception:
-                pass
+            except Exception as _ce:
+                print("CLEANUP ERROR:", _ce)
 
     # ------------------------------------------------------------------
     # Test 4: Database failure during settlement matching -> transaction fails
@@ -737,30 +740,39 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
             process_supplier_payment_entry,
         )
 
-        # Create a second payment entry paying the same settlement.
+        # Create a second payment entry paying the same settlement. Suppress the
+        # automatic supplier-payout hook while submitting, so the test can drive
+        # the handler explicitly.
         pe2_name = f"PE2-{self.uid}"
         if not frappe.db.exists("Payment Entry", pe2_name):
-            pe2 = frappe.get_doc({
-                "doctype": "Payment Entry",
-                "name": pe2_name,
-                "payment_type": "Pay",
-                "party_type": "Supplier",
-                "party": self.supplier,
-                "company": self.company,
-                "posting_date": frappe.utils.nowdate(),
-                "paid_amount": 1000,
-                "received_amount": 1000,
-                "paid_from": self.bank_account,
-                "paid_to": self.payable_account,
-                "target_exchange_rate": 1,
-                "references": [{
-                    "reference_doctype": "Purchase Invoice",
-                    "reference_name": self.purchase_invoice,
-                    "allocated_amount": 1000,
-                }],
-            })
-            pe2.insert(ignore_permissions=True)
-            pe2.submit()
+            import sales_commission_management.sales_commission_management.payout.supplier_payment as _sp_mod
+
+            _orig_handler = _sp_mod.process_supplier_payment_entry
+            _sp_mod.process_supplier_payment_entry = lambda *a, **k: []
+            try:
+                pe2 = frappe.get_doc({
+                    "doctype": "Payment Entry",
+                    "name": pe2_name,
+                    "payment_type": "Pay",
+                    "party_type": "Supplier",
+                    "party": self.supplier,
+                    "company": self.company,
+                    "posting_date": frappe.utils.nowdate(),
+                    "paid_amount": 1000,
+                    "received_amount": 1000,
+                    "paid_from": self.bank_account,
+                    "paid_to": self.payable_account,
+                    "target_exchange_rate": 1,
+                    "references": [{
+                        "reference_doctype": "Purchase Invoice",
+                        "reference_name": self.purchase_invoice,
+                        "allocated_amount": 1000,
+                    }],
+                })
+                pe2.insert(ignore_permissions=True)
+                pe2.submit()
+            finally:
+                _sp_mod.process_supplier_payment_entry = _orig_handler
         self.payment_entry_2 = pe2_name
 
         frappe.db.commit()
@@ -777,20 +789,20 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
         ready_event = threading.Event()
         start_event = threading.Event()
 
+        # Install the barrier wrapper once, in the main thread.
+        original_lock = sp_mod.lock_commission_settlements
+
+        def locking_with_barrier(settlement_names):
+            lock_barrier.wait(timeout=30)
+            return original_lock(settlement_names)
+
+        sp_mod.lock_commission_settlements = locking_with_barrier
+
         def worker(idx, pe_name):
             try:
                 frappe.init(site=site)
                 frappe.connect()
                 frappe.set_user("Administrator")
-                # Patch lock acquisition to wait on the shared barrier before
-                # delegating, so both workers race for the real settlement lock.
-                original_lock = sp_mod.lock_commission_settlements
-
-                def locking_with_barrier(settlement_names):
-                    lock_barrier.wait(timeout=30)
-                    return original_lock(settlement_names)
-
-                sp_mod.lock_commission_settlements = locking_with_barrier
 
                 ready_barrier.wait(timeout=30)
                 ready_event.set()
@@ -802,13 +814,13 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
                 errors[idx] = exc
                 try:
                     frappe.db.rollback()
-                except Exception:
-                    pass
+                except Exception as _ce:
+                    print("CLEANUP ERROR:", _ce)
             finally:
                 try:
                     frappe.local.db.close()
-                except Exception:
-                    pass
+                except Exception as _ce:
+                    print("CLEANUP ERROR:", _ce)
 
         t0 = threading.Thread(target=worker, args=(0, self.payment_entry), daemon=True)
         t1 = threading.Thread(target=worker, args=(1, self.payment_entry_2), daemon=True)
@@ -863,6 +875,7 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
             t0.join(timeout=30)
             t1.join(timeout=30)
             frappe.local.db = primary
+            sp_mod.lock_commission_settlements = original_lock
             try:
                 frappe.db.sql("DELETE FROM `tabCommission Payout Event` WHERE source_name IN (%s, %s)", (self.payment_entry, self.payment_entry_2))
                 frappe.db.commit()
@@ -870,13 +883,13 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
                 print("CLEANUP ERROR:", _ce)
                 try:
                     frappe.db.rollback()
-                except Exception:
-                    pass
+                except Exception as _ce:
+                    print("CLEANUP ERROR:", _ce)
             try:
                 self._cleanup_uid_records(commit=True)
             except Exception as _ce:
                 print("CLEANUP ERROR:", _ce)
                 try:
                     frappe.db.rollback()
-                except Exception:
-                    pass
+                except Exception as _ce:
+                    print("CLEANUP ERROR:", _ce)
