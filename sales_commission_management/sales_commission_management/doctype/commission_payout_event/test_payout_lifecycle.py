@@ -209,43 +209,65 @@ class TestPayoutLifecycle(IntegrationTestCase):
         )
         assert self.source_row is not None, "Payment Entry Reference (source row) could not be resolved."
 
-    def tearDown(self):
-        for doctype, name in [
-            ("Payment Entry", getattr(self, "payment_entry", None)),
-            ("Purchase Invoice", getattr(self, "purchase_invoice", None)),
-            ("Commission Settlement", getattr(self, "settlement", None)),
-            ("Commission Entry", getattr(self, "commission_entry", None)),
-            ("Sales Invoice", getattr(self, "sales_invoice", None)),
-        ]:
-            if name and frappe.db.exists(doctype, name):
-                doc = frappe.get_doc(doctype, name)
-                if getattr(doc, "docstatus", 0) == 1:
-                    try:
-                        doc.cancel()
-                    except Exception:
-                        pass
-                try:
-                    frappe.delete_doc(doctype, name, ignore_permissions=True)
-                except Exception:
-                    pass
-        for doctype, name in [
-            ("Supplier", getattr(self, "supplier", None)),
-            ("Customer", getattr(self, "customer", None)),
-            ("Sales Person", getattr(self, "sales_person", None)),
-            ("Company", getattr(self, "company", None)),
-        ]:
-            if name and frappe.db.exists(doctype, name):
-                try:
-                    frappe.delete_doc(doctype, name, ignore_permissions=True)
-                except Exception:
-                    pass
-        # Remove any committed Commission Payout Events created by this test
-        # (test-only direct SQL; production immutability is not weakened).
+    def _cleanup_uid_records(self):
+        """Idempotent cleanup of all committed records created by this test.
+
+        Committed payout events (and any reversal/recovery events that
+        reference them) are deleted FIRST, using the test-only direct SQL
+        approach, so that link checks cannot block deletion of the linked
+        fixtures. Linked fixtures are then removed in dependency order.
+        """
+        uid = getattr(self, "uid", None)
+
+        # 1. Delete committed payout events first (test-only direct SQL).
         try:
-            frappe.db.sql("DELETE FROM `tabCommission Payout Event` WHERE event_key LIKE %s", (f"%{self.uid}%",))
+            if uid:
+                frappe.db.sql(
+                    "DELETE FROM `tabCommission Payout Event` WHERE event_key LIKE %s",
+                    (f"%{uid}%",),
+                )
+            frappe.db.commit()
         except Exception:
-            pass
-        # Restore Commission Settings original values.
+            try:
+                frappe.db.rollback()
+            except Exception:
+                pass
+
+        # 2. Delete linked fixtures in dependency order.
+        for doctype, attr in [
+            ("Payment Entry", "payment_entry"),
+            ("Purchase Invoice", "purchase_invoice"),
+            ("Commission Settlement", "settlement"),
+            ("Commission Entry", "commission_entry"),
+            ("Sales Invoice", "sales_invoice"),
+        ]:
+            name = getattr(self, attr, None)
+            if name and frappe.db.exists(doctype, name):
+                try:
+                    doc = frappe.get_doc(doctype, name)
+                    if getattr(doc, "docstatus", 0) == 1:
+                        try:
+                            doc.cancel()
+                        except Exception:
+                            pass
+                    frappe.delete_doc(doctype, name, ignore_permissions=True)
+                except Exception:
+                    pass
+
+        for doctype, attr in [
+            ("Supplier", "supplier"),
+            ("Customer", "customer"),
+            ("Sales Person", "sales_person"),
+            ("Company", "company"),
+        ]:
+            name = getattr(self, attr, None)
+            if name and frappe.db.exists(doctype, name):
+                try:
+                    frappe.delete_doc(doctype, name, ignore_permissions=True)
+                except Exception:
+                    pass
+
+        # 3. Restore Commission Settings original values.
         try:
             cs = frappe.get_single("Commission Settings")
             if getattr(self, "_original_cs_enabled", None) is not None:
@@ -255,12 +277,25 @@ class TestPayoutLifecycle(IntegrationTestCase):
             cs.save(ignore_permissions=True)
         except Exception:
             pass
-        # Remove Commission Item only if created by this test.
+
+        # 4. Remove Commission Item only if created by this test.
         if getattr(self, "_commission_item_created", False):
             try:
-                frappe.delete_doc("Item", "Commission", ignore_permissions=True)
+                if frappe.db.exists("Item", "Commission"):
+                    frappe.delete_doc("Item", "Commission", ignore_permissions=True)
             except Exception:
                 pass
+
+        try:
+            frappe.db.commit()
+        except Exception:
+            try:
+                frappe.db.rollback()
+            except Exception:
+                pass
+
+    def tearDown(self):
+        self._cleanup_uid_records()
 
     def _event_data(self, event_key, **overrides):
         data = {
@@ -520,6 +555,7 @@ class TestPayoutLifecycle(IntegrationTestCase):
         ready_barrier = threading.Barrier(2)
         ready_event = threading.Event()
         start_event = threading.Event()
+        lookup_barrier = threading.Barrier(2)
 
         def worker(idx):
             try:
@@ -529,7 +565,7 @@ class TestPayoutLifecycle(IntegrationTestCase):
                 ready_barrier.wait(timeout=30)
                 ready_event.set()
                 start_event.wait(timeout=30)
-                name = get_or_create_payout_event(dict(event_data))
+                name = get_or_create_payout_event(dict(event_data), lookup_barrier=lookup_barrier)
                 frappe.db.commit()
                 results[idx] = name
             except Exception as exc:  # noqa: BLE001
@@ -554,6 +590,8 @@ class TestPayoutLifecycle(IntegrationTestCase):
             start_event.set()
             t0.join(timeout=60)
             t1.join(timeout=60)
+            self.assertFalse(t0.is_alive(), "concurrent creation worker 0 did not terminate")
+            self.assertFalse(t1.is_alive(), "concurrent creation worker 1 did not terminate")
 
             frappe.local.db = primary
 
@@ -576,14 +614,8 @@ class TestPayoutLifecycle(IntegrationTestCase):
             self.assertEqual(doc.source_currency, event_data["source_currency"])
         finally:
             start_event.set()
-            try:
-                t0.join(timeout=10)
-            except Exception:
-                pass
-            try:
-                t1.join(timeout=10)
-            except Exception:
-                pass
+            t0.join(timeout=30)
+            t1.join(timeout=30)
             frappe.local.db = primary
             try:
                 frappe.db.sql("DELETE FROM `tabCommission Payout Event` WHERE event_key = %s", (event_key,))
@@ -595,13 +627,36 @@ class TestPayoutLifecycle(IntegrationTestCase):
                     pass
             # Ensure committed fixtures are removed (test-only).
             try:
-                self.tearDown()
+                self._cleanup_uid_records()
                 frappe.db.commit()
             except Exception:
                 try:
                     frappe.db.rollback()
                 except Exception:
                     pass
+            # Assert no UID-scoped records remain after cleanup.
+            remaining_events = frappe.db.sql(
+                "SELECT COUNT(*) FROM `tabCommission Payout Event` WHERE event_key LIKE %s",
+                (f"%{self.uid}%",),
+            )[0][0]
+            self.assertEqual(remaining_events, 0)
+            for doctype, attr in [
+                ("Payment Entry", "payment_entry"),
+                ("Purchase Invoice", "purchase_invoice"),
+                ("Commission Settlement", "settlement"),
+                ("Commission Entry", "commission_entry"),
+                ("Sales Invoice", "sales_invoice"),
+                ("Supplier", "supplier"),
+                ("Customer", "customer"),
+                ("Sales Person", "sales_person"),
+                ("Company", "company"),
+            ]:
+                name = getattr(self, attr, None)
+                if name:
+                    self.assertFalse(
+                        frappe.db.exists(doctype, name),
+                        f"{doctype} {name} remains after cleanup",
+                    )
 
     def test_concurrent_reversal_mariadb(self):
         if frappe.db.db_type != "mariadb":
@@ -671,6 +726,8 @@ class TestPayoutLifecycle(IntegrationTestCase):
             start_event.set()
             t0.join(timeout=60)
             t1.join(timeout=60)
+            self.assertFalse(t0.is_alive(), "concurrent reversal worker 0 did not terminate")
+            self.assertFalse(t1.is_alive(), "concurrent reversal worker 1 did not terminate")
 
             frappe.local.db = primary
 
@@ -680,6 +737,7 @@ class TestPayoutLifecycle(IntegrationTestCase):
             ok_result = [r for r in results if r and r[0] == "ok"][0]
             err_result = [r for r in results if r and r[0] == "err"][0]
             self.assertTrue(isinstance(err_result[1], frappe.ValidationError))
+            self.assertIn("Cumulative reversal exceeds original event amount.", str(err_result[1]))
 
             reversals = frappe.db.get_all(
                 "Commission Payout Event",
@@ -709,14 +767,8 @@ class TestPayoutLifecycle(IntegrationTestCase):
             self.assertEqual(flt(total_comp), 600)
         finally:
             start_event.set()
-            try:
-                t0.join(timeout=10)
-            except Exception:
-                pass
-            try:
-                t1.join(timeout=10)
-            except Exception:
-                pass
+            t0.join(timeout=30)
+            t1.join(timeout=30)
             frappe.local.db = primary
             try:
                 frappe.db.sql("DELETE FROM `tabCommission Payout Event` WHERE name = %s", (orig_name,))
@@ -729,13 +781,36 @@ class TestPayoutLifecycle(IntegrationTestCase):
                     pass
             # Ensure committed fixtures are removed (test-only).
             try:
-                self.tearDown()
+                self._cleanup_uid_records()
                 frappe.db.commit()
             except Exception:
                 try:
                     frappe.db.rollback()
                 except Exception:
                     pass
+            # Assert no UID-scoped records remain after cleanup.
+            remaining_events = frappe.db.sql(
+                "SELECT COUNT(*) FROM `tabCommission Payout Event` WHERE event_key LIKE %s",
+                (f"%{self.uid}%",),
+            )[0][0]
+            self.assertEqual(remaining_events, 0)
+            for doctype, attr in [
+                ("Payment Entry", "payment_entry"),
+                ("Purchase Invoice", "purchase_invoice"),
+                ("Commission Settlement", "settlement"),
+                ("Commission Entry", "commission_entry"),
+                ("Sales Invoice", "sales_invoice"),
+                ("Supplier", "supplier"),
+                ("Customer", "customer"),
+                ("Sales Person", "sales_person"),
+                ("Company", "company"),
+            ]:
+                name = getattr(self, attr, None)
+                if name:
+                    self.assertFalse(
+                        frappe.db.exists(doctype, name),
+                        f"{doctype} {name} remains after cleanup",
+                    )
 
     # ------------------------------------------------------------------
     # Reversal amount / precision tests

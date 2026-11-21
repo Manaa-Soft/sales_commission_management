@@ -132,7 +132,7 @@ def _validate_payload_schema(event_data):
         frappe.throw(_("Unexpected payload fields: {0}").format(", ".join(sorted(unexpected))))
 
 
-def get_or_create_payout_event(event_data):
+def get_or_create_payout_event(event_data, lookup_barrier=None):
     """Retrieve an existing payout event or create a new one.
 
     Idempotent: calling twice with the same key returns the same event.
@@ -179,6 +179,15 @@ def get_or_create_payout_event(event_data):
                 existing = locked[0].name
                 _verify_payload_match(existing, canonical_payload)
                 return existing
+
+            # Synchronize at the lookup/insert boundary when requested, so that
+            # concurrent workers both observe an empty lookup before either
+            # attempts to insert (exercises the duplicate-insert/contention path).
+            if lookup_barrier is not None:
+                try:
+                    lookup_barrier.wait(timeout=30)
+                except Exception:
+                    pass
 
             # No existing event: attempt insertion.
             doc = frappe.get_doc(doc_data)
