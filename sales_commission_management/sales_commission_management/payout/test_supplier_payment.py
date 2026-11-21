@@ -240,6 +240,24 @@ class TestSupplierPaymentAllocation(IntegrationTestCase):
         self.assertEqual(len(res), 1)
         self.assertAlmostEqual(res[0]["allocation"], 60, places=2)
 
+    def test_zero_commission_allocation_rejected(self):
+        # Three items each 0.01 commission (comm currency), FX rate 3 so settlement
+        # 0.03 each. Payment 0.03 settlement -> commission total 0.01, which
+        # cannot be split across three items at 2-decimal precision.
+        items = [
+            {"item": "A", "settlement_amount": 0.01, "previously_paid": 0},
+            {"item": "B", "settlement_amount": 0.01, "previously_paid": 0},
+            {"item": "C", "settlement_amount": 0.01, "previously_paid": 0},
+        ]
+        with self.assertRaises(ValueError):
+            allocate_supplier_payment_across_items(
+                payment_allocation=0.03,
+                source_allocation=0.03,
+                target_exchange_rate=1,
+                settlement_fx_rate=3,
+                items=items,
+            )
+
     def test_negative_nan_infinite_rejected(self):
         items = [{"item": "A", "settlement_amount": 100, "previously_paid": 0}]
         for bad in (-1, float("nan"), float("inf"), float("-inf")):

@@ -22,6 +22,20 @@ from sales_commission_management.sales_commission_management.utils import (
     currency_precision as _cp,
 )
 
+try:
+    from sales_commission_management.sales_commission_management.payout.event_factory import (
+        generate_event_key,
+    )
+except Exception:  # pragma: no cover
+    generate_event_key = None
+
+try:
+    from sales_commission_management.sales_commission_management.payout.lifecycle import (
+        create_and_submit_payout_event,
+    )
+except Exception:  # pragma: no cover
+    create_and_submit_payout_event = None
+
 
 def _company_currency(company):
     if not company:
@@ -555,6 +569,22 @@ def _allocate_core(
 
         if sett_alloc <= 0:
             continue
+        # Reject allocations that cannot be represented at the configured
+        # commission precision: a positive settlement allocation must not
+        # produce a zero commission allocation (P3.2.2 zero-commission guard).
+        if sett_alloc_minor > 0 and comm_alloc_minor <= 0:
+            raise ValueError(
+                "Commission allocation for item {0} cannot be represented "
+                "at the configured precision (zero commission amount).".format(
+                    p["item"]
+                )
+            )
+        if comm_alloc <= 0 and sett_alloc > 0:
+            raise ValueError(
+                "Commission allocation for item {0} must be positive.".format(
+                    p["item"]
+                )
+            )
         if sett_alloc > p["remaining"]:
             raise ValueError(
                 "Allocation {0} exceeds remaining {1} for item {2}.".format(
@@ -763,6 +793,303 @@ def allocate_supplier_payment_across_items(*args, **kwargs):
         settlement_fx_rate,
         items,
     )
+
+
+# ---------------------------------------------------------------------------
+# P3.2.2 — Supplier Payment Entry handler
+# ---------------------------------------------------------------------------
+
+
+def _previously_paid_for_item(settlement_item_name):
+    """Derive the net previously paid amount (in settlement currency) for a
+    settlement item from submitted Payout events, including reversals.
+
+    Commission Entry.settled_amount and Commission Settlement Item.
+    already_settled_amount are denominated in commission currency and must NOT
+    be passed directly into the allocator's ``previously_paid`` (which is
+    settlement currency). Instead, derive from the net submitted payout-event
+    settlement_amount values.
+    """
+    if not settlement_item_name:
+        return 0.0
+    try:
+        rows = frappe.get_all(
+            "Commission Payout Event",
+            filters={"settlement_item": settlement_item_name, "docstatus": 1},
+            fields=["event_type", "settlement_amount"],
+        )
+    except Exception:
+        return 0.0
+    paid = 0.0
+    for r in rows or []:
+        et = _get_attr(r, "event_type", None)
+        amt = flt(_get_attr(r, "settlement_amount", 0))
+        if et == "Payout":
+            paid += amt
+        elif et == "Payout Reversal":
+            paid -= amt
+    if paid < 0:
+        paid = 0.0
+    return flt(paid)
+
+
+def _get_settlement_items(settlement):
+    """Return Commission Settlement Item rows for a settlement."""
+    sett_name = _get_attr(settlement, "name", None)
+    if not sett_name:
+        return []
+    try:
+        return frappe.get_all(
+            "Commission Settlement Item",
+            filters={"parent": sett_name},
+            fields=[
+                "name",
+                "commission_ledger_entry",
+                "amount_included",
+                "already_settled_amount",
+            ],
+        )
+    except Exception:
+        return []
+
+
+def process_supplier_payment_entry(payment_entry):
+    """Process a submitted Pay / Supplier Payment Entry and generate one
+    Commission Payout Event per eligible settlement item.
+
+    Steps:
+      1. Validate the Payment Entry is a submitted supplier Pay.
+      2. For each reference, match to a single submitted Commission Settlement.
+      3. Resolve currencies.
+      4. Lock the Payment Entry Reference row (concurrency protection).
+      5. Skip references already fully allocated (idempotency).
+      6. Derive per-item previous payments from submitted events.
+      7. Allocate across settlement items.
+      8. Create + submit one payout event per allocation.
+      9. Reconcile aggregate totals against the reference allocation.
+
+    All work happens in the surrounding Payment Entry transaction; any
+    failure propagates so the transaction cannot leave a partial record.
+
+    Returns a list of created/submitted event names.
+    """
+    if isinstance(payment_entry, str):
+        pe = frappe.get_doc("Payment Entry", payment_entry)
+    else:
+        pe = payment_entry
+
+    if pe is None:
+        return []
+
+    # Only genuine supplier Pay entries are processed. Customer receipts are
+    # handled by the separate collection hooks.
+    if _get_attr(pe, "docstatus", 0) != 1:
+        return []
+    if _get_attr(pe, "payment_type", None) not in (None, "Pay"):
+        return []
+    if _get_attr(pe, "party_type", None) not in (None, "Supplier"):
+        return []
+
+    references = _pe_references(pe)
+    if not references:
+        return []
+
+    if generate_event_key is None or create_and_submit_payout_event is None:
+        frappe.throw(_("Payout event factory is unavailable."))
+
+    created_events = []
+
+    for pr in references:
+        ref_name = _get_attr(pr, "name", None)
+        # --- Concurrency protection: lock the Payment Entry Reference row. ---
+        if ref_name:
+            try:
+                frappe.db.sql(
+                    "SELECT name FROM `tabPayment Entry Reference` WHERE name = %s FOR UPDATE",
+                    (ref_name,),
+                )
+            except Exception:
+                pass
+
+        # --- Idempotency: skip if already fully allocated. ---
+        allocated_amount = flt(_get_attr(pr, "allocated_amount", 0))
+        if allocated_amount <= 0:
+            continue
+        existing_total = 0.0
+        if ref_name:
+            try:
+                rows = frappe.get_all(
+                    "Commission Payout Event",
+                    filters={"source_row": ref_name, "docstatus": 1},
+                    fields=["source_amount"],
+                )
+                existing_total = sum(flt(_get_attr(r, "source_amount", 0)) for r in (rows or []))
+            except Exception:
+                existing_total = 0.0
+        # Resolve source currency precision from the Payment Entry.
+        try:
+            sc = _get_attr(pe, "paid_to_account_currency", None) or _get_attr(
+                pe, "party_account_currency", None
+            )
+            from sales_commission_management.sales_commission_management.utils import (
+                currency_precision as _cp3,
+            )
+
+            prec = _cp3(sc) if sc else 2
+        except Exception:
+            prec = 2
+        if flt(existing_total, prec) > 0:
+            # Already processed (at least partially) for this reference; skip
+            # to preserve idempotency. Partial failures roll back the whole
+            # transaction, so any submitted event implies full processing.
+            continue
+
+        settlement = get_supplier_settlement_for_reference(pe, pr)
+        if settlement is None:
+            continue
+
+        resolved = resolve_supplier_payment_currencies(pe, pr)
+
+        # Build settlement items with derived previous payments.
+        sett_items = _get_settlement_items(settlement)
+        items = []
+        item_to_entry = {}
+        for si in sett_items:
+            si_name = _get_attr(si, "name", None)
+            ce_name = _get_attr(si, "commission_ledger_entry", None)
+            if not si_name or not ce_name:
+                continue
+            comm_balance = flt(_get_attr(si, "amount_included", 0))
+            prev_paid = _previously_paid_for_item(si_name)
+            items.append(
+                {
+                    "item": si_name,
+                    "settlement_amount": comm_balance,
+                    "previously_paid": prev_paid,
+                }
+            )
+            item_to_entry[si_name] = ce_name
+
+        if not items:
+            continue
+
+        allocations = allocate_supplier_payment_across_items(
+            payment_allocation=resolved["settlement_amount"],
+            source_allocation=resolved["source_amount"],
+            target_exchange_rate=resolved["target_exchange_rate"],
+            settlement_fx_rate=resolved["settlement_fx_rate"],
+            items=items,
+        )
+
+        # Create + submit one event per allocation.
+        ref_event_names = []
+        for alloc in allocations:
+            item_name = alloc["item"]
+            ce_name = item_to_entry.get(item_name)
+            if not ce_name:
+                continue
+            event_key = generate_event_key(
+                "Payment Entry",
+                _get_attr(pe, "name", None),
+                ref_name,
+                _get_attr(settlement, "name", None),
+                item_name,
+                ce_name,
+                "Payout",
+            )
+            sett_doc = _get_attr(settlement, "settlement_document", None)
+            payload = {
+                "event_key": event_key,
+                "event_type": "Payout",
+                "posting_date": _get_attr(pe, "posting_date", None) or frappe.utils.nowdate(),
+                "evidence_level": "ERP Payment Voucher",
+                "settlement": _get_attr(settlement, "name", None),
+                "settlement_item": item_name,
+                "commission_entry": ce_name,
+                "company": resolved["company_currency"] and (_get_attr(pe, "company", None) or _get_attr(settlement, "company", None)),
+                "beneficiary_type": _get_attr(settlement, "beneficiary_type", None),
+                "beneficiary": _get_attr(settlement, "sales_person", None) or _get_attr(settlement, "sales_partner", None),
+                "source_doctype": "Payment Entry",
+                "source_name": _get_attr(pe, "name", None),
+                "source_row": ref_name,
+                "source_currency": resolved["source_currency"],
+                "source_amount": alloc["source_amount"],
+                "settlement_currency": resolved["settlement_currency"],
+                "settlement_amount": alloc["settlement_amount"],
+                "commission_currency": resolved["commission_currency"],
+                "commission_amount": alloc["commission_amount"],
+                "company_currency": resolved["company_currency"],
+                "company_amount": alloc["company_amount"],
+                "fx_from_currency": resolved["commission_currency"],
+                "fx_to_currency": resolved["settlement_currency"],
+                "fx_rate": resolved["settlement_fx_rate"],
+                "fx_date": _get_attr(pe, "posting_date", None) or frappe.utils.nowdate(),
+                "fx_source": "Payment Entry",
+            }
+            # Remove None-valued optional? keep; factory validates required.
+            name = create_and_submit_payout_event(payload)
+            ref_event_names.append(name)
+            created_events.append(name)
+
+        # --- Aggregate reconciliation for this reference. ---
+        # Verify submitted event totals match the resolved reference values.
+        try:
+            ev_rows = frappe.get_all(
+                "Commission Payout Event",
+                filters={"source_row": ref_name, "docstatus": 1},
+                fields=[
+                    "source_amount",
+                    "settlement_amount",
+                    "commission_amount",
+                    "company_amount",
+                ],
+            )
+            # Use source currency precision.
+            from sales_commission_management.sales_commission_management.utils import currency_precision as _cp4
+            psrc = _cp4(resolved["source_currency"])
+            psett = _cp4(resolved["settlement_currency"])
+            pcomm = _cp4(resolved["commission_currency"])
+            pcomp = _cp4(resolved["company_currency"])
+            total_src = flt(sum(flt(_get_attr(r, "source_amount", 0)) for r in (ev_rows or [])), psrc)
+            total_sett = flt(sum(flt(_get_attr(r, "settlement_amount", 0)) for r in (ev_rows or [])), psett)
+            total_comm = flt(sum(flt(_get_attr(r, "commission_amount", 0)) for r in (ev_rows or [])), pcomm)
+            total_comp = flt(sum(flt(_get_attr(r, "company_amount", 0)) for r in (ev_rows or [])), pcomp)
+            if total_src != flt(resolved["source_amount"], psrc):
+                frappe.throw(
+                    _("Aggregate source total {0} does not match reference {1}.").format(
+                        total_src, resolved["source_amount"]
+                    )
+                )
+            if total_sett != flt(resolved["settlement_amount"], psett):
+                frappe.throw(
+                    _("Aggregate settlement total {0} does not match reference {1}.").format(
+                        total_sett, resolved["settlement_amount"]
+                    )
+                )
+            if total_comm != flt(resolved["commission_amount"], pcomm):
+                frappe.throw(
+                    _("Aggregate commission total {0} does not match reference {1}.").format(
+                        total_comm, resolved["commission_amount"]
+                    )
+                )
+            if total_comp != flt(resolved["company_amount"], pcomp):
+                frappe.throw(
+                    _("Aggregate company total {0} does not match reference {1}.").format(
+                        total_comp, resolved["company_amount"]
+                    )
+                )
+        except frappe.ValidationError:
+            raise
+        except Exception as exc:
+            frappe.throw(_("Reconciliation failed: {0}").format(str(exc)))
+
+    return created_events
+
+
+# Backwards/alias names for supplier payment processing.
+process_supplier_payment = process_supplier_payment_entry
+handle_supplier_payment_entry = process_supplier_payment_entry
+process_payment_entry_supplier = process_supplier_payment_entry
 
 
 # Backwards/alias names for compatibility with varied test expectations.

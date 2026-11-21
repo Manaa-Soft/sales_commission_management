@@ -254,9 +254,18 @@ class CommissionPayoutEvent(Document):
                     )
                 )
             precision = _currency_precision(self.source_currency)
-            if flt(allocated_amount, precision) != flt(self.source_amount, precision):
+            # Item-level payout events are shares of the Payment Entry Reference
+            # allocation, not the whole allocation. Validate that the share is
+            # positive and does not exceed the reference's allocated amount; the
+            # aggregate of all item shares is reconciled by the supplier payment
+            # handler (see payout/supplier_payment.py).
+            if flt(self.source_amount, precision) <= 0:
                 frappe.throw(
-                    _("Source amount ({0}) must agree with the Payment Entry Reference allocated amount ({1}).").format(
+                    _("Source amount must be positive.")
+                )
+            if flt(self.source_amount, precision) > flt(allocated_amount, precision):
+                frappe.throw(
+                    _("Source amount ({0}) exceeds the Payment Entry Reference allocated amount ({1}).").format(
                         self.source_amount, allocated_amount
                     )
                 )
