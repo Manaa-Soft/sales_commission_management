@@ -211,7 +211,19 @@ class CommissionPayoutEvent(Document):
                 sett_doc = frappe.db.get_value("Commission Settlement", self.settlement, "settlement_document")
                 if sett_doc and ref_name != sett_doc:
                     frappe.throw(_("Source row must reference the settlement's Purchase Invoice."))
-
+            # Validate that the Payment Entry Reference's allocated amount agrees
+            # with the payout event's source amount. Checking only the referenced
+            # Purchase Invoice is insufficient to establish the amount actually
+            # allocated to this settlement.
+            allocated_amount = frappe.db.get_value(
+                "Payment Entry Reference", self.source_row, "allocated_amount"
+            )
+            if allocated_amount is not None and flt(allocated_amount) != flt(self.source_amount):
+                frappe.throw(
+                    _("Source amount ({0}) must agree with the Payment Entry Reference allocated amount ({1}).").format(
+                        self.source_amount, allocated_amount
+                    )
+                )
         # FX snapshot consistency.
         if self.fx_from_currency or self.fx_to_currency or self.fx_rate:
             if not self.fx_from_currency or not self.fx_to_currency:
