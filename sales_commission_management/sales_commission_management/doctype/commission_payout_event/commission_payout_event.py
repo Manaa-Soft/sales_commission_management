@@ -1,4 +1,4 @@
-﻿import frappe
+import frappe
 import hashlib
 import json
 from frappe import _
