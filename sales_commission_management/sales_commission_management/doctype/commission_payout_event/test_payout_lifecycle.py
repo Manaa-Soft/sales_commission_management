@@ -378,17 +378,28 @@ class TestPayoutLifecycle(IntegrationTestCase):
         # Switch to restricted user session.
         frappe.set_user(restricted_user)
         try:
-            # Direct insert must be rejected.
-            with self.assertRaises(Exception):
-                frappe.get_doc(self._event_data("lc-restricted-direct-001")).insert()
+            # Direct insert must be rejected (explicit DocType + permission error).
+            data = {"doctype": "Commission Payout Event", **self._event_data("lc-restricted-direct-001")}
+            with self.assertRaises(frappe.PermissionError):
+                frappe.get_doc(data).insert()
             # Direct submit of an existing draft must be rejected.
             name = None
             frappe.set_user("Administrator")
             name = self._make_draft_event("lc-restricted-direct-002")
             frappe.set_user(restricted_user)
             doc = frappe.get_doc("Commission Payout Event", name)
-            with self.assertRaises(Exception):
+            with self.assertRaises(frappe.PermissionError):
                 doc.submit()
+
+            # Trusted lifecycle handler must work under the restricted-user session.
+            frappe.set_user("Administrator")
+            trusted_name = self._make_draft_event("lc-restricted-trusted-session-001")
+            frappe.set_user(restricted_user)
+            from sales_commission_management.sales_commission_management.payout.lifecycle import submit_payout_event
+            returned = submit_payout_event(trusted_name)
+            self.assertEqual(returned, trusted_name)
+            trusted_doc = frappe.get_doc("Commission Payout Event", trusted_name)
+            self.assertEqual(trusted_doc.docstatus, 1)
         finally:
             frappe.set_user("Administrator")
 
@@ -413,6 +424,8 @@ class TestPayoutLifecycle(IntegrationTestCase):
         name2 = self._make_draft_event("lc-restricted-trusted-002")
 
         def bad_validator(d):
+            # Trusted handler must have elevated permissions on the actual doc.
+            self.assertTrue(getattr(d.flags, "ignore_permissions", False))
             frappe.throw(_("boom"))
 
         with self.assertRaises(frappe.ValidationError):
@@ -427,30 +440,39 @@ class TestPayoutLifecycle(IntegrationTestCase):
 
         name = self._make_draft_event("lc-rollback-001")
 
-        # Perform a representative source-side database change BEFORE submission.
         original_remarks = frappe.db.get_value("Payment Entry", self.payment_entry, "remarks")
-        frappe.db.set_value("Payment Entry", self.payment_entry, "remarks", "ROLLBACK-TEST-MARKER", update_modified=False)
 
-        def validator_that_fails_after_source_change(doc):
-            # Source-side change has been made; now force a failure.
-            frappe.throw(_("Source transaction invalid."))
+        sp = "lc_rollback_test"
+        frappe.db.savepoint(sp)
+        try:
+            # Perform a representative source-side database change.
+            frappe.db.set_value("Payment Entry", self.payment_entry, "remarks", "ROLLBACK-TEST-MARKER", update_modified=False)
 
-        self.assertRaises(frappe.ValidationError, submit_payout_event, name, validator_that_fails_after_source_change)
+            def validator_that_fails_after_source_change(doc):
+                frappe.throw(_("Source transaction invalid."))
 
-        # Event must remain Draft after a failed submission.
-        doc = frappe.get_doc("Commission Payout Event", name)
-        self.assertEqual(doc.docstatus, 0)
+            try:
+                submit_payout_event(name, validator_that_fails_after_source_change)
+            except frappe.ValidationError:
+                pass
 
-        # Roll back the transaction to undo the source-side change.
-        frappe.db.rollback()
+            # Event must remain Draft after a failed submission.
+            doc = frappe.get_doc("Commission Payout Event", name)
+            self.assertEqual(doc.docstatus, 0)
 
-        # Verify the source-side change was undone.
-        current_remarks = frappe.db.get_value("Payment Entry", self.payment_entry, "remarks")
-        self.assertEqual(current_remarks, original_remarks)
+            # Undo the source-side change without rolling back the whole test transaction.
+            frappe.db.rollback(save_point=sp)
 
-        # Verify no submitted payout event remains for this key.
-        doc.reload()
-        self.assertEqual(doc.docstatus, 0)
+            current_remarks = frappe.db.get_value("Payment Entry", self.payment_entry, "remarks")
+            self.assertEqual(current_remarks, original_remarks)
+
+            doc.reload()
+            self.assertEqual(doc.docstatus, 0)
+        finally:
+            try:
+                frappe.db.rollback(save_point=sp)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Reversal amount / precision tests
@@ -495,4 +517,28 @@ class TestPayoutLifecycle(IntegrationTestCase):
         data['commission_amount'] = 0
         data['settlement_amount'] = 1000
         data['company_amount'] = 1000
+        self.assertRaises(frappe.ValidationError, get_or_create_payout_event, data)
+
+    def test_reversal_fractional_rounds_to_zero_rejected(self):
+        from sales_commission_management.sales_commission_management.payout.event_factory import get_or_create_payout_event
+
+        orig_name = self._make_submitted_payout_event('lc-rev-frac-001')
+        data = self._event_data('lc-rev-frac-002')
+        data['event_type'] = 'Payout Reversal'
+        data['reversal_of'] = orig_name
+        data['commission_amount'] = 0.004
+        data['settlement_amount'] = 0.004
+        data['company_amount'] = 0.004
+        self.assertRaises(frappe.ValidationError, get_or_create_payout_event, data)
+
+    def test_reversal_negative_amounts_rejected(self):
+        from sales_commission_management.sales_commission_management.payout.event_factory import get_or_create_payout_event
+
+        orig_name = self._make_submitted_payout_event('lc-rev-neg-all-001')
+        data = self._event_data('lc-rev-neg-all-002')
+        data['event_type'] = 'Payout Reversal'
+        data['reversal_of'] = orig_name
+        data['commission_amount'] = -1
+        data['settlement_amount'] = -1
+        data['company_amount'] = -1
         self.assertRaises(frappe.ValidationError, get_or_create_payout_event, data)

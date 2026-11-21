@@ -48,40 +48,41 @@ def submit_payout_event(event_name, source_validation_fn=None):
     if not event_name:
         frappe.throw(_("Event name is required."))
 
-    doc = frappe.get_doc("Commission Payout Event", event_name)
-
-    if doc.docstatus != 0:
-        if doc.docstatus == 1:
-            # Already submitted - idempotent, return.
-            return doc.name
-        frappe.throw(_("Cannot submit a cancelled event."))
-
-    # Run source validation if provided.
-    if source_validation_fn is not None:
-        source_validation_fn(doc)
-
-    # Submit the event (Draft -> Submitted). Frappe's submit() runs
-    # validation during the Draft-to-Submitted transition, so an explicit
-    # validate() call here is both unnecessary and incorrect (it would
-    # reject a Draft whose docstatus is still 0).
-    #
-    # Trusted server-side authorization: ordinary roles have no write/submit
-    # permission on Commission Payout Event. We elevate only for this submit
-    # and restore immediately, keeping direct user permissions restricted.
     # Preserve and restore the previous permission-flag state instead of
     # unconditionally resetting it (which could clobber an existing
     # request-level permission context).
-    prev_doc_flag = bool(getattr(doc.flags, "ignore_permissions", False))
     prev_req_flag = bool(getattr(frappe.flags, "ignore_permissions", False))
-    doc.flags.ignore_permissions = True
-    frappe.flags.ignore_permissions = True
-    try:
-        doc.submit()
-    finally:
-        doc.flags.ignore_permissions = prev_doc_flag
-        frappe.flags.ignore_permissions = prev_req_flag
 
-    return doc.name
+    doc = None
+    prev_doc_flag = False
+    try:
+        # Trusted server-side authorization: ordinary roles have no
+        # read/write/submit permission on Commission Payout Event. Elevate
+        # only for this operation and restore immediately afterwards.
+        frappe.flags.ignore_permissions = True
+        doc = frappe.get_doc("Commission Payout Event", event_name)
+        prev_doc_flag = bool(getattr(doc.flags, "ignore_permissions", False))
+        doc.flags.ignore_permissions = True
+
+        if doc.docstatus != 0:
+            if doc.docstatus == 1:
+                # Already submitted - idempotent, return.
+                return doc.name
+            frappe.throw(_("Cannot submit a cancelled event."))
+
+        # Run source validation if provided.
+        if source_validation_fn is not None:
+            source_validation_fn(doc)
+
+        # Submit the event (Draft -> Submitted). Frappe's submit() runs
+        # validation during the Draft-to-Submitted transition.
+        doc.submit()
+
+        return doc.name
+    finally:
+        if doc is not None:
+            doc.flags.ignore_permissions = prev_doc_flag
+        frappe.flags.ignore_permissions = prev_req_flag
 
 
 def create_and_submit_payout_event(event_data, source_validation_fn=None):
@@ -92,17 +93,6 @@ def create_and_submit_payout_event(event_data, source_validation_fn=None):
     in a single transaction-safe operation. Creation (or idempotent
     retrieval) happens in ``get_or_create_payout_event()``; submission
     happens in ``submit_payout_event()``.
-
-    Args:
-        event_data: Dict containing event_key and all required financial/source
-            fields for the event type.
-        source_validation_fn: Optional callable for source transaction validation.
-
-    Returns:
-        The event name.
-
-    Raises:
-        frappe.ValidationError on validation or submission failure.
     """
     event_name = get_or_create_payout_event(event_data)
     return submit_payout_event(event_name, source_validation_fn)
