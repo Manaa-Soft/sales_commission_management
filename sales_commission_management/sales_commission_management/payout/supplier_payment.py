@@ -127,10 +127,12 @@ def _pe_references(payment_entry):
 
 def get_supplier_settlement_for_reference(payment_entry, payment_reference):
     """Return the single submitted Commission Settlement linked to a supplier
-    Payment Entry Reference, or ``None`` when no unambiguous match exists.
+    Payment Entry Reference, or ``None`` when no match exists.
 
-    Fail-closed: ambiguous matches (zero or more than one settlement) return
-    ``None``. Unrelated supplier payments are ignored.
+    A missing match (zero candidates) is a legitimate non-match and returns
+    ``None``. Multiple matching submitted settlements are a data-integrity
+    error and raise via ``frappe.throw``. Unrelated supplier payments are
+    ignored.
 
     The reference must actually belong to the supplied Payment Entry.
     """
@@ -235,9 +237,17 @@ def get_supplier_settlement_for_reference(payment_entry, payment_reference):
             continue
         candidates.append(r)
 
-    if len(candidates) != 1:
-        # Fail closed on ambiguous (or missing) matches.
+    if len(candidates) == 0:
+        # Legitimate non-match: no submitted Commission Settlement links this PI.
         return None
+    if len(candidates) > 1:
+        # Data-integrity error: multiple submitted Commission Settlements match
+        # the same Purchase Invoice. Do not silently skip payout processing.
+        frappe.throw(
+            _("Multiple submitted Commission Settlements match Purchase Invoice {0}.").format(
+                pi_name
+            )
+        )
 
     settlement = frappe.get_doc(
         "Commission Settlement", _get_attr(candidates[0], "name", None)
@@ -1218,12 +1228,14 @@ def process_supplier_payment_entry(payment_entry):
                 "  AND source_name = %s "
                 "  AND source_row = %s "
                 "  AND docstatus = %s "
+                "  AND event_type = %s "
                 "FOR UPDATE",
                 (
                     "Payment Entry",
                     _get_attr(pe, "name", None),
                     ref_name,
                     1,
+                    "Payout",
                 ),
                 as_dict=True,
             )
