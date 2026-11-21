@@ -209,7 +209,7 @@ class TestPayoutLifecycle(IntegrationTestCase):
         )
         assert self.source_row is not None, "Payment Entry Reference (source row) could not be resolved."
 
-    def _cleanup_uid_records(self):
+    def _cleanup_uid_records(self, commit=False):
         """Idempotent cleanup of all committed records created by this test.
 
         Committed payout events (and any reversal/recovery events that
@@ -226,7 +226,6 @@ class TestPayoutLifecycle(IntegrationTestCase):
                     "DELETE FROM `tabCommission Payout Event` WHERE event_key LIKE %s",
                     (f"%{uid}%",),
                 )
-            frappe.db.commit()
         except Exception:
             try:
                 frappe.db.rollback()
@@ -286,13 +285,18 @@ class TestPayoutLifecycle(IntegrationTestCase):
             except Exception:
                 pass
 
-        try:
-            frappe.db.commit()
-        except Exception:
+        if commit:
             try:
-                frappe.db.rollback()
+                frappe.db.commit()
             except Exception:
-                pass
+                try:
+                    frappe.db.rollback()
+                except Exception:
+                    pass
+
+        # Do not commit here by default; let IntegrationTestCase handle rollback.
+        # Concurrency tests that committed data should call frappe.db.commit()
+        # explicitly after _cleanup_uid_records(commit=True).
 
     def tearDown(self):
         self._cleanup_uid_records()
@@ -337,7 +341,7 @@ class TestPayoutLifecycle(IntegrationTestCase):
     def test_successful_draft_to_submitted(self):
         from sales_commission_management.sales_commission_management.payout.lifecycle import submit_payout_event
 
-        name = self._make_draft_event("lc-success-001")
+        name = self._make_draft_event(f"lc-success-{self.uid}")
         doc = frappe.get_doc("Commission Payout Event", name)
         self.assertEqual(doc.docstatus, 0)
         returned = submit_payout_event(name)
@@ -348,7 +352,7 @@ class TestPayoutLifecycle(IntegrationTestCase):
     def test_already_submitted_retry(self):
         from sales_commission_management.sales_commission_management.payout.lifecycle import submit_payout_event
 
-        name = self._make_draft_event("lc-retry-001")
+        name = self._make_draft_event(f"lc-retry-{self.uid}")
         submit_payout_event(name)
         # Retry must be idempotent.
         returned = submit_payout_event(name)
@@ -359,7 +363,7 @@ class TestPayoutLifecycle(IntegrationTestCase):
     def test_cancelled_event_raises(self):
         from sales_commission_management.sales_commission_management.payout.lifecycle import submit_payout_event
 
-        name = self._make_draft_event("lc-cancelled-001")
+        name = self._make_draft_event(f"lc-cancelled-{self.uid}")
         # Simulate cancellation inside the test transaction (no commit).
         frappe.db.set_value("Commission Payout Event", name, "docstatus", 2, update_modified=False)
         self.assertRaises(frappe.ValidationError, submit_payout_event, name)
@@ -373,7 +377,7 @@ class TestPayoutLifecycle(IntegrationTestCase):
     def test_validation_failure(self):
         from sales_commission_management.sales_commission_management.payout.lifecycle import submit_payout_event
 
-        name = self._make_draft_event("lc-validation-001")
+        name = self._make_draft_event(f"lc-validation-{self.uid}")
 
         def bad_validator(doc):
             frappe.throw(_("Source validation failed."))
@@ -383,7 +387,7 @@ class TestPayoutLifecycle(IntegrationTestCase):
     def test_callback_failure_propagates(self):
         from sales_commission_management.sales_commission_management.payout.lifecycle import submit_payout_event
 
-        name = self._make_draft_event("lc-callback-001")
+        name = self._make_draft_event(f"lc-callback-{self.uid}")
 
         # A validator that raises a generic exception must propagate.
         def exploding_validator(doc):
@@ -394,7 +398,7 @@ class TestPayoutLifecycle(IntegrationTestCase):
     def test_create_and_submit_payout_event(self):
         from sales_commission_management.sales_commission_management.payout.lifecycle import create_and_submit_payout_event
 
-        name = create_and_submit_payout_event(self._event_data("lc-create-submit-001"))
+        name = create_and_submit_payout_event(self._event_data(f"lc-create-submit-{self.uid}"))
         self.assertTrue(name)
         doc = frappe.get_doc("Commission Payout Event", name)
         self.assertEqual(doc.docstatus, 1)
@@ -420,13 +424,13 @@ class TestPayoutLifecycle(IntegrationTestCase):
         frappe.set_user(restricted_user)
         try:
             # Direct insert must be rejected (explicit DocType + permission error).
-            data = {"doctype": "Commission Payout Event", **self._event_data("lc-restricted-direct-001")}
+            data = {"doctype": "Commission Payout Event", **self._event_data(f"lc-restricted-direct-001-{self.uid}")}
             with self.assertRaises(frappe.PermissionError):
                 frappe.get_doc(data).insert()
             # Direct submit of an existing draft must be rejected.
             name = None
             frappe.set_user("Administrator")
-            name = self._make_draft_event("lc-restricted-direct-002")
+            name = self._make_draft_event(f"lc-restricted-direct-002-{self.uid}")
             frappe.set_user(restricted_user)
             doc = frappe.get_doc("Commission Payout Event", name)
             with self.assertRaises(frappe.PermissionError):
@@ -434,7 +438,7 @@ class TestPayoutLifecycle(IntegrationTestCase):
 
             # Trusted lifecycle handler must work under the restricted-user session.
             frappe.set_user("Administrator")
-            trusted_name = self._make_draft_event("lc-restricted-trusted-session-001")
+            trusted_name = self._make_draft_event(f"lc-restricted-trusted-session-001-{self.uid}")
             frappe.set_user(restricted_user)
             from sales_commission_management.sales_commission_management.payout.lifecycle import submit_payout_event
             returned = submit_payout_event(trusted_name)
@@ -447,7 +451,7 @@ class TestPayoutLifecycle(IntegrationTestCase):
     def test_trusted_submission_restores_permissions(self):
         from sales_commission_management.sales_commission_management.payout.lifecycle import submit_payout_event
 
-        name = self._make_draft_event("lc-restricted-trusted-001")
+        name = self._make_draft_event(f"lc-restricted-trusted-001-{self.uid}")
         # Capture flags before.
         prev_doc_flag_before = bool(getattr(frappe.get_doc("Commission Payout Event", name).flags, "ignore_permissions", False))
         prev_req_flag_before = bool(getattr(frappe.flags, "ignore_permissions", False))
@@ -462,7 +466,7 @@ class TestPayoutLifecycle(IntegrationTestCase):
         self.assertEqual(bool(getattr(frappe.flags, "ignore_permissions", False)), prev_req_flag_before)
 
         # Failed submission restores flags too.
-        name2 = self._make_draft_event("lc-restricted-trusted-002")
+        name2 = self._make_draft_event(f"lc-restricted-trusted-002-{self.uid}")
 
         def bad_validator(d):
             # Trusted handler must have elevated permissions on the actual doc.
@@ -481,7 +485,7 @@ class TestPayoutLifecycle(IntegrationTestCase):
             create_and_submit_payout_event,
         )
 
-        event_key = "lc-rollback-001"
+        event_key = f"lc-rollback-{self.uid}"
         original_remarks = frappe.db.get_value("Payment Entry", self.payment_entry, "remarks")
 
         sp = "lc_rollback_test"
@@ -627,8 +631,7 @@ class TestPayoutLifecycle(IntegrationTestCase):
                     pass
             # Ensure committed fixtures are removed (test-only).
             try:
-                self._cleanup_uid_records()
-                frappe.db.commit()
+                self._cleanup_uid_records(commit=True)
             except Exception:
                 try:
                     frappe.db.rollback()
@@ -781,8 +784,7 @@ class TestPayoutLifecycle(IntegrationTestCase):
                     pass
             # Ensure committed fixtures are removed (test-only).
             try:
-                self._cleanup_uid_records()
-                frappe.db.commit()
+                self._cleanup_uid_records(commit=True)
             except Exception:
                 try:
                     frappe.db.rollback()
@@ -824,8 +826,8 @@ class TestPayoutLifecycle(IntegrationTestCase):
     def test_reversal_negative_settlement_amount_rejected(self):
         from sales_commission_management.sales_commission_management.payout.event_factory import get_or_create_payout_event
 
-        orig_name = self._make_submitted_payout_event('lc-rev-neg-sett-001')
-        data = self._event_data('lc-rev-neg-sett-002')
+        orig_name = self._make_submitted_payout_event(f'lc-rev-neg-sett-001-{self.uid}')
+        data = self._event_data(f'lc-rev-neg-sett-002-{self.uid}')
         data['event_type'] = 'Payout Reversal'
         data['reversal_of'] = orig_name
         data['commission_amount'] = 1000
@@ -836,8 +838,8 @@ class TestPayoutLifecycle(IntegrationTestCase):
     def test_reversal_zero_company_amount_rejected(self):
         from sales_commission_management.sales_commission_management.payout.event_factory import get_or_create_payout_event
 
-        orig_name = self._make_submitted_payout_event('lc-rev-zero-comp-001')
-        data = self._event_data('lc-rev-zero-comp-002')
+        orig_name = self._make_submitted_payout_event(f'lc-rev-zero-comp-001-{self.uid}')
+        data = self._event_data(f'lc-rev-zero-comp-002-{self.uid}')
         data['event_type'] = 'Payout Reversal'
         data['reversal_of'] = orig_name
         data['commission_amount'] = 1000
@@ -848,8 +850,8 @@ class TestPayoutLifecycle(IntegrationTestCase):
     def test_reversal_zero_commission_amount_rejected(self):
         from sales_commission_management.sales_commission_management.payout.event_factory import get_or_create_payout_event
 
-        orig_name = self._make_submitted_payout_event('lc-rev-zero-comm-001')
-        data = self._event_data('lc-rev-zero-comm-002')
+        orig_name = self._make_submitted_payout_event(f'lc-rev-zero-comm-001-{self.uid}')
+        data = self._event_data(f'lc-rev-zero-comm-002-{self.uid}')
         data['event_type'] = 'Payout Reversal'
         data['reversal_of'] = orig_name
         data['commission_amount'] = 0
@@ -860,8 +862,8 @@ class TestPayoutLifecycle(IntegrationTestCase):
     def test_reversal_fractional_rounds_to_zero_rejected(self):
         from sales_commission_management.sales_commission_management.payout.event_factory import get_or_create_payout_event
 
-        orig_name = self._make_submitted_payout_event('lc-rev-frac-001')
-        data = self._event_data('lc-rev-frac-002')
+        orig_name = self._make_submitted_payout_event(f'lc-rev-frac-001-{self.uid}')
+        data = self._event_data(f'lc-rev-frac-002-{self.uid}')
         data['event_type'] = 'Payout Reversal'
         data['reversal_of'] = orig_name
         data['commission_amount'] = 0.004
@@ -872,8 +874,8 @@ class TestPayoutLifecycle(IntegrationTestCase):
     def test_reversal_negative_amounts_rejected(self):
         from sales_commission_management.sales_commission_management.payout.event_factory import get_or_create_payout_event
 
-        orig_name = self._make_submitted_payout_event('lc-rev-neg-all-001')
-        data = self._event_data('lc-rev-neg-all-002')
+        orig_name = self._make_submitted_payout_event(f'lc-rev-neg-all-001-{self.uid}')
+        data = self._event_data(f'lc-rev-neg-all-002-{self.uid}')
         data['event_type'] = 'Payout Reversal'
         data['reversal_of'] = orig_name
         data['commission_amount'] = -1
