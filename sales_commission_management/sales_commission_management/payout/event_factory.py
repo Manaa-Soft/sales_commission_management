@@ -47,8 +47,19 @@ def get_or_create_payout_event(event_data):
     # Canonical payload: all fields except doctype and event_key.
     canonical_payload = {k: v for k, v in event_data.items() if k not in ("doctype", "event_key")}
 
-    existing = frappe.db.get_value("Commission Payout Event", {"event_key": event_key}, "name")
-    if existing:
+    # Use locking read to get current data (avoids stale snapshot).
+    locked = frappe.db.sql(
+        """
+        SELECT name
+        FROM `tabCommission Payout Event`
+        WHERE event_key = %s
+        FOR UPDATE
+        """,
+        (event_key,),
+        as_dict=True,
+    )
+    if locked:
+        existing = locked[0].name
         _verify_payload_match(existing, canonical_payload)
         return existing
 
@@ -79,6 +90,40 @@ def get_or_create_payout_event(event_data):
         raise
 
 
+def _normalize_value(fieldname, value):
+    """Normalize a value for comparison based on the DocType field type.
+
+    Database values (dates, decimals) may have different Python
+    representations than the values supplied by the caller. This
+    function normalizes both sides to a consistent representation.
+    """
+    if value is None:
+        return None
+    # Get field type from DocType.
+    try:
+        field = frappe.get_meta("Commission Payout Event").get_field(fieldname)
+    except Exception:
+        field = None
+    ft = getattr(field, "fieldtype", None) if field else None
+
+    if ft in ("Date", "Datetime"):
+        from frappe.utils import getdate
+        if isinstance(value, str):
+            try:
+                return str(getdate(value))
+            except Exception:
+                return value
+        return str(value) if value else None
+    if ft in ("Currency", "Float", "Percent"):
+        from frappe.utils import flt
+        return flt(value, 6)
+    if ft in ("Int", "Check"):
+        return int(value) if value is not None else 0
+    if ft == "Link":
+        return str(value) if value is not None else None
+    return value
+
+
 def _verify_payload_match(existing_name, payload):
     """Verify that an existing event's payload matches the requested payload.
 
@@ -101,7 +146,7 @@ def _verify_payload_match(existing_name, payload):
     db_values = locked[0]
     for field, requested_value in payload.items():
         db_value = db_values.get(field)
-        if db_value != requested_value:
+        if _normalize_value(field, db_value) != _normalize_value(field, requested_value):
             frappe.throw(
                 _("Payout event {0} already exists with different {1} (existing: {2}, requested: {3}).").format(
                     existing_name, field, db_value, requested_value
