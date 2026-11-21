@@ -43,12 +43,72 @@ def _get_attr(obj, name, default=None):
         return default
 
 
-def _is_finite_positive(value):
+def _is_finite(value):
     try:
         f = float(value)
     except (TypeError, ValueError):
         return False
-    return math.isfinite(f) and f > 0
+    return math.isfinite(f)
+
+
+def _is_finite_positive(value):
+    return _is_finite(value) and float(value) > 0
+
+
+def _minor_unit(prec):
+    if prec <= 0:
+        return 1.0
+    return 10 ** (-prec)
+
+
+def _to_minor(value, prec):
+    return int(round(flt(value, prec) / _minor_unit(prec)))
+
+
+def _from_minor(minor, prec):
+    return flt(minor * _minor_unit(prec), prec)
+
+
+def _largest_remainder_distribution(total_minor, weights, prec):
+    """Distribute ``total_minor`` integer units across items proportionally to
+    ``weights`` using the largest-remainder method.
+
+    Returns a list of integer minor-unit allocations aligned with ``weights``.
+    """
+    n = len(weights)
+    if n == 0:
+        return []
+    if total_minor <= 0:
+        return [0] * n
+
+    total_weight = sum(w for w in weights)
+    if total_weight <= 0:
+        raise ValueError("Allocation weights must be positive.")
+
+    # Exact (possibly fractional) shares.
+    exact = [total_minor * w / total_weight for w in weights]
+    floors = [int(math.floor(x)) for x in exact]
+    remainders = [x - floors[i] for i, x in enumerate(exact)]
+    allocated = sum(floors)
+    leftover = total_minor - allocated
+
+    # Distribute leftover units to items with largest remainders (stable by
+    # original index on ties).
+    order = sorted(range(n), key=lambda i: (-remainders[i], i))
+    bonus = [0] * n
+    for k in range(leftover):
+        bonus[order[k % n]] += 1
+
+    return [floors[i] + bonus[i] for i in range(n)]
+
+
+def _pe_references(payment_entry):
+    refs = _get_attr(payment_entry, "references", None)
+    if refs is None:
+        refs = _get_attr(payment_entry, "payment_entry_references", None)
+    if refs is None:
+        refs = []
+    return list(refs)
 
 
 def get_supplier_settlement_for_reference(payment_entry, payment_reference):
@@ -57,9 +117,44 @@ def get_supplier_settlement_for_reference(payment_entry, payment_reference):
 
     Fail-closed: ambiguous matches (zero or more than one settlement) return
     ``None``. Unrelated supplier payments are ignored.
+
+    The reference must actually belong to the supplied Payment Entry.
     """
     if payment_entry is None or payment_reference is None:
         return None
+
+    pe_name = _get_attr(payment_entry, "name", None)
+    if not pe_name:
+        return None
+
+    # --- Reference must belong to this Payment Entry. ---
+    if _get_attr(payment_reference, "parent", None) != pe_name:
+        return None
+
+    # The reference row must exist among the Payment Entry's references.
+    refs = _pe_references(payment_entry)
+    ref_identity_ok = False
+    pr_name = _get_attr(payment_reference, "name", None)
+    pr_doctype = _get_attr(payment_reference, "reference_doctype", None)
+    pr_refname = _get_attr(payment_reference, "reference_name", None)
+    pr_allocated = flt(_get_attr(payment_reference, "allocated_amount", 0))
+    if pr_name:
+        for r in refs:
+            if _get_attr(r, "name", None) == pr_name:
+                ref_identity_ok = True
+                break
+    else:
+        for r in refs:
+            if (
+                _get_attr(r, "reference_doctype", None) == pr_doctype
+                and _get_attr(r, "reference_name", None) == pr_refname
+                and flt(_get_attr(r, "allocated_amount", 0)) == pr_allocated
+            ):
+                ref_identity_ok = True
+                break
+    if not ref_identity_ok and refs:
+        return None
+    # If no references list is exposed, fall back to parent check already done.
 
     # --- Payment Entry must be submitted. ---
     if _get_attr(payment_entry, "docstatus", None) != 1:
@@ -70,12 +165,12 @@ def get_supplier_settlement_for_reference(payment_entry, payment_reference):
         return None
 
     # --- Reference must be a Purchase Invoice with a positive allocation. ---
-    if _get_attr(payment_reference, "reference_doctype", None) != "Purchase Invoice":
+    if pr_doctype != "Purchase Invoice":
         return None
-    pi_name = _get_attr(payment_reference, "reference_name", None)
+    pi_name = pr_refname
     if not pi_name:
         return None
-    allocated = flt(_get_attr(payment_reference, "allocated_amount", 0))
+    allocated = pr_allocated
     if allocated <= 0:
         return None
 
@@ -246,21 +341,27 @@ def _allocate_core(
 
     ``payment_allocation`` is denominated in settlement (Purchase Invoice)
     currency. ``source_allocation`` is the same payment in source (party
-    account) currency. Item allocations are computed in settlement currency
-    proportionally to each item's remaining balance.
+    account) currency. Item balances (``settlement_amount`` /
+    ``amount_included``) are denominated in commission currency and are
+    converted to settlement currency using ``settlement_fx_rate``.
 
-    Returns a list of dicts: ``{item, remaining, allocation}`` for items that
-    receive a positive allocation, in input order.
+    Returns a list of dicts with per-item amounts in all four currencies.
+    Only items receiving a positive settlement allocation are included.
 
     Raises ``ValueError`` on invalid inputs, over-allocation, or
     non-reconciling results.
     """
     prec = _cp()
 
+    # --- Validate scalar financial inputs. ---
+    if not _is_finite(payment_allocation):
+        raise ValueError("Payment allocation must be finite.")
     payment_allocation = flt(payment_allocation)
     if payment_allocation <= 0:
         raise ValueError("Payment allocation must be positive.")
 
+    if not _is_finite(source_allocation):
+        raise ValueError("Source allocation must be finite.")
     source_allocation = flt(source_allocation)
     if source_allocation <= 0:
         raise ValueError("Source allocation must be positive.")
@@ -276,26 +377,103 @@ def _allocate_core(
     if not items:
         raise ValueError("At least one settlement item is required.")
 
-    # Prepare items with remaining balances.
+    # --- Prepare items with remaining balances (settlement currency). ---
     prepared = []
+    seen_ids = set()
     for it in items:
         if isinstance(it, dict):
-            item_id = it.get("item") or it.get("name")
-            settlement_amount = flt(it.get("settlement_amount", 0))
-            previously_paid = flt(it.get("previously_paid", 0))
+            item_id = (
+                it.get("item")
+                or it.get("name")
+                or it.get("id")
+                or it.get("settlement_item")
+            )
+            settlement_amount = it.get("settlement_amount")
+            if settlement_amount is None:
+                settlement_amount = it.get("included_amount")
+            if settlement_amount is None:
+                settlement_amount = it.get("amount_included")
+            if settlement_amount is None:
+                settlement_amount = it.get("original_amount")
+            if settlement_amount is None:
+                settlement_amount = it.get("item_settlement_amount")
+            if settlement_amount is None:
+                settlement_amount = it.get("settlement")
+            previously_paid = it.get("previously_paid")
+            if previously_paid is None:
+                previously_paid = it.get("net_previously_paid")
+            if previously_paid is None:
+                previously_paid = it.get("paid_amount")
+            if previously_paid is None:
+                previously_paid = it.get("already_paid")
+            if previously_paid is None:
+                previously_paid = 0
         else:
-            item_id = getattr(it, "item", None) or getattr(it, "name", None)
-            settlement_amount = flt(getattr(it, "settlement_amount", 0))
-            previously_paid = flt(getattr(it, "previously_paid", 0))
-        remaining = flt(settlement_amount - previously_paid, prec)
+            item_id = (
+                getattr(it, "item", None)
+                or getattr(it, "name", None)
+                or getattr(it, "id", None)
+                or getattr(it, "settlement_item", None)
+            )
+            settlement_amount = getattr(it, "settlement_amount", None)
+            if settlement_amount is None:
+                settlement_amount = getattr(it, "included_amount", None)
+            if settlement_amount is None:
+                settlement_amount = getattr(it, "amount_included", None)
+            if settlement_amount is None:
+                settlement_amount = getattr(it, "original_amount", None)
+            if settlement_amount is None:
+                settlement_amount = 0
+            previously_paid = getattr(it, "previously_paid", None)
+            if previously_paid is None:
+                previously_paid = getattr(it, "net_previously_paid", None)
+            if previously_paid is None:
+                previously_paid = getattr(it, "paid_amount", None)
+            if previously_paid is None:
+                previously_paid = getattr(it, "already_paid", None)
+            if previously_paid is None:
+                previously_paid = 0
+
+        if not item_id:
+            raise ValueError("Settlement item is missing an identifier.")
+        if item_id in seen_ids:
+            raise ValueError("Duplicate settlement item identifier: {0}.".format(item_id))
+        seen_ids.add(item_id)
+
+        if not _is_finite(settlement_amount):
+            raise ValueError(
+                "Settlement amount must be finite for item {0}.".format(item_id)
+            )
+        settlement_amount = flt(settlement_amount)
+        if settlement_amount < 0:
+            raise ValueError(
+                "Settlement amount cannot be negative for item {0}.".format(item_id)
+            )
+
+        if not _is_finite(previously_paid):
+            raise ValueError(
+                "Previously paid amount must be finite for item {0}.".format(item_id)
+            )
+        previously_paid = flt(previously_paid)
+        if previously_paid < 0:
+            raise ValueError(
+                "Previously paid amount cannot be negative for item {0}.".format(item_id)
+            )
+
+        # Item balance is supplied in commission currency; convert to settlement
+        # (Purchase Invoice) currency.
+        settlement_balance = flt(settlement_amount * fx, prec)
+        remaining = flt(settlement_balance - previously_paid, prec)
         if remaining < 0:
             raise ValueError(
                 "Item {0} is overpaid (remaining {1}).".format(item_id, remaining)
             )
+
         prepared.append(
             {
                 "item": item_id,
-                "settlement_amount": settlement_amount,
+                "commission_balance": settlement_amount,
+                "settlement_balance": settlement_balance,
                 "previously_paid": previously_paid,
                 "remaining": remaining,
             }
@@ -309,63 +487,106 @@ def _allocate_core(
     if total_remaining <= 0:
         raise ValueError("Total remaining item balance must be positive.")
 
-    tolerance = 10 ** (-prec) if prec > 0 else 0.0
-    if payment_allocation > total_remaining + tolerance:
+    # Over-allocation check at accounting precision (no extra unit allowance).
+    if flt(payment_allocation, prec) > flt(total_remaining, prec):
         raise ValueError(
             "Payment allocation {0} exceeds total remaining {1}.".format(
                 payment_allocation, total_remaining
             )
         )
 
-    # Proportional allocation; remainder assigned to the final allocatable item.
-    result = []
-    allocated_so_far = 0.0
-    n = len(allocatable)
-    for idx, p in enumerate(allocatable):
-        if idx == n - 1:
-            alloc = flt(payment_allocation - allocated_so_far, prec)
-        else:
-            alloc = flt(payment_allocation * p["remaining"] / total_remaining, prec)
-            allocated_so_far = flt(allocated_so_far + alloc, prec)
+    unit = _minor_unit(prec)
+    payment_minor = _to_minor(payment_allocation, prec)
+    if payment_minor <= 0:
+        raise ValueError("Payment allocation is too small to allocate.")
 
-        if alloc <= 0:
-            raise ValueError(
-                "Zero or negative allocation for item {0}.".format(p["item"])
-            )
-        if alloc > p["remaining"] + tolerance:
+    # Source / commission / company aggregate totals in their own minor units.
+    source_minor_total = _to_minor(source_allocation, prec)
+    commission_total = flt(payment_allocation / fx, prec)
+    commission_minor_total = _to_minor(commission_total, prec)
+    company_total = flt(source_allocation * tr, prec)
+    company_minor_total = _to_minor(company_total, prec)
+
+    weights = [p["remaining"] for p in allocatable]
+    sett_dist = _largest_remainder_distribution(payment_minor, weights, prec)
+    source_dist = _largest_remainder_distribution(source_minor_total, weights, prec)
+    commission_dist = _largest_remainder_distribution(commission_minor_total, weights, prec)
+    company_dist = _largest_remainder_distribution(company_minor_total, weights, prec)
+
+    result = []
+    for idx, p in enumerate(allocatable):
+        sett_alloc_minor = sett_dist[idx]
+        src_alloc_minor = source_dist[idx]
+        comm_alloc_minor = commission_dist[idx]
+        comp_alloc_minor = company_dist[idx]
+
+        sett_alloc = _from_minor(sett_alloc_minor, prec)
+        src_alloc = _from_minor(src_alloc_minor, prec)
+        comm_alloc = _from_minor(comm_alloc_minor, prec)
+        comp_alloc = _from_minor(comp_alloc_minor, prec)
+
+        if sett_alloc <= 0:
+            # Skip zero-share items; they receive no allocation.
+            continue
+        if sett_alloc > p["remaining"]:
             raise ValueError(
                 "Allocation {0} exceeds remaining {1} for item {2}.".format(
-                    alloc, p["remaining"], p["item"]
+                    sett_alloc, p["remaining"], p["item"]
                 )
             )
+
         result.append(
-            {"item": p["item"], "remaining": p["remaining"], "allocation": alloc}
+            {
+                "item": p["item"],
+                "remaining": p["remaining"],
+                "allocation": sett_alloc,
+                "settlement_amount": sett_alloc,
+                "source_amount": src_alloc,
+                "commission_amount": comm_alloc,
+                "company_amount": comp_alloc,
+                # Backwards/alias names.
+                "settlement_allocation": sett_alloc,
+                "source_allocation": src_alloc,
+                "commission_allocation": comm_alloc,
+                "company_allocation": comp_alloc,
+                "allocated_amount": sett_alloc,
+                "allocated_source_amount": src_alloc,
+                "allocated_commission_amount": comm_alloc,
+                "allocated_company_amount": comp_alloc,
+            }
         )
 
-    # Reconcile sum to the original reference allocation.
-    total_alloc = flt(sum(r["allocation"] for r in result), prec)
-    if total_alloc != flt(payment_allocation, prec):
-        diff = flt(payment_allocation - total_alloc, prec)
-        if result:
-            result[-1]["allocation"] = flt(
-                result[-1]["allocation"] + diff, prec
-            )
-            # Re-validate final item.
-            last = result[-1]
-            # find corresponding remaining
-            rem = next(
-                (r["remaining"] for r in result if r is last), None
-            )
-            if last["allocation"] <= 0 or (
-                rem is not None and last["allocation"] > rem + tolerance
-            ):
-                raise ValueError("Reconciliation pushed allocation out of bounds.")
-    # Final reconciliation check.
-    total_alloc = flt(sum(r["allocation"] for r in result), prec)
-    if total_alloc != flt(payment_allocation, prec):
+    if not result:
+        raise ValueError("No positive allocations produced.")
+
+    # Reconciliation checks for all currencies.
+    total_sett = flt(sum(r["allocation"] for r in result), prec)
+    total_src = flt(sum(r["source_amount"] for r in result), prec)
+    total_comm = flt(sum(r["commission_amount"] for r in result), prec)
+    total_comp = flt(sum(r["company_amount"] for r in result), prec)
+
+    if total_sett != flt(payment_allocation, prec):
         raise ValueError(
             "Allocations do not reconcile to payment allocation "
-            "({0} vs {1}).".format(total_alloc, payment_allocation)
+            "({0} vs {1}).".format(total_sett, payment_allocation)
+        )
+    if total_src != flt(source_allocation, prec):
+        raise ValueError(
+            "Source allocations do not reconcile ({0} vs {1}).".format(
+                total_src, source_allocation
+            )
+        )
+    if total_comm != flt(commission_total, prec):
+        raise ValueError(
+            "Commission allocations do not reconcile ({0} vs {1}).".format(
+                total_comm, commission_total
+            )
+        )
+    if total_comp != flt(company_total, prec):
+        raise ValueError(
+            "Company allocations do not reconcile ({0} vs {1}).".format(
+                total_comp, company_total
+            )
         )
 
     return result
@@ -487,6 +708,13 @@ def allocate_supplier_payment_across_items(*args, **kwargs):
             or kwargs.get("item_list")
             or kwargs.get("settlement_items_list")
         )
+
+    if source_allocation is None:
+        source_allocation = payment_allocation
+    if target_exchange_rate is None:
+        target_exchange_rate = 1
+    if settlement_fx_rate is None:
+        settlement_fx_rate = 1
 
     items = _normalize_items(items)
     return _allocate_core(

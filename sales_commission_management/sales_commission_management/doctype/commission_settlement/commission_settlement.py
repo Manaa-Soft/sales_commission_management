@@ -216,19 +216,34 @@ class CommissionSettlement(Document):
                 row.already_settled_amount = flt(
                     getattr(entry, "settled_amount", 0) or 0
                 )
-                if not getattr(row, "source_currency", None) and getattr(row, "original_source_invoice", None):
+                if not row.original_source_invoice:
+                    row.original_source_invoice = getattr(entry, "sales_invoice", None)
+
+                if not getattr(row, "source_currency", None) and row.original_source_invoice:
                     try:
                         row.source_currency = frappe.db.get_value(
                             "Sales Invoice", row.original_source_invoice, "currency"
                         )
-                    except Exception:
-                        row.source_currency = None
+                    except Exception as ex:
+                        frappe.log_error(
+                            frappe.get_traceback(),
+                            "Commission Settlement: source currency lookup failed",
+                        )
+                        frappe.throw(
+                            _("Could not resolve source currency for invoice {0}: {1}").format(
+                                row.original_source_invoice, str(ex)
+                            )
+                        )
+                if row.original_source_invoice and not getattr(row, "source_currency", None):
+                    frappe.throw(
+                        _("Source currency is required for invoice {0}.").format(
+                            row.original_source_invoice
+                        )
+                    )
                 if not getattr(row, "company_currency", None):
                     row.company_currency = _company_currency(self.company)
                 if not row.beneficiary:
                     row.beneficiary = entry.sales_person or entry.sales_partner
-                if not row.original_source_invoice:
-                    row.original_source_invoice = getattr(entry, "sales_invoice", None)
 
                 if getattr(entry, "company", None) and self.company and                         entry.company != self.company:
                     frappe.throw(
