@@ -200,39 +200,30 @@ def get_supplier_settlement_for_reference(payment_entry, payment_reference):
         return None
 
     # --- Purchase Invoice must be submitted. ---
-    try:
-        pi_docstatus = frappe.db.get_value("Purchase Invoice", pi_name, "docstatus")
-    except Exception:
-        return None
+    pi_docstatus = frappe.db.get_value("Purchase Invoice", pi_name, "docstatus")
     if pi_docstatus != 1:
         return None
 
     pe_company = _get_attr(payment_entry, "company", None)
     pe_supplier = _get_attr(payment_entry, "party", None)
 
-    try:
-        pi_company = frappe.db.get_value("Purchase Invoice", pi_name, "company")
-        pi_supplier = frappe.db.get_value("Purchase Invoice", pi_name, "supplier")
-    except Exception:
-        return None
+    pi_company = frappe.db.get_value("Purchase Invoice", pi_name, "company")
+    pi_supplier = frappe.db.get_value("Purchase Invoice", pi_name, "supplier")
     if pi_company != pe_company:
         return None
     if pi_supplier != pe_supplier:
         return None
 
     # --- Exactly one submitted Commission Settlement linked to that PI. ---
-    try:
-        rows = frappe.get_all(
-            "Commission Settlement",
-            filters={
-                "docstatus": 1,
-                "settlement_document_type": "Purchase Invoice",
-                "settlement_document": pi_name,
-            },
-            fields=["name", "settlement_method", "company", "supplier"],
-        )
-    except Exception:
-        return None
+    rows = frappe.get_all(
+        "Commission Settlement",
+        filters={
+            "docstatus": 1,
+            "settlement_document_type": "Purchase Invoice",
+            "settlement_document": pi_name,
+        },
+        fields=["name", "settlement_method", "company", "supplier"],
+    )
 
     candidates = []
     for r in rows or []:
@@ -248,12 +239,9 @@ def get_supplier_settlement_for_reference(payment_entry, payment_reference):
         # Fail closed on ambiguous (or missing) matches.
         return None
 
-    try:
-        settlement = frappe.get_doc(
-            "Commission Settlement", _get_attr(candidates[0], "name", None)
-        )
-    except Exception:
-        return None
+    settlement = frappe.get_doc(
+        "Commission Settlement", _get_attr(candidates[0], "name", None)
+    )
     return settlement
 
 
@@ -813,16 +801,30 @@ def _previously_paid_for_item(settlement_item_name):
     if not settlement_item_name:
         return 0.0
     # Propagate database errors; only return 0.0 when the query succeeds and
-    # no payout events exist.
-    rows = frappe.get_all(
-        "Commission Payout Event",
-        filters={
-            "settlement_item": settlement_item_name,
-            "docstatus": 1,
-            "event_type": ["in", ["Payout", "Payout Reversal"]],
-        },
-        fields=["event_type", "settlement_amount"],
+    # no payout events exist. Use a locking (FOR UPDATE) read so that, once
+    # the caller holds the settlement lock, this query observes the latest
+    # committed payout events rather than a stale REPEATABLE READ snapshot.
+    _raw = frappe.db.sql(
+        "SELECT event_type, settlement_amount "
+        "FROM `tabCommission Payout Event` "
+        "WHERE settlement_item = %s "
+        "  AND docstatus = %s "
+        "  AND event_type IN ('Payout', 'Payout Reversal') "
+        "FOR UPDATE",
+        (settlement_item_name, 1),
+        as_dict=True,
     )
+    rows = []
+    for _r in (_raw or []):
+        if isinstance(_r, dict):
+            rows.append(_r)
+        else:
+            rows.append(
+                {
+                    "event_type": _r[0] if len(_r) > 0 else None,
+                    "settlement_amount": _r[1] if len(_r) > 1 else 0,
+                }
+            )
     paid = 0.0
     for r in rows or []:
         et = _get_attr(r, "event_type", None)
@@ -883,12 +885,18 @@ def lock_commission_settlement(settlement_name):
     if not settlement_name:
         frappe.throw(_("Commission Settlement name is required for locking."))
     rows = frappe.db.sql(
-        "SELECT name FROM `tabCommission Settlement` WHERE name = %s FOR UPDATE",
+        "SELECT name, docstatus FROM `tabCommission Settlement` WHERE name = %s FOR UPDATE",
         (settlement_name,),
     )
     if not rows:
         frappe.throw(
             _("Commission Settlement {0} not found.").format(settlement_name)
+        )
+    row = rows[0]
+    docstatus = row[1] if isinstance(row, (tuple, list)) else _get_attr(row, "docstatus", None)
+    if docstatus != 1:
+        frappe.throw(
+            _("Commission Settlement {0} is not submitted.").format(settlement_name)
         )
     return rows
 
@@ -966,14 +974,13 @@ def process_supplier_payment_entry(payment_entry):
 
     created_events = []
 
+    # --- Phase 1: Acquire all Payment Entry Reference locks in deterministic
+    # (reference) order, before resolving settlements or reading payout
+    # history. This is the canonical first step of the locking protocol.
     for pr in references:
         ref_name = _get_attr(pr, "name", None)
-        # --- Concurrency protection: lock the Payment Entry Reference row. ---
         if not ref_name:
             frappe.throw(_("Payment Entry Reference row name is required."))
-        # Lock must be acquired before checking existing events and calculating
-        # previous payments. Propagate any locking failure so the transaction
-        # rolls back; never continue without the lock.
         lock_rows = frappe.db.sql(
             "SELECT parent FROM `tabPayment Entry Reference` WHERE name = %s FOR UPDATE",
             (ref_name,),
@@ -990,45 +997,80 @@ def process_supplier_payment_entry(payment_entry):
                 )
             )
 
+    # --- Phase 2: Resolve applicable settlements for references with a
+    # positive allocation.
+    ref_settlements = {}
+    for pr in references:
+        ref_name = _get_attr(pr, "name", None)
+        allocated_amount = flt(_get_attr(pr, "allocated_amount", 0))
+        if allocated_amount <= 0:
+            continue
+        settlement = get_supplier_settlement_for_reference(pe, pr)
+        if settlement is None:
+            continue
+        ref_settlements[ref_name] = settlement
+
+    # --- Phase 3: Acquire all distinct settlement locks in sorted
+    # settlement-name order (canonical order, shared with every other
+    # operation that changes payout balances).
+    sett_names = sorted(
+        {
+            _get_attr(s, "name", None)
+            for s in ref_settlements.values()
+            if _get_attr(s, "name", None)
+        }
+    )
+    lock_commission_settlements(sett_names)
+
+    # --- Phase 4: Read payout history and process events.
+    for pr in references:
+        ref_name = _get_attr(pr, "name", None)
+
         allocated_amount = flt(_get_attr(pr, "allocated_amount", 0))
         if allocated_amount <= 0:
             continue
 
-        settlement = get_supplier_settlement_for_reference(pe, pr)
+        settlement = ref_settlements.get(ref_name)
         if settlement is None:
             continue
-
-        # --- Shared settlement-level lock. ---
-        # Different Payment Entries referencing the same Commission Settlement
-        # must be serialized against each other, not just against repeated
-        # processing of the same Payment Entry Reference. Acquire the
-        # settlement lock before reading payout events or calculating
-        # outstanding balances.
-        sett_name = _get_attr(settlement, "name", None)
-        lock_commission_settlement(sett_name)
 
         resolved = resolve_supplier_payment_currencies(pe, pr)
 
         # --- Idempotency: validate existing events before skipping. ---
         # Narrow filters to the full source identity and event type.
         try:
-            existing_rows = frappe.get_all(
-                "Commission Payout Event",
-                filters={
-                    "source_doctype": "Payment Entry",
-                    "source_name": _get_attr(pe, "name", None),
-                    "source_row": ref_name,
-                    "docstatus": 1,
-                    "event_type": ["in", ["Payout", "Payout Reversal"]],
-                },
-                fields=[
-                    "event_type",
-                    "source_amount",
-                    "settlement_amount",
-                    "commission_amount",
-                    "company_amount",
-                ],
+            _raw_existing = frappe.db.sql(
+                "SELECT event_type, source_amount, settlement_amount, "
+                "commission_amount, company_amount "
+                "FROM `tabCommission Payout Event` "
+                "WHERE source_doctype = %s "
+                "  AND source_name = %s "
+                "  AND source_row = %s "
+                "  AND docstatus = %s "
+                "  AND event_type IN ('Payout', 'Payout Reversal') "
+                "FOR UPDATE",
+                (
+                    "Payment Entry",
+                    _get_attr(pe, "name", None),
+                    ref_name,
+                    1,
+                ),
+                as_dict=True,
             )
+            existing_rows = []
+            for _r in (_raw_existing or []):
+                if isinstance(_r, dict):
+                    existing_rows.append(_r)
+                else:
+                    existing_rows.append(
+                        {
+                            "event_type": _r[0] if len(_r) > 0 else None,
+                            "source_amount": _r[1] if len(_r) > 1 else 0,
+                            "settlement_amount": _r[2] if len(_r) > 2 else 0,
+                            "commission_amount": _r[3] if len(_r) > 3 else 0,
+                            "company_amount": _r[4] if len(_r) > 4 else 0,
+                        }
+                    )
         except Exception as exc:
             frappe.throw(
                 _("Failed to look up existing payout events: {0}").format(str(exc))
@@ -1168,21 +1210,36 @@ def process_supplier_payment_entry(payment_entry):
         # --- Aggregate reconciliation for this reference. ---
         # Verify submitted event totals match the resolved reference values.
         try:
-            ev_rows = frappe.get_all(
-                "Commission Payout Event",
-                filters={
-                    "source_doctype": "Payment Entry",
-                    "source_name": _get_attr(pe, "name", None),
-                    "source_row": ref_name,
-                    "docstatus": 1,
-                },
-                fields=[
-                    "source_amount",
-                    "settlement_amount",
-                    "commission_amount",
-                    "company_amount",
-                ],
+            _raw_ev = frappe.db.sql(
+                "SELECT source_amount, settlement_amount, commission_amount, "
+                "company_amount "
+                "FROM `tabCommission Payout Event` "
+                "WHERE source_doctype = %s "
+                "  AND source_name = %s "
+                "  AND source_row = %s "
+                "  AND docstatus = %s "
+                "FOR UPDATE",
+                (
+                    "Payment Entry",
+                    _get_attr(pe, "name", None),
+                    ref_name,
+                    1,
+                ),
+                as_dict=True,
             )
+            ev_rows = []
+            for _r in (_raw_ev or []):
+                if isinstance(_r, dict):
+                    ev_rows.append(_r)
+                else:
+                    ev_rows.append(
+                        {
+                            "source_amount": _r[0] if len(_r) > 0 else 0,
+                            "settlement_amount": _r[1] if len(_r) > 1 else 0,
+                            "commission_amount": _r[2] if len(_r) > 2 else 0,
+                            "company_amount": _r[3] if len(_r) > 3 else 0,
+                        }
+                    )
             # Use source currency precision.
             from sales_commission_management.sales_commission_management.utils import currency_precision as _cp4
             psrc = _cp4(resolved["source_currency"])
