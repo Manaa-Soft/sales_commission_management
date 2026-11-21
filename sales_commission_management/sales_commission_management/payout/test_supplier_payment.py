@@ -1,14 +1,10 @@
 from frappe.tests import IntegrationTestCase
-import math
 
 import frappe
-from frappe.utils import flt
 
 from sales_commission_management.sales_commission_management.payout.supplier_payment import (
-    get_supplier_settlement_for_reference,
-)
-from sales_commission_management.sales_commission_management.payout.supplier_payment import (
     allocate_supplier_payment_across_items,
+    get_supplier_settlement_for_reference,
 )
 
 
@@ -399,6 +395,7 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
                 "sales_person": self.sales_person,
                 "supplier": self.supplier,
                 "status": "Draft",
+                "settlement_method": "Supplier Purchase Invoice",
                 "commission_currency": "USD",
                 "total_payable": 1000,
                 "entries": [{
@@ -410,8 +407,10 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
             sett.submit()
         else:
             frappe.db.set_value("Commission Settlement", sett_name, "supplier", self.supplier, update_modified=False)
+            frappe.db.set_value("Commission Settlement", sett_name, "settlement_method", "Supplier Purchase Invoice", update_modified=False)
         self.settlement = sett_name
         frappe.db.set_value("Commission Settlement", self.settlement, "supplier", self.supplier, update_modified=False)
+        frappe.db.set_value("Commission Settlement", self.settlement, "settlement_method", "Supplier Purchase Invoice", update_modified=False)
 
         self.settlement_item = frappe.db.get_value(
             "Commission Settlement Item",
@@ -427,7 +426,7 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
                 "supplier": self.supplier,
                 "company": self.company,
                 "posting_date": frappe.utils.nowdate(),
-                "items": [{"item_code": self.commission_item, "qty": 1, "rate": 1000}],
+                "items": [{"item_code": self.commission_item, "qty": 1, "rate": 2000}],
             })
             pi.insert(ignore_permissions=True)
             pi.submit()
@@ -436,6 +435,7 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
         frappe.db.set_value("Commission Settlement", self.settlement, {
             "settlement_document_type": "Purchase Invoice",
             "settlement_document": self.purchase_invoice,
+            "settlement_method": "Supplier Purchase Invoice",
         }, update_modified=False)
 
         bank_account = frappe.db.get_value("Account", {"account_type": "Bank", "company": self.company}, "name")
@@ -601,7 +601,9 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
         frappe.db.set_value("Commission Settlement", sett2_name, "supplier", self.supplier, update_modified=False)
 
         try:
-            self.assertRaises(Exception, process_supplier_payment_entry, self.payment_entry)
+            with self.assertRaises(frappe.ValidationError) as ctx:
+                process_supplier_payment_entry(self.payment_entry)
+            self.assertIn("Multiple submitted Commission Settlements", str(ctx.exception))
         finally:
             # cleanup second settlement
             try:
@@ -630,7 +632,9 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
 
         frappe.get_all = boom
         try:
-            self.assertRaises(Exception, process_supplier_payment_entry, self.payment_entry)
+            with self.assertRaises(RuntimeError) as ctx:
+                process_supplier_payment_entry(self.payment_entry)
+            self.assertIn("simulated db failure", str(ctx.exception))
         finally:
             frappe.get_all = original_get_all
 
@@ -669,7 +673,9 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
         self.assertIsNotNone(ev_name)
         frappe.db.set_value("Commission Payout Event", ev_name, "source_amount", 999, update_modified=False)
 
-        self.assertRaises(Exception, process_supplier_payment_entry, self.payment_entry)
+        with self.assertRaises(frappe.ValidationError) as ctx:
+            process_supplier_payment_entry(self.payment_entry)
+        self.assertIn("do not fully reconcile", str(ctx.exception))
 
     # ------------------------------------------------------------------
     # Test 7: Non-Payout event sharing same source identity -> excluded
@@ -678,11 +684,13 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
         from sales_commission_management.sales_commission_management.payout.supplier_payment import (
             process_supplier_payment_entry,
         )
-        from sales_commission_management.sales_commission_management.payout.event_factory import (
-            get_or_create_payout_event,
+        from sales_commission_management.sales_commission_management.payout.lifecycle import (
+            create_and_submit_payout_event,
         )
 
-        # Insert a non-Payout event sharing the same source identity.
+        # Create and submit a non-Payout (Manual Adjustment) event sharing the
+        # same source identity, so it must be excluded from the Payout
+        # aggregate.
         extra_key = f"nonpayout-{self.uid}"
         extra_data = {
             "event_key": extra_key,
@@ -707,11 +715,10 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
             "company_currency": "USD",
             "company_amount": 123,
         }
-        # May or may not be allowed by factory; ignore failures.
-        try:
-            get_or_create_payout_event(extra_data)
-        except Exception:
-            pass
+        manual_event = create_and_submit_payout_event(extra_data)
+        self.assertTrue(manual_event)
+        manual_doc = frappe.get_doc("Commission Payout Event", manual_event)
+        self.assertEqual(manual_doc.docstatus, 1)
 
         created = process_supplier_payment_entry(self.payment_entry)
         self.assertTrue(created)
@@ -725,6 +732,7 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
 
         import threading
 
+        import sales_commission_management.sales_commission_management.payout.supplier_payment as sp_mod
         from sales_commission_management.sales_commission_management.payout.supplier_payment import (
             process_supplier_payment_entry,
         )
@@ -762,7 +770,10 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
 
         results = [None, None]
         errors = [None, None]
+        # Synchronize both workers immediately before the settlement lock is
+        # acquired, so both establish ordinary-read snapshots first.
         ready_barrier = threading.Barrier(2)
+        lock_barrier = threading.Barrier(2)
         ready_event = threading.Event()
         start_event = threading.Event()
 
@@ -771,6 +782,16 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
                 frappe.init(site=site)
                 frappe.connect()
                 frappe.set_user("Administrator")
+                # Patch lock acquisition to wait on the shared barrier before
+                # delegating, so both workers race for the real settlement lock.
+                original_lock = sp_mod.lock_commission_settlements
+
+                def locking_with_barrier(settlement_names):
+                    lock_barrier.wait(timeout=30)
+                    return original_lock(settlement_names)
+
+                sp_mod.lock_commission_settlements = locking_with_barrier
+
                 ready_barrier.wait(timeout=30)
                 ready_event.set()
                 start_event.wait(timeout=30)
@@ -796,6 +817,7 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
         try:
             if not ready_event.wait(timeout=30):
                 raise RuntimeError("Worker threads did not become ready")
+            # Ensure both workers cleared the ready barrier.
             start_event.set()
             t0.join(timeout=60)
             t1.join(timeout=60)
@@ -804,10 +826,37 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
 
             frappe.local.db = primary
 
-            # At least one should fail (no overpayment) OR both succeed only if
-            # enough remaining; with 1000 total and two 1000 payments, one must fail.
-            statuses = [e is not None for e in errors]
-            self.assertTrue(any(statuses), "Expected at least one concurrency failure (no overpayment).")
+            # Exactly one worker must succeed; the other must fail.
+            successes = [r for r in results if r]
+            failures = [e for e in errors if e is not None]
+            self.assertEqual(len(successes), 1, "Expected exactly one successful payout.")
+            self.assertEqual(len(failures), 1, "Expected exactly one concurrency failure.")
+
+            # The failure must be the expected financial validation error, not
+            # an unrelated/connection failure.
+            failure = failures[0]
+            failure_msg = str(failure)
+            self.assertTrue(
+                ("No remaining item balances" in failure_msg)
+                or ("overpaid" in failure_msg.lower())
+                or ("does not fully reconcile" in failure_msg),
+                "Unexpected failure type: {0}".format(failure_msg),
+            )
+
+            # Query the submitted payout ledger: net total must not exceed the
+            # settlement balance.
+            ledger_rows = frappe.db.sql(
+                "SELECT COALESCE(SUM(settlement_amount), 0) "
+                "FROM `tabCommission Payout Event` "
+                "WHERE settlement = %s AND docstatus = 1 AND event_type = 'Payout'",
+                (self.settlement,),
+                as_list=True,
+            )
+            net_total = float(ledger_rows[0][0]) if ledger_rows else 0.0
+            self.assertLessEqual(
+                net_total, 1000.0 + 1e-9,
+                "Payout ledger net total exceeds settlement balance.",
+            )
 
         finally:
             start_event.set()
@@ -817,14 +866,16 @@ class TestSupplierPaymentHandler(IntegrationTestCase):
             try:
                 frappe.db.sql("DELETE FROM `tabCommission Payout Event` WHERE source_name IN (%s, %s)", (self.payment_entry, self.payment_entry_2))
                 frappe.db.commit()
-            except Exception:
+            except Exception as _ce:
+                print("CLEANUP ERROR:", _ce)
                 try:
                     frappe.db.rollback()
                 except Exception:
                     pass
             try:
                 self._cleanup_uid_records(commit=True)
-            except Exception:
+            except Exception as _ce:
+                print("CLEANUP ERROR:", _ce)
                 try:
                     frappe.db.rollback()
                 except Exception:
