@@ -76,7 +76,12 @@ class CommissionPayoutEvent(Document):
                 frappe.throw(_("Reversal events must reference the original event."))
             # Lock the original event row for concurrency-safe cumulative check.
             orig = frappe.db.sql(
-                "SELECT * FROM 	abCommission Payout Event WHERE name = %s FOR UPDATE",
+                """
+                SELECT *
+                FROM `tabCommission Payout Event`
+                WHERE name = %s
+                FOR UPDATE
+                """,
                 (self.reversal_of,),
                 as_dict=True,
             )
@@ -96,16 +101,27 @@ class CommissionPayoutEvent(Document):
                 frappe.throw(_("Beneficiary must match original event."))
             if orig.commission_currency != self.commission_currency:
                 frappe.throw(_("Commission currency must match original event."))
-            # Check cumulative reversal doesn't exceed original.
-            existing_reversals = frappe.get_all(
-                "Commission Payout Event",
-                filters={
-                    "reversal_of": self.reversal_of,
-                    "docstatus": 1,
-                },
-                fields=["commission_amount"],
+            if orig.settlement_currency != self.settlement_currency:
+                frappe.throw(_("Settlement currency must match original event."))
+            if orig.company_currency != self.company_currency:
+                frappe.throw(_("Company currency must match original event."))
+            # Reject zero or negative reversal amounts.
+            if flt(self.commission_amount) <= 0:
+                frappe.throw(_("Reversal amount must be positive."))
+
+            # Concurrency-safe: use locking read for existing reversals.
+            existing_reversals = frappe.db.sql(
+                """
+                SELECT commission_amount
+                FROM `tabCommission Payout Event`
+                WHERE reversal_of = %s
+                  AND docstatus = 1
+                FOR UPDATE
+                """,
+                (self.reversal_of,),
+                as_dict=True,
             )
-            total_reversed = sum(flt(r.commission_amount) for r in existing_reversals)
+            total_reversed = sum(flt(r.commission_amount) for r in (existing_reversals or []))
             if total_reversed + flt(self.commission_amount) > flt(orig.commission_amount):
                 frappe.throw(_("Cumulative reversal exceeds original event amount."))
         else:

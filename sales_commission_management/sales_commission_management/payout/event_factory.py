@@ -25,18 +25,20 @@ def generate_event_key(source_doctype, source_name, source_row, settlement, sett
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def get_or_create_payout_event(event_key, payload=None, **kwargs):
+def get_or_create_payout_event(event_key, payload, **kwargs):
     """Retrieve an existing payout event or create a new one.
 
     Idempotent: calling twice with the same key returns the same event.
-    Handles concurrent inserts by catching DuplicateEntryError and
-    retrieving the existing event. Verifies that the existing event's
-    payload matches the requested payload (rejects mismatched data).
+    Payload is mandatory for verification. Handles concurrent inserts by
+    catching DuplicateEntryError and retrieving the existing event using
+    a locking read. Verifies that the existing event's payload matches.
     """
+    if not payload:
+        frappe.throw(_("Payload is required for payout event creation."))
+
     existing = frappe.db.get_value("Commission Payout Event", {"event_key": event_key}, "name")
     if existing:
-        if payload:
-            _verify_payload_match(existing, payload)
+        _verify_payload_match(existing, payload)
         return existing
 
     kwargs["event_key"] = event_key
@@ -46,11 +48,20 @@ def get_or_create_payout_event(event_key, payload=None, **kwargs):
         doc.insert(ignore_permissions=True)
         return doc.name
     except frappe.DuplicateEntryError:
-        # Race condition: another worker inserted first. Retrieve it.
-        existing = frappe.db.get_value("Commission Payout Event", {"event_key": event_key}, "name")
-        if existing:
-            if payload:
-                _verify_payload_match(existing, payload)
+        # Race condition: another worker inserted first. Use locking read.
+        locked = frappe.db.sql(
+            """
+            SELECT name
+            FROM `tabCommission Payout Event`
+            WHERE event_key = %s
+            FOR UPDATE
+            """,
+            (event_key,),
+            as_dict=True,
+        )
+        if locked:
+            existing = locked[0].name
+            _verify_payload_match(existing, payload)
             return existing
         raise
 
