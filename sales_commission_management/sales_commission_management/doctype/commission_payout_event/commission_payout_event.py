@@ -105,6 +105,13 @@ class CommissionPayoutEvent(Document):
                 frappe.throw(_("Settlement currency must match original event."))
             if orig.company_currency != self.company_currency:
                 frappe.throw(_("Company currency must match original event."))
+            # Reversal must reference the same underlying commission entry.
+            if orig.commission_entry != self.commission_entry:
+                frappe.throw(_("Commission entry must match original event."))
+            if orig.settlement != self.settlement:
+                frappe.throw(_("Settlement must match original event."))
+            if orig.settlement_item != self.settlement_item:
+                frappe.throw(_("Settlement item must match original event."))
             # Reject zero or negative reversal amounts.
             if flt(self.commission_amount) <= 0:
                 frappe.throw(_("Reversal amount must be positive."))
@@ -141,9 +148,11 @@ class CommissionPayoutEvent(Document):
         if self.company_amount and not self.company_currency:
             frappe.throw(_("Company currency is required when company amount is set."))
         # FX snapshot consistency.
-        if self.fx_rate is not None and self.fx_rate != 0:
+        if self.fx_from_currency or self.fx_to_currency:
             if not self.fx_from_currency or not self.fx_to_currency:
-                frappe.throw(_("FX from/to currencies are required when FX rate is set."))
+                frappe.throw(_("Both FX from and to currencies are required."))
+            if not self.fx_rate:
+                frappe.throw(_("FX rate is required when FX currencies are set."))
             if not math.isfinite(self.fx_rate) or self.fx_rate <= 0:
                 frappe.throw(_("FX rate must be a finite positive number."))
         if self.fx_from_currency and self.fx_to_currency and self.fx_from_currency == self.fx_to_currency:
