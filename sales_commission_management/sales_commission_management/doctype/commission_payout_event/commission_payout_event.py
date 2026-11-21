@@ -112,6 +112,13 @@ class CommissionPayoutEvent(Document):
                 frappe.throw(_("Settlement must match original event."))
             if orig.settlement_item != self.settlement_item:
                 frappe.throw(_("Settlement item must match original event."))
+            # Reversal must preserve the original source identity.
+            if orig.source_doctype != self.source_doctype:
+                frappe.throw(_("Source DocType must match original event."))
+            if orig.source_name != self.source_name:
+                frappe.throw(_("Source document must match original event."))
+            if orig.source_row != self.source_row:
+                frappe.throw(_("Source row must match original event."))
             # Reject zero or negative reversal amounts.
             if flt(self.commission_amount) <= 0:
                 frappe.throw(_("Reversal amount must be positive."))
@@ -168,7 +175,12 @@ class CommissionPayoutEvent(Document):
                     frappe.throw(_("Source row must reference a Purchase Invoice."))
                 if self.settlement:
                     sett_doc = frappe.db.get_value("Commission Settlement", self.settlement, "settlement_document")
-                    if sett_doc and ref_name != sett_doc:
+                    sett_doc_type = frappe.db.get_value("Commission Settlement", self.settlement, "settlement_document_type")
+                    if not sett_doc:
+                        frappe.throw(_("Settlement must have a submitted Purchase Invoice."))
+                    if sett_doc_type != "Purchase Invoice":
+                        frappe.throw(_("Settlement must be a Supplier Purchase Invoice settlement."))
+                    if ref_name != sett_doc:
                         frappe.throw(_("Source row must reference the settlement's Purchase Invoice."))
 
         # FX snapshot consistency.

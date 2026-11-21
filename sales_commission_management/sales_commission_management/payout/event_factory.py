@@ -28,8 +28,8 @@ REQUIRED_RECOVERY_FIELDS = REQUIRED_BASE_FIELDS | {"source_row", "source_currenc
 # Recovery Reversal events require original event reference and source identity.
 REQUIRED_RECOVERY_REVERSAL_FIELDS = REQUIRED_BASE_FIELDS | {"reversal_of", "source_row", "source_currency", "source_amount"}
 
-# Manual Adjustment events: source document optional but if provided, source_row required.
-REQUIRED_MANUAL_ADJUSTMENT_FIELDS = REQUIRED_BASE_FIELDS
+# Manual Adjustment events: source document optional (no source_row required).
+REQUIRED_MANUAL_ADJUSTMENT_FIELDS = REQUIRED_BASE_FIELDS - {"source_doctype", "source_name", "source_row"}
 
 
 def generate_event_key(source_doctype, source_name, source_row, settlement, settlement_item, commission_entry, event_type, reversal_of=None):
