@@ -233,7 +233,16 @@ class CommissionPayoutEvent(Document):
             alloc_currency = getattr(pe, "paid_to_account_currency", None)
             if not alloc_currency:
                 alloc_currency = frappe.get_cached_value("Account", pe.paid_to, "account_currency")
-            if alloc_currency and self.source_currency and alloc_currency != self.source_currency:
+            if not alloc_currency:
+                frappe.throw(_("Cannot resolve the Payment Entry Reference allocated currency."))
+            if not self.source_currency:
+                frappe.throw(_("Source currency is required for Payment Entry events."))
+            if alloc_currency != self.source_currency:
+                frappe.throw(
+                    _("Source currency ({0}) must match the Payment Entry Reference allocated currency ({1}).").format(
+                        self.source_currency, alloc_currency
+                    )
+                )
                 frappe.throw(
                     _("Source currency ({0}) must match the Payment Entry Reference allocated currency ({1}).").format(
                         self.source_currency, alloc_currency
