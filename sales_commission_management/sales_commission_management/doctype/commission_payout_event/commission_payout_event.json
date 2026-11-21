@@ -1,4 +1,4 @@
-{
+﻿{
  "actions": [],
  "allow_rename": 0,
  "autoname": "naming_series:",
@@ -157,7 +157,7 @@
    "fieldtype": "Link",
    "label": "Source DocType",
    "read_only": 1,
-   "reqd": 1,
+   "reqd": 0,
    "options": "DocType"
   },
   {
@@ -165,7 +165,7 @@
    "fieldtype": "Dynamic Link",
    "label": "Source Document",
    "read_only": 1,
-   "reqd": 1,
+   "reqd": 0,
    "options": "source_doctype"
   },
   {
