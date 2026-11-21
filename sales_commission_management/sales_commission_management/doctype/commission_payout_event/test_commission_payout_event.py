@@ -38,14 +38,16 @@ class TestCommissionPayoutEvent(IntegrationTestCase):
 
         # --- Commission Settings (single doc). ---
         cs = frappe.get_single("Commission Settings")
+        self._original_cs_enabled = getattr(cs, "enabled", None)
+        self._original_cs_accounting_mode = getattr(cs, "accounting_mode", None)
         cs.enabled = 1
-        if not getattr(cs, "accounting_mode", None):
-            cs.accounting_mode = "Subledger Until Settlement"
+        cs.accounting_mode = "Subledger Until Settlement"
         cs.save(ignore_permissions=True)
         self.commission_settings = cs
 
         # --- Item "Commission". ---
-        if not frappe.db.exists("Item", "Commission"):
+        self._commission_item_created = not frappe.db.exists("Item", "Commission")
+        if self._commission_item_created:
             frappe.get_doc({
                 "doctype": "Item",
                 "item_code": "Commission",
@@ -233,6 +235,22 @@ class TestCommissionPayoutEvent(IntegrationTestCase):
                     frappe.delete_doc(doctype, name, ignore_permissions=True)
                 except Exception:
                     pass
+        # Restore Commission Settings original values.
+        try:
+            cs = frappe.get_single("Commission Settings")
+            if getattr(self, "_original_cs_enabled", None) is not None:
+                cs.enabled = self._original_cs_enabled
+            if getattr(self, "_original_cs_accounting_mode", None) is not None:
+                cs.accounting_mode = self._original_cs_accounting_mode
+            cs.save(ignore_permissions=True)
+        except Exception:
+            pass
+        # Remove Commission Item only if created by this test.
+        if getattr(self, "_commission_item_created", False):
+            try:
+                frappe.delete_doc("Item", "Commission", ignore_permissions=True)
+            except Exception:
+                pass
 
     def _make_event(self, event_key, **overrides):
         data = {

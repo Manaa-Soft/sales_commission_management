@@ -120,9 +120,13 @@ class CommissionPayoutEvent(Document):
                 frappe.throw(_("Source document must match original event."))
             if orig.source_row != self.source_row:
                 frappe.throw(_("Source row must match original event."))
-            # Reject zero or negative reversal amounts.
+            # Reject zero or negative reversal amounts in all three currencies.
             if flt(self.commission_amount) <= 0:
-                frappe.throw(_("Reversal amount must be positive."))
+                frappe.throw(_("Reversal commission amount must be positive."))
+            if flt(self.settlement_amount) <= 0:
+                frappe.throw(_("Reversal settlement amount must be positive."))
+            if flt(self.company_amount) <= 0:
+                frappe.throw(_("Reversal company amount must be positive."))
 
             # Concurrency-safe: use locking read for existing reversals.
             existing_reversals = frappe.db.sql(
@@ -136,14 +140,17 @@ class CommissionPayoutEvent(Document):
                 (self.reversal_of,),
                 as_dict=True,
             )
-            total_reversed_comm = sum(flt(r.commission_amount) for r in (existing_reversals or []))
-            total_reversed_sett = sum(flt(r.settlement_amount) for r in (existing_reversals or []))
-            total_reversed_comp = sum(flt(r.company_amount) for r in (existing_reversals or []))
-            if total_reversed_comm + flt(self.commission_amount) > flt(orig.commission_amount):
+            prec_comm = _currency_precision(self.commission_currency)
+            prec_sett = _currency_precision(self.settlement_currency)
+            prec_comp = _currency_precision(self.company_currency)
+            total_reversed_comm = sum(flt(r.commission_amount, prec_comm) for r in (existing_reversals or []))
+            total_reversed_sett = sum(flt(r.settlement_amount, prec_sett) for r in (existing_reversals or []))
+            total_reversed_comp = sum(flt(r.company_amount, prec_comp) for r in (existing_reversals or []))
+            if total_reversed_comm + flt(self.commission_amount, prec_comm) > flt(orig.commission_amount, prec_comm):
                 frappe.throw(_("Cumulative reversal exceeds original event amount."))
-            if total_reversed_sett + flt(self.settlement_amount) > flt(orig.settlement_amount):
+            if total_reversed_sett + flt(self.settlement_amount, prec_sett) > flt(orig.settlement_amount, prec_sett):
                 frappe.throw(_("Cumulative reversal exceeds original settlement amount."))
-            if total_reversed_comp + flt(self.company_amount) > flt(orig.company_amount):
+            if total_reversed_comp + flt(self.company_amount, prec_comp) > flt(orig.company_amount, prec_comp):
                 frappe.throw(_("Cumulative reversal exceeds original company amount."))
         else:
             if self.reversal_of:
