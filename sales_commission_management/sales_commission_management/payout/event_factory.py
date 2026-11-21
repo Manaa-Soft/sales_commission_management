@@ -5,18 +5,31 @@ import time
 from frappe import _
 
 # Required payload fields by event type.
-REQUIRED_PAYOUT_FIELDS = {
+# Base fields required for all event types.
+REQUIRED_BASE_FIELDS = {
     "event_type", "posting_date", "evidence_level",
-    "settlement", "settlement_item", "commission_entry",
+    "settlement", "commission_entry",
     "company", "beneficiary_type", "beneficiary",
-    "source_doctype", "source_name", "source_row",
-    "source_currency", "source_amount",
+    "source_doctype", "source_name",
     "settlement_currency", "settlement_amount",
     "commission_currency", "commission_amount",
     "company_currency", "company_amount",
 }
 
-REQUIRED_REVERSAL_FIELDS = REQUIRED_PAYOUT_FIELDS | {"reversal_of"}
+# Payout events require source row (for Payment Entry matching).
+REQUIRED_PAYOUT_FIELDS = REQUIRED_BASE_FIELDS | {"source_row", "source_currency", "source_amount", "settlement_item"}
+
+# Reversal events require original event reference.
+REQUIRED_REVERSAL_FIELDS = REQUIRED_BASE_FIELDS | {"reversal_of"}
+
+# Recovery events require source row.
+REQUIRED_RECOVERY_FIELDS = REQUIRED_BASE_FIELDS | {"source_row", "source_currency", "source_amount", "settlement_item"}
+
+# Recovery Reversal events require original event reference.
+REQUIRED_RECOVERY_REVERSAL_FIELDS = REQUIRED_BASE_FIELDS | {"reversal_of"}
+
+# Manual Adjustment events have relaxed requirements (no source row needed).
+REQUIRED_MANUAL_ADJUSTMENT_FIELDS = REQUIRED_BASE_FIELDS - {"source_doctype", "source_name"} | {"source_doctype", "source_name"}
 
 
 def generate_event_key(source_doctype, source_name, source_row, settlement, settlement_item, commission_entry, event_type, reversal_of=None):
@@ -94,8 +107,14 @@ def _validate_payload_schema(event_data):
     Rejects unexpected fields and missing required fields.
     """
     event_type = event_data.get("event_type", "")
-    if event_type in ("Payout Reversal", "Recovery Reversal"):
+    if event_type == "Payout Reversal":
         required = REQUIRED_REVERSAL_FIELDS
+    elif event_type == "Recovery":
+        required = REQUIRED_RECOVERY_FIELDS
+    elif event_type == "Recovery Reversal":
+        required = REQUIRED_RECOVERY_REVERSAL_FIELDS
+    elif event_type == "Manual Adjustment":
+        required = REQUIRED_MANUAL_ADJUSTMENT_FIELDS
     else:
         required = REQUIRED_PAYOUT_FIELDS
 
@@ -190,7 +209,7 @@ def get_or_create_payout_event(event_data):
                 locked = frappe.db.sql(
                     """
                     SELECT name
-                    FROM 	abCommission Payout Event
+                FROM 	abCommission Payout Event
                     WHERE event_key = %s
                     FOR UPDATE
                     """,

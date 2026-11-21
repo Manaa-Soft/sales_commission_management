@@ -152,6 +152,11 @@ class CommissionPayoutEvent(Document):
         if self.event_type in ("Payout", "Recovery"):
             if flt(self.commission_amount) <= 0:
                 frappe.throw(_("Payout and Recovery events must have a positive commission amount."))
+        # Source row validation for Payment Entry events.
+        if self.source_doctype == "Payment Entry":
+            if not self.source_row:
+                frappe.throw(_("Source row is required for Payment Entry events."))
+
         # FX snapshot consistency.
         if self.fx_from_currency or self.fx_to_currency or self.fx_rate:
             if not self.fx_from_currency or not self.fx_to_currency:
