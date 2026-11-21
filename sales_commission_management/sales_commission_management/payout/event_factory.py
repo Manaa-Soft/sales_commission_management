@@ -19,17 +19,17 @@ REQUIRED_BASE_FIELDS = {
 # Payout events require source row (for Payment Entry matching).
 REQUIRED_PAYOUT_FIELDS = REQUIRED_BASE_FIELDS | {"source_row", "source_currency", "source_amount", "settlement_item"}
 
-# Reversal events require original event reference.
-REQUIRED_REVERSAL_FIELDS = REQUIRED_BASE_FIELDS | {"reversal_of"}
+# Reversal events require original event reference and source identity.
+REQUIRED_REVERSAL_FIELDS = REQUIRED_BASE_FIELDS | {"reversal_of", "source_row", "source_currency", "source_amount"}
 
 # Recovery events require source row.
 REQUIRED_RECOVERY_FIELDS = REQUIRED_BASE_FIELDS | {"source_row", "source_currency", "source_amount", "settlement_item"}
 
-# Recovery Reversal events require original event reference.
-REQUIRED_RECOVERY_REVERSAL_FIELDS = REQUIRED_BASE_FIELDS | {"reversal_of"}
+# Recovery Reversal events require original event reference and source identity.
+REQUIRED_RECOVERY_REVERSAL_FIELDS = REQUIRED_BASE_FIELDS | {"reversal_of", "source_row", "source_currency", "source_amount"}
 
-# Manual Adjustment events have relaxed requirements (no source row needed).
-REQUIRED_MANUAL_ADJUSTMENT_FIELDS = REQUIRED_BASE_FIELDS - {"source_doctype", "source_name"} | {"source_doctype", "source_name"}
+# Manual Adjustment events: source document optional but if provided, source_row required.
+REQUIRED_MANUAL_ADJUSTMENT_FIELDS = REQUIRED_BASE_FIELDS
 
 
 def generate_event_key(source_doctype, source_name, source_row, settlement, settlement_item, commission_entry, event_type, reversal_of=None):
@@ -107,7 +107,9 @@ def _validate_payload_schema(event_data):
     Rejects unexpected fields and missing required fields.
     """
     event_type = event_data.get("event_type", "")
-    if event_type == "Payout Reversal":
+    if event_type == "Payout":
+        required = REQUIRED_PAYOUT_FIELDS
+    elif event_type == "Payout Reversal":
         required = REQUIRED_REVERSAL_FIELDS
     elif event_type == "Recovery":
         required = REQUIRED_RECOVERY_FIELDS
@@ -116,7 +118,7 @@ def _validate_payload_schema(event_data):
     elif event_type == "Manual Adjustment":
         required = REQUIRED_MANUAL_ADJUSTMENT_FIELDS
     else:
-        required = REQUIRED_PAYOUT_FIELDS
+        frappe.throw(_("Unsupported event type: {0}").format(event_type))
 
     missing = required - set(event_data.keys())
     if missing:
@@ -236,7 +238,7 @@ def _verify_payload_match(existing_name, payload):
     locked = frappe.db.sql(
         """
         SELECT *
-        FROM `tabCommission Payout Event`
+                FROM 	abCommission Payout Event
         WHERE name = %s
         FOR UPDATE
         """,

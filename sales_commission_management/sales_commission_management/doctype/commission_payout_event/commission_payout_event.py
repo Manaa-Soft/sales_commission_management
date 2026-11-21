@@ -156,6 +156,20 @@ class CommissionPayoutEvent(Document):
         if self.source_doctype == "Payment Entry":
             if not self.source_row:
                 frappe.throw(_("Source row is required for Payment Entry events."))
+            # Validate source_row belongs to the source Payment Entry.
+            if self.source_name:
+                parent = frappe.db.get_value("Payment Entry Reference", self.source_row, "parent")
+                if parent != self.source_name:
+                    frappe.throw(_("Source row does not belong to the referenced Payment Entry."))
+                # Validate reference identifies the settlement's Purchase Invoice.
+                ref_doctype = frappe.db.get_value("Payment Entry Reference", self.source_row, "reference_doctype")
+                ref_name = frappe.db.get_value("Payment Entry Reference", self.source_row, "reference_name")
+                if ref_doctype != "Purchase Invoice":
+                    frappe.throw(_("Source row must reference a Purchase Invoice."))
+                if self.settlement:
+                    sett_doc = frappe.db.get_value("Commission Settlement", self.settlement, "settlement_document")
+                    if sett_doc and ref_name != sett_doc:
+                        frappe.throw(_("Source row must reference the settlement's Purchase Invoice."))
 
         # FX snapshot consistency.
         if self.fx_from_currency or self.fx_to_currency or self.fx_rate:
