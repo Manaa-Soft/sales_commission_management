@@ -1,20 +1,22 @@
 from frappe.tests import IntegrationTestCase
 import frappe
+from frappe import _
 
 
 class TestCommissionPayoutEvent(IntegrationTestCase):
     """Self-contained integration tests for Commission Payout Event.
 
+    Covers event schema, immutability, reversal and financial validation.
     All test records are created in setUp and cleaned up in tearDown.
     No dependency on pre-existing site data.
     """
 
     def setUp(self):
-        # Use unique identifiers to avoid collisions.
         import uuid
+
         self.uid = uuid.uuid4().hex[:8]
 
-        # Create a test company.
+        # --- Company. ---
         company_name = f"Test Company {self.uid}"
         if not frappe.db.exists("Company", company_name):
             frappe.get_doc({
@@ -25,7 +27,7 @@ class TestCommissionPayoutEvent(IntegrationTestCase):
             }).insert(ignore_permissions=True)
         self.company = company_name
 
-        # Create a test sales person.
+        # --- Sales Person. ---
         sp_name = f"SP-{self.uid}"
         if not frappe.db.exists("Sales Person", sp_name):
             frappe.get_doc({
@@ -34,18 +36,65 @@ class TestCommissionPayoutEvent(IntegrationTestCase):
             }).insert(ignore_permissions=True)
         self.sales_person = sp_name
 
-        # Create a test commission entry.
+        # --- Commission Settings (single doc). ---
+        cs = frappe.get_single("Commission Settings")
+        cs.enabled = 1
+        if not getattr(cs, "accounting_mode", None):
+            cs.accounting_mode = "Subledger Until Settlement"
+        cs.save(ignore_permissions=True)
+        self.commission_settings = cs
+
+        # --- Item "Commission". ---
+        if not frappe.db.exists("Item", "Commission"):
+            frappe.get_doc({
+                "doctype": "Item",
+                "item_code": "Commission",
+                "item_name": "Commission",
+                "item_group": "All Item Groups",
+                "stock_uom": "Nos",
+                "is_stock_item": 0,
+            }).insert(ignore_permissions=True)
+        self.commission_item = frappe.db.get_value("Item", "Commission", "name")
+        assert self.commission_item is not None
+
+        # --- Customer + real submitted Sales Invoice. ---
+        customer_name = f"Test Customer {self.uid}"
+        if not frappe.db.exists("Customer", customer_name):
+            frappe.get_doc({
+                "doctype": "Customer",
+                "customer_name": customer_name,
+                "customer_type": "Company",
+            }).insert(ignore_permissions=True)
+        self.customer = customer_name
+
+        si_name = f"SI-TEST-{self.uid}"
+        if not frappe.db.exists("Sales Invoice", si_name):
+            si = frappe.get_doc({
+                "doctype": "Sales Invoice",
+                "name": si_name,
+                "customer": self.customer,
+                "company": self.company,
+                "posting_date": frappe.utils.nowdate(),
+                "items": [{"item_code": self.commission_item, "qty": 1, "rate": 1000}],
+            })
+            si.insert(ignore_permissions=True)
+            si.submit()
+        self.sales_invoice = si_name
+
+        # --- Commission Entry. ---
         ce_name = f"CE-{self.uid}"
         if not frappe.db.exists("Commission Entry", ce_name):
             frappe.get_doc({
                 "doctype": "Commission Entry",
                 "name": ce_name,
-                "sales_invoice": f"SI-TEST-{self.uid}",
+                "sales_invoice": self.sales_invoice,
                 "posting_date": frappe.utils.nowdate(),
                 "company": self.company,
                 "beneficiary_type": "Sales Person",
                 "sales_person": self.sales_person,
                 "earned_commission": 1000,
+                "payable_amount": 1000,
+                "collection_eligible_amount": 1000,
                 "commission_currency": "USD",
                 "company_currency": "USD",
                 "status": "Earned",
@@ -53,35 +102,7 @@ class TestCommissionPayoutEvent(IntegrationTestCase):
             }).insert(ignore_permissions=True)
         self.commission_entry = ce_name
 
-        # Create a test commission settlement.
-        sett_name = f"CS-{self.uid}"
-        if not frappe.db.exists("Commission Settlement", sett_name):
-            sett = frappe.get_doc({
-                "doctype": "Commission Settlement",
-                "name": sett_name,
-                "company": self.company,
-                "beneficiary_type": "Sales Person",
-                "sales_person": self.sales_person,
-                "status": "Submitted",
-                "commission_currency": "USD",
-                "total_payable": 1000,
-                "entries": [{
-                    "commission_ledger_entry": self.commission_entry,
-                    "amount_included": 1000,
-                }],
-            })
-            sett.insert(ignore_permissions=True)
-            sett.submit()
-        self.settlement = sett_name
-
-        # Get the settlement item row name.
-        self.settlement_item = frappe.db.get_value(
-            "Commission Settlement Item",
-            {"parent": self.settlement, "commission_ledger_entry": self.commission_entry},
-            "name",
-        )
-
-        # Create a test supplier.
+        # --- Supplier. ---
         supplier_name = f"SUP-{self.uid}"
         if not frappe.db.exists("Supplier", supplier_name):
             frappe.get_doc({
@@ -91,7 +112,38 @@ class TestCommissionPayoutEvent(IntegrationTestCase):
             }).insert(ignore_permissions=True)
         self.supplier = supplier_name
 
-        # Create a test purchase invoice for the settlement.
+        # --- Commission Settlement. ---
+        sett_name = f"CS-{self.uid}"
+        if not frappe.db.exists("Commission Settlement", sett_name):
+            sett = frappe.get_doc({
+                "doctype": "Commission Settlement",
+                "name": sett_name,
+                "company": self.company,
+                "beneficiary_type": "Sales Person",
+                "sales_person": self.sales_person,
+                "supplier": self.supplier,
+                "status": "Draft",
+                "commission_currency": "USD",
+                "total_payable": 1000,
+                "entries": [{
+                    "commission_ledger_entry": self.commission_entry,
+                    "amount_included": 1000,
+                }],
+            })
+            sett.insert(ignore_permissions=True)
+            sett.submit()
+        else:
+            frappe.db.set_value("Commission Settlement", sett_name, "supplier", self.supplier, update_modified=False)
+        self.settlement = sett_name
+        frappe.db.set_value("Commission Settlement", self.settlement, "supplier", self.supplier, update_modified=False)
+
+        self.settlement_item = frappe.db.get_value(
+            "Commission Settlement Item",
+            {"parent": self.settlement, "commission_ledger_entry": self.commission_entry},
+            "name",
+        )
+
+        # --- Purchase Invoice. ---
         pi_name = f"PI-{self.uid}"
         if not frappe.db.exists("Purchase Invoice", pi_name):
             pi = frappe.get_doc({
@@ -100,23 +152,26 @@ class TestCommissionPayoutEvent(IntegrationTestCase):
                 "supplier": self.supplier,
                 "company": self.company,
                 "posting_date": frappe.utils.nowdate(),
-                "items": [{
-                    "item_code": "Commission",
-                    "qty": 1,
-                    "rate": 1000,
-                }],
+                "items": [{"item_code": self.commission_item, "qty": 1, "rate": 1000}],
             })
             pi.insert(ignore_permissions=True)
             pi.submit()
         self.purchase_invoice = pi_name
 
-        # Link settlement to purchase invoice.
         frappe.db.set_value("Commission Settlement", self.settlement, {
             "settlement_document_type": "Purchase Invoice",
             "settlement_document": self.purchase_invoice,
         }, update_modified=False)
 
-        # Create a test payment entry.
+        # --- Payment Entry accounts. ---
+        bank_account = frappe.db.get_value("Account", {"account_type": "Bank", "company": self.company}, "name")
+        payable_account = frappe.db.get_value("Account", {"account_type": "Payable", "company": self.company}, "name")
+        assert bank_account is not None
+        assert payable_account is not None
+        self.bank_account = bank_account
+        self.payable_account = payable_account
+
+        # --- Payment Entry. ---
         pe_name = f"PE-{self.uid}"
         if not frappe.db.exists("Payment Entry", pe_name):
             pe = frappe.get_doc({
@@ -129,8 +184,8 @@ class TestCommissionPayoutEvent(IntegrationTestCase):
                 "posting_date": frappe.utils.nowdate(),
                 "paid_amount": 1000,
                 "received_amount": 1000,
-                "paid_from": frappe.db.get_value("Account", {"account_type": "Bank", "company": self.company}, "name"),
-                "paid_to": frappe.db.get_value("Account", {"account_type": "Payable", "company": self.company}, "name"),
+                "paid_from": self.bank_account,
+                "paid_to": self.payable_account,
                 "references": [{
                     "reference_doctype": "Purchase Invoice",
                     "reference_name": self.purchase_invoice,
@@ -141,45 +196,45 @@ class TestCommissionPayoutEvent(IntegrationTestCase):
             pe.submit()
         self.payment_entry = pe_name
 
-        # Get the payment entry reference row name.
         self.source_row = frappe.db.get_value(
             "Payment Entry Reference",
             {"parent": self.payment_entry, "reference_name": self.purchase_invoice},
             "name",
         )
+        assert self.source_row is not None
 
     def tearDown(self):
-        # Clean up test records.
-        # Delete in reverse dependency order.
-        if hasattr(self, "payment_entry") and frappe.db.exists("Payment Entry", self.payment_entry):
-            pe = frappe.get_doc("Payment Entry", self.payment_entry)
-            if pe.docstatus == 1:
-                pe.cancel()
-            frappe.delete_doc("Payment Entry", self.payment_entry, ignore_permissions=True)
-        if hasattr(self, "purchase_invoice") and frappe.db.exists("Purchase Invoice", self.purchase_invoice):
-            pi = frappe.get_doc("Purchase Invoice", self.purchase_invoice)
-            if pi.docstatus == 1:
-                pi.cancel()
-            frappe.delete_doc("Purchase Invoice", self.purchase_invoice, ignore_permissions=True)
-        if hasattr(self, "settlement") and frappe.db.exists("Commission Settlement", self.settlement):
-            sett = frappe.get_doc("Commission Settlement", self.settlement)
-            if sett.docstatus == 1:
-                sett.cancel()
-            frappe.delete_doc("Commission Settlement", self.settlement, ignore_permissions=True)
-        if hasattr(self, "commission_entry") and frappe.db.exists("Commission Entry", self.commission_entry):
-            ce = frappe.get_doc("Commission Entry", self.commission_entry)
-            if ce.docstatus == 1:
-                ce.cancel()
-            frappe.delete_doc("Commission Entry", self.commission_entry, ignore_permissions=True)
-        if hasattr(self, "supplier") and frappe.db.exists("Supplier", self.supplier):
-            frappe.delete_doc("Supplier", self.supplier, ignore_permissions=True)
-        if hasattr(self, "sales_person") and frappe.db.exists("Sales Person", self.sales_person):
-            frappe.delete_doc("Sales Person", self.sales_person, ignore_permissions=True)
-        if hasattr(self, "company") and frappe.db.exists("Company", self.company):
-            frappe.delete_doc("Company", self.company, ignore_permissions=True)
+        for doctype, name in [
+            ("Payment Entry", getattr(self, "payment_entry", None)),
+            ("Purchase Invoice", getattr(self, "purchase_invoice", None)),
+            ("Commission Settlement", getattr(self, "settlement", None)),
+            ("Commission Entry", getattr(self, "commission_entry", None)),
+            ("Sales Invoice", getattr(self, "sales_invoice", None)),
+        ]:
+            if name and frappe.db.exists(doctype, name):
+                doc = frappe.get_doc(doctype, name)
+                if getattr(doc, "docstatus", 0) == 1:
+                    try:
+                        doc.cancel()
+                    except Exception:
+                        pass
+                try:
+                    frappe.delete_doc(doctype, name, ignore_permissions=True)
+                except Exception:
+                    pass
+        for doctype, name in [
+            ("Supplier", getattr(self, "supplier", None)),
+            ("Customer", getattr(self, "customer", None)),
+            ("Sales Person", getattr(self, "sales_person", None)),
+            ("Company", getattr(self, "company", None)),
+        ]:
+            if name and frappe.db.exists(doctype, name):
+                try:
+                    frappe.delete_doc(doctype, name, ignore_permissions=True)
+                except Exception:
+                    pass
 
     def _make_event(self, event_key, **overrides):
-        """Helper to create a payout event with sensible defaults."""
         data = {
             "doctype": "Commission Payout Event",
             "event_key": event_key,

@@ -243,11 +243,6 @@ class CommissionPayoutEvent(Document):
                         self.source_currency, alloc_currency
                     )
                 )
-                frappe.throw(
-                    _("Source currency ({0}) must match the Payment Entry Reference allocated currency ({1}).").format(
-                        self.source_currency, alloc_currency
-                    )
-                )
             precision = _currency_precision(self.source_currency)
             if flt(allocated_amount, precision) != flt(self.source_amount, precision):
                 frappe.throw(
