@@ -239,6 +239,12 @@ class TestPayoutLifecycle(IntegrationTestCase):
                     frappe.delete_doc(doctype, name, ignore_permissions=True)
                 except Exception:
                     pass
+        # Remove any committed Commission Payout Events created by this test
+        # (test-only direct SQL; production immutability is not weakened).
+        try:
+            frappe.db.sql("DELETE FROM `tabCommission Payout Event` WHERE event_key LIKE %s", (f"%{self.uid}%",))
+        except Exception:
+            pass
         # Restore Commission Settings original values.
         try:
             cs = frappe.get_single("Commission Settings")
@@ -490,126 +496,199 @@ class TestPayoutLifecycle(IntegrationTestCase):
                 pass
 
     # ------------------------------------------------------------------
-    # MariaDB concurrency tests
+    # MariaDB concurrency tests (genuinely concurrent via worker threads)
     # ------------------------------------------------------------------
     def test_concurrent_event_creation_mariadb(self):
         if frappe.db.db_type != "mariadb":
             self.skipTest("MariaDB locking reads required for concurrency test")
+
+        import threading
 
         from sales_commission_management.sales_commission_management.payout.event_factory import get_or_create_payout_event
 
         event_key = f"lc-concurrent-create-{self.uid}"
         event_data = self._event_data(event_key)
 
-        # Commit baseline so both connections share a clean starting point.
+        # Commit baseline fixtures so worker connections can see them.
         frappe.db.commit()
 
+        site = frappe.local.site
         primary = frappe.local.db
-        frappe.connect()
-        secondary = frappe.local.db
-        try:
-            # Secondary establishes its transaction snapshot before primary commits.
-            secondary_count_before = secondary.sql(
-                "SELECT COUNT(*) FROM `tabCommission Payout Event` WHERE event_key = %s",
-                (event_key,),
-            )[0][0]
-            self.assertEqual(secondary_count_before, 0)
 
-            # Primary creates the event and commits.
-            frappe.local.db = primary
-            primary_name = get_or_create_payout_event(dict(event_data))
-            frappe.db.commit()
+        results = [None, None]
+        errors = [None, None]
+        ready_barrier = threading.Barrier(2)
+        ready_event = threading.Event()
+        start_event = threading.Event()
 
-            # Secondary attempts creation: the locking read must resolve to the
-            # same committed event instead of inserting a duplicate.
-            frappe.local.db = secondary
-            secondary_name = get_or_create_payout_event(dict(event_data))
+        def worker(idx):
             try:
+                frappe.init(site=site)
+                frappe.connect()
+                frappe.set_user("Administrator")
+                ready_barrier.wait(timeout=30)
+                ready_event.set()
+                start_event.wait(timeout=30)
+                name = get_or_create_payout_event(dict(event_data))
                 frappe.db.commit()
-            except Exception:
-                frappe.db.rollback()
+                results[idx] = name
+            except Exception as exc:  # noqa: BLE001
+                errors[idx] = exc
+                try:
+                    frappe.db.rollback()
+                except Exception:
+                    pass
+            finally:
+                try:
+                    frappe.local.db.close()
+                except Exception:
+                    pass
 
-            # Both workers resolve to the same event name.
-            self.assertEqual(primary_name, secondary_name)
+        t0 = threading.Thread(target=worker, args=(0,), daemon=True)
+        t1 = threading.Thread(target=worker, args=(1,), daemon=True)
+        t0.start()
+        t1.start()
+        try:
+            if not ready_event.wait(timeout=30):
+                raise RuntimeError("Worker threads did not become ready")
+            start_event.set()
+            t0.join(timeout=60)
+            t1.join(timeout=60)
 
             frappe.local.db = primary
-            # Exactly one payout event exists for the key.
+
+            for err in errors:
+                if err is not None:
+                    raise err
+
+            self.assertIsNotNone(results[0])
+            self.assertIsNotNone(results[1])
+            self.assertEqual(results[0], results[1])
+
             count = frappe.db.count("Commission Payout Event", {"event_key": event_key})
             self.assertEqual(count, 1)
 
-            # The committed event's payload matches the requested payload.
-            doc = frappe.get_doc("Commission Payout Event", primary_name)
+            doc = frappe.get_doc("Commission Payout Event", results[0])
             self.assertEqual(doc.source_amount, event_data["source_amount"])
             self.assertEqual(doc.settlement_amount, event_data["settlement_amount"])
             self.assertEqual(doc.commission_amount, event_data["commission_amount"])
             self.assertEqual(doc.company_amount, event_data["company_amount"])
             self.assertEqual(doc.source_currency, event_data["source_currency"])
         finally:
+            start_event.set()
             try:
-                secondary.rollback()
-                secondary.close()
+                t0.join(timeout=10)
+            except Exception:
+                pass
+            try:
+                t1.join(timeout=10)
             except Exception:
                 pass
             frappe.local.db = primary
+            try:
+                frappe.db.sql("DELETE FROM `tabCommission Payout Event` WHERE event_key = %s", (event_key,))
+                frappe.db.commit()
+            except Exception:
+                try:
+                    frappe.db.rollback()
+                except Exception:
+                    pass
+            # Ensure committed fixtures are removed (test-only).
+            try:
+                self.tearDown()
+                frappe.db.commit()
+            except Exception:
+                try:
+                    frappe.db.rollback()
+                except Exception:
+                    pass
 
     def test_concurrent_reversal_mariadb(self):
         if frappe.db.db_type != "mariadb":
             self.skipTest("MariaDB locking reads required for concurrency test")
 
+        import threading
+
         from frappe.utils import flt
-        from sales_commission_management.sales_commission_management.payout.event_factory import get_or_create_payout_event
         from sales_commission_management.sales_commission_management.payout.lifecycle import create_and_submit_payout_event
 
         # Create and submit an original payout event.
         orig_name = self._make_submitted_payout_event(f"lc-concurrent-rev-orig-{self.uid}")
         frappe.db.commit()
 
+        site = frappe.local.site
         primary = frappe.local.db
-        frappe.connect()
-        secondary = frappe.local.db
-        try:
-            # Secondary establishes its transaction snapshot before primary commits a reversal.
-            frappe.local.db = secondary
-            secondary.sql("SELECT 1")
 
-            # Primary creates and submits a reversal of 600, then commits.
-            frappe.local.db = primary
-            rev_data_a = self._event_data(f"lc-concurrent-rev-a-{self.uid}")
-            rev_data_a["event_type"] = "Payout Reversal"
-            rev_data_a["reversal_of"] = orig_name
-            rev_data_a["commission_amount"] = 600
-            rev_data_a["settlement_amount"] = 600
-            rev_data_a["company_amount"] = 600
-            rev_name_a = create_and_submit_payout_event(rev_data_a)
-            frappe.db.commit()
+        rev_data_a = self._event_data(f"lc-concurrent-rev-a-{self.uid}")
+        rev_data_a["event_type"] = "Payout Reversal"
+        rev_data_a["reversal_of"] = orig_name
+        rev_data_a["commission_amount"] = 600
+        rev_data_a["settlement_amount"] = 600
+        rev_data_a["company_amount"] = 600
 
-            # Secondary attempts a reversal of 600: cumulative (600+600=1200)
-            # exceeds the original (1000) and must be rejected.
-            frappe.local.db = secondary
-            rev_data_b = self._event_data(f"lc-concurrent-rev-b-{self.uid}")
-            rev_data_b["event_type"] = "Payout Reversal"
-            rev_data_b["reversal_of"] = orig_name
-            rev_data_b["commission_amount"] = 600
-            rev_data_b["settlement_amount"] = 600
-            rev_data_b["company_amount"] = 600
-            with self.assertRaises(frappe.ValidationError):
-                get_or_create_payout_event(rev_data_b)
+        rev_data_b = self._event_data(f"lc-concurrent-rev-b-{self.uid}")
+        rev_data_b["event_type"] = "Payout Reversal"
+        rev_data_b["reversal_of"] = orig_name
+        rev_data_b["commission_amount"] = 600
+        rev_data_b["settlement_amount"] = 600
+        rev_data_b["company_amount"] = 600
+
+        results = [None, None]
+        ready_barrier = threading.Barrier(2)
+        ready_event = threading.Event()
+        start_event = threading.Event()
+
+        def worker(idx, rev_data):
             try:
-                frappe.db.rollback()
-            except Exception:
-                pass
+                frappe.init(site=site)
+                frappe.connect()
+                frappe.set_user("Administrator")
+                ready_barrier.wait(timeout=30)
+                ready_event.set()
+                start_event.wait(timeout=30)
+                name = create_and_submit_payout_event(dict(rev_data))
+                frappe.db.commit()
+                results[idx] = ("ok", name)
+            except Exception as exc:  # noqa: BLE001
+                try:
+                    frappe.db.rollback()
+                except Exception:
+                    pass
+                results[idx] = ("err", exc)
+            finally:
+                try:
+                    frappe.local.db.close()
+                except Exception:
+                    pass
+
+        t0 = threading.Thread(target=worker, args=(0, rev_data_a), daemon=True)
+        t1 = threading.Thread(target=worker, args=(1, rev_data_b), daemon=True)
+        t0.start()
+        t1.start()
+        try:
+            if not ready_event.wait(timeout=30):
+                raise RuntimeError("Worker threads did not become ready")
+            start_event.set()
+            t0.join(timeout=60)
+            t1.join(timeout=60)
 
             frappe.local.db = primary
-            # Only the first committed reversal remains.
+
+            statuses = [r[0] for r in results if r is not None]
+            self.assertEqual(sorted(statuses), ["err", "ok"])
+
+            ok_result = [r for r in results if r and r[0] == "ok"][0]
+            err_result = [r for r in results if r and r[0] == "err"][0]
+            self.assertTrue(isinstance(err_result[1], frappe.ValidationError))
+
             reversals = frappe.db.get_all(
                 "Commission Payout Event",
                 filters={"reversal_of": orig_name, "docstatus": 1},
                 pluck="name",
             )
             self.assertEqual(len(reversals), 1)
-            self.assertEqual(reversals[0], rev_name_a)
+            self.assertEqual(reversals[0], ok_result[1])
 
-            # Combined reversal amounts do not exceed the original in any currency.
             total_comm = frappe.db.sql(
                 "SELECT COALESCE(SUM(commission_amount), 0) FROM `tabCommission Payout Event` "
                 "WHERE reversal_of = %s AND docstatus = 1",
@@ -625,16 +704,38 @@ class TestPayoutLifecycle(IntegrationTestCase):
                 "WHERE reversal_of = %s AND docstatus = 1",
                 (orig_name,),
             )[0][0]
-            self.assertLessEqual(flt(total_comm), 1000)
-            self.assertLessEqual(flt(total_sett), 1000)
-            self.assertLessEqual(flt(total_comp), 1000)
+            self.assertEqual(flt(total_comm), 600)
+            self.assertEqual(flt(total_sett), 600)
+            self.assertEqual(flt(total_comp), 600)
         finally:
+            start_event.set()
             try:
-                secondary.rollback()
-                secondary.close()
+                t0.join(timeout=10)
+            except Exception:
+                pass
+            try:
+                t1.join(timeout=10)
             except Exception:
                 pass
             frappe.local.db = primary
+            try:
+                frappe.db.sql("DELETE FROM `tabCommission Payout Event` WHERE name = %s", (orig_name,))
+                frappe.db.sql("DELETE FROM `tabCommission Payout Event` WHERE reversal_of = %s", (orig_name,))
+                frappe.db.commit()
+            except Exception:
+                try:
+                    frappe.db.rollback()
+                except Exception:
+                    pass
+            # Ensure committed fixtures are removed (test-only).
+            try:
+                self.tearDown()
+                frappe.db.commit()
+            except Exception:
+                try:
+                    frappe.db.rollback()
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # Reversal amount / precision tests
