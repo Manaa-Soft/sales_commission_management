@@ -1,4 +1,6 @@
 import frappe
+import hashlib
+import json
 from frappe import _
 from frappe.model.document import Document
 
@@ -19,13 +21,10 @@ class CommissionPayoutEvent(Document):
         if self.is_new():
             return
 
-        # Allow Draft -> Submitted transition, but only if no financial/source
-        # fields have changed.
+        # Allow Draft -> Submitted transition, but only if no fields have changed.
         if self.docstatus == 1:
-            # Check if this is a submission (was previously draft).
             db_docstatus = frappe.db.get_value(self.doctype, self.name, "docstatus")
             if db_docstatus == 0:
-                # This is a submission - allow it, but verify immutability.
                 self._verify_no_field_changes()
                 return
 
@@ -38,23 +37,56 @@ class CommissionPayoutEvent(Document):
             sett = frappe.get_doc("Commission Settlement", self.settlement)
             if self.company and sett.company != self.company:
                 frappe.throw(_("Company must match the settlement's company."))
+            if self.beneficiary_type and sett.beneficiary_type != self.beneficiary_type:
+                frappe.throw(_("Beneficiary type must match the settlement."))
+            if self.beneficiary and (sett.sales_person or sett.sales_partner) != self.beneficiary:
+                frappe.throw(_("Beneficiary must match the settlement's beneficiary."))
             if self.commission_entry:
                 entry = frappe.get_doc("Commission Entry", self.commission_entry)
                 if entry.company != sett.company:
                     frappe.throw(_("Commission Entry company must match settlement company."))
-        if self.settlement_item and self.settlement:
-            # Verify settlement_item belongs to settlement.
-            items = frappe.get_all(
-                "Commission Settlement Item",
-                filters={"parent": self.settlement},
-                pluck="name",
-            )
-            if self.settlement_item not in (items or []):
-                frappe.throw(_("Settlement item does not belong to the referenced settlement."))
+                # Verify settlement item belongs to the referenced settlement AND entry.
+                if self.settlement_item:
+                    item = frappe.get_value(
+                        "Commission Settlement Item",
+                        self.settlement_item,
+                        ["parent", "commission_ledger_entry"],
+                        as_dict=True,
+                    )
+                    if not item:
+                        frappe.throw(_("Settlement item not found."))
+                    if item.parent != self.settlement:
+                        frappe.throw(_("Settlement item does not belong to the referenced settlement."))
+                    if item.commission_ledger_entry != self.commission_entry:
+                        frappe.throw(_("Settlement item does not match the referenced commission entry."))
         # Reversal validation.
         if self.event_type in ("Payout Reversal", "Recovery Reversal"):
             if not self.reversal_of:
                 frappe.throw(_("Reversal events must reference the original event."))
+            # Validate original event exists and is submitted.
+            orig = frappe.get_doc("Commission Payout Event", self.reversal_of)
+            if orig.docstatus != 1:
+                frappe.throw(_("Original event must be submitted."))
+            if orig.event_type not in ("Payout", "Recovery"):
+                frappe.throw(_("Reversal type must match original event type."))
+            if orig.company != self.company:
+                frappe.throw(_("Company must match original event."))
+            if orig.beneficiary != self.beneficiary:
+                frappe.throw(_("Beneficiary must match original event."))
+            if orig.settlement_currency != self.settlement_currency:
+                frappe.throw(_("Settlement currency must match original event."))
+            # Check cumulative reversal doesn't exceed original.
+            existing_reversals = frappe.get_all(
+                "Commission Payout Event",
+                filters={
+                    "reversal_of": self.reversal_of,
+                    "docstatus": 1,
+                },
+                fields=["commission_amount"],
+            )
+            total_reversed = sum(flt(r.commission_amount) for r in existing_reversals)
+            if total_reversed + flt(self.commission_amount) > flt(orig.commission_amount):
+                frappe.throw(_("Cumulative reversal exceeds original event amount."))
         else:
             if self.reversal_of:
                 frappe.throw(_("Only reversal events may reference an original event."))
@@ -82,21 +114,22 @@ class CommissionPayoutEvent(Document):
                 frappe.throw(_("FX rate must be 1.0 when from and to currencies are the same."))
 
     def _verify_no_field_changes(self):
-        """Verify that no financial/source fields changed during submission."""
-        # During submission, Frappe may set docstatus and modified.
-        # We check that core financial fields haven't been altered.
+        """Verify that no fields changed during submission."""
         db_values = frappe.db.get_value(
             self.doctype,
             self.name,
             [
-                "event_key", "event_type", "settlement", "settlement_item",
-                "commission_entry", "company", "beneficiary_type", "beneficiary",
+                "event_key", "event_type", "posting_date", "evidence_level",
+                "settlement", "settlement_item", "commission_entry",
+                "company", "beneficiary_type", "beneficiary",
                 "source_doctype", "source_name", "source_row",
-                "source_currency", "source_amount", "settlement_currency",
-                "settlement_amount", "commission_currency", "commission_amount",
-                "company_currency", "company_amount", "fx_from_currency",
-                "fx_to_currency", "fx_rate", "fx_date", "fx_source",
-                "evidence_level", "reversal_of",
+                "reversal_of", "source_currency", "source_amount",
+                "settlement_currency", "settlement_amount",
+                "commission_currency", "commission_amount",
+                "company_currency", "company_amount",
+                "fx_from_currency", "fx_to_currency", "fx_rate",
+                "fx_date", "fx_source", "remarks", "evidence_attachment",
+                "naming_series",
             ],
             as_dict=True,
         )
@@ -112,7 +145,6 @@ class CommissionPayoutEvent(Document):
         if not self.is_new():
             db_docstatus = frappe.db.get_value(self.doctype, self.name, "docstatus")
             if db_docstatus == 0 and self.docstatus == 1:
-                # Allow submission.
                 return
             frappe.throw(_("Commission Payout Event records are immutable."))
 
