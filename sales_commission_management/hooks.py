@@ -34,6 +34,7 @@ doc_events = {
         "on_submit": [
             "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.generate_commission_on_payment",
             "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.update_commission_payment_status",
+            "sales_commission_management.sales_commission_management.payout.supplier_payment.process_supplier_payment_entry",
         ],
         "on_cancel": "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.update_commission_payment_status",
     },

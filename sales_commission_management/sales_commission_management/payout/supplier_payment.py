@@ -812,14 +812,16 @@ def _previously_paid_for_item(settlement_item_name):
     """
     if not settlement_item_name:
         return 0.0
-    try:
-        rows = frappe.get_all(
-            "Commission Payout Event",
-            filters={"settlement_item": settlement_item_name, "docstatus": 1},
-            fields=["event_type", "settlement_amount"],
-        )
-    except Exception:
-        return 0.0
+    # Propagate database errors; only return 0.0 when the query succeeds and
+    # no payout events exist.
+    rows = frappe.get_all(
+        "Commission Payout Event",
+        filters={
+            "settlement_item": settlement_item_name,
+            "docstatus": 1,
+        },
+        fields=["event_type", "settlement_amount"],
+    )
     paid = 0.0
     for r in rows or []:
         et = _get_attr(r, "event_type", None)
@@ -828,9 +830,24 @@ def _previously_paid_for_item(settlement_item_name):
             paid += amt
         elif et == "Payout Reversal":
             paid -= amt
+    # A negative net payout balance indicates a reversal inconsistency or
+    # ledger problem. Reject it beyond the configured currency precision
+    # instead of silently clamping to zero.
+    from sales_commission_management.sales_commission_management.utils import (
+        currency_precision as _cp_prev,
+    )
+
+    _prec = _cp_prev()
+    _minor = _minor_unit(_prec)
+    if paid < 0 and abs(paid) > _minor:
+        frappe.throw(
+            _("Negative net payout balance for settlement item {0}: {1}.").format(
+                settlement_item_name, paid
+            )
+        )
     if paid < 0:
         paid = 0.0
-    return flt(paid)
+    return flt(paid, _prec)
 
 
 def _get_settlement_items(settlement):
@@ -838,19 +855,17 @@ def _get_settlement_items(settlement):
     sett_name = _get_attr(settlement, "name", None)
     if not sett_name:
         return []
-    try:
-        return frappe.get_all(
-            "Commission Settlement Item",
-            filters={"parent": sett_name},
-            fields=[
-                "name",
-                "commission_ledger_entry",
-                "amount_included",
-                "already_settled_amount",
-            ],
-        )
-    except Exception:
-        return []
+    # Propagate database errors instead of silently returning an empty list.
+    return frappe.get_all(
+        "Commission Settlement Item",
+        filters={"parent": sett_name},
+        fields=[
+            "name",
+            "commission_ledger_entry",
+            "amount_included",
+            "already_settled_amount",
+        ],
+    ) or []
 
 
 def process_supplier_payment_entry(payment_entry):
@@ -902,46 +917,29 @@ def process_supplier_payment_entry(payment_entry):
     for pr in references:
         ref_name = _get_attr(pr, "name", None)
         # --- Concurrency protection: lock the Payment Entry Reference row. ---
-        if ref_name:
-            try:
-                frappe.db.sql(
-                    "SELECT name FROM `tabPayment Entry Reference` WHERE name = %s FOR UPDATE",
-                    (ref_name,),
+        if not ref_name:
+            frappe.throw(_("Payment Entry Reference row name is required."))
+        # Lock must be acquired before checking existing events and calculating
+        # previous payments. Propagate any locking failure so the transaction
+        # rolls back; never continue without the lock.
+        lock_rows = frappe.db.sql(
+            "SELECT parent FROM `tabPayment Entry Reference` WHERE name = %s FOR UPDATE",
+            (ref_name,),
+        )
+        if not lock_rows:
+            frappe.throw(
+                _("Payment Entry Reference {0} not found.").format(ref_name)
+            )
+        locked_parent = lock_rows[0][0] if isinstance(lock_rows[0], (tuple, list)) else lock_rows[0]
+        if locked_parent != _get_attr(pe, "name", None):
+            frappe.throw(
+                _("Payment Entry Reference {0} does not belong to this Payment Entry.").format(
+                    ref_name
                 )
-            except Exception:
-                pass
+            )
 
-        # --- Idempotency: skip if already fully allocated. ---
         allocated_amount = flt(_get_attr(pr, "allocated_amount", 0))
         if allocated_amount <= 0:
-            continue
-        existing_total = 0.0
-        if ref_name:
-            try:
-                rows = frappe.get_all(
-                    "Commission Payout Event",
-                    filters={"source_row": ref_name, "docstatus": 1},
-                    fields=["source_amount"],
-                )
-                existing_total = sum(flt(_get_attr(r, "source_amount", 0)) for r in (rows or []))
-            except Exception:
-                existing_total = 0.0
-        # Resolve source currency precision from the Payment Entry.
-        try:
-            sc = _get_attr(pe, "paid_to_account_currency", None) or _get_attr(
-                pe, "party_account_currency", None
-            )
-            from sales_commission_management.sales_commission_management.utils import (
-                currency_precision as _cp3,
-            )
-
-            prec = _cp3(sc) if sc else 2
-        except Exception:
-            prec = 2
-        if flt(existing_total, prec) > 0:
-            # Already processed (at least partially) for this reference; skip
-            # to preserve idempotency. Partial failures roll back the whole
-            # transaction, so any submitted event implies full processing.
             continue
 
         settlement = get_supplier_settlement_for_reference(pe, pr)
@@ -950,8 +948,76 @@ def process_supplier_payment_entry(payment_entry):
 
         resolved = resolve_supplier_payment_currencies(pe, pr)
 
+        # --- Idempotency: validate existing events before skipping. ---
+        # Narrow filters to the full source identity and event type.
+        try:
+            existing_rows = frappe.get_all(
+                "Commission Payout Event",
+                filters={
+                    "source_doctype": "Payment Entry",
+                    "source_name": _get_attr(pe, "name", None),
+                    "source_row": ref_name,
+                    "docstatus": 1,
+                },
+                fields=[
+                    "event_type",
+                    "source_amount",
+                    "settlement_amount",
+                    "commission_amount",
+                    "company_amount",
+                ],
+            )
+        except Exception as exc:
+            frappe.throw(
+                _("Failed to look up existing payout events: {0}").format(str(exc))
+            )
+        # Net totals in all four currencies, accounting for reversals.
+        net_src = 0.0
+        net_sett = 0.0
+        net_comm = 0.0
+        net_comp = 0.0
+        has_existing = bool(existing_rows)
+        for r in existing_rows or []:
+            et = _get_attr(r, "event_type", None)
+            sign = 1.0 if et == "Payout" else (-1.0 if et == "Payout Reversal" else 0.0)
+            net_src += sign * flt(_get_attr(r, "source_amount", 0))
+            net_sett += sign * flt(_get_attr(r, "settlement_amount", 0))
+            net_comm += sign * flt(_get_attr(r, "commission_amount", 0))
+            net_comp += sign * flt(_get_attr(r, "company_amount", 0))
+
+        from sales_commission_management.sales_commission_management.utils import (
+            currency_precision as _cp_id,
+        )
+
+        psrc = _cp_id(resolved["source_currency"])
+        psett = _cp_id(resolved["settlement_currency"])
+        pcomm = _cp_id(resolved["commission_currency"])
+        pcomp = _cp_id(resolved["company_currency"])
+
+        if has_existing:
+            fully_reconciles = (
+                flt(net_src, psrc) == flt(resolved["source_amount"], psrc)
+                and flt(net_sett, psett) == flt(resolved["settlement_amount"], psett)
+                and flt(net_comm, pcomm) == flt(resolved["commission_amount"], pcomm)
+                and flt(net_comp, pcomp) == flt(resolved["company_amount"], pcomp)
+            )
+            if fully_reconciles:
+                # Idempotent: already fully processed.
+                continue
+            # Partial or inconsistent existing events: fail closed.
+            frappe.throw(
+                _("Existing payout events for reference {0} do not fully reconcile; "
+                  "refusing to process partially.").format(ref_name)
+            )
+
         # Build settlement items with derived previous payments.
         sett_items = _get_settlement_items(settlement)
+        if not sett_items:
+            frappe.throw(
+                _("Commission Settlement {0} has no items.").format(
+                    _get_attr(settlement, "name", None)
+                )
+            )
         items = []
         item_to_entry = {}
         for si in sett_items:
@@ -971,7 +1037,11 @@ def process_supplier_payment_entry(payment_entry):
             item_to_entry[si_name] = ce_name
 
         if not items:
-            continue
+            frappe.throw(
+                _("Commission Settlement {0} has no eligible items.").format(
+                    _get_attr(settlement, "name", None)
+                )
+            )
 
         allocations = allocate_supplier_payment_across_items(
             payment_allocation=resolved["settlement_amount"],
@@ -1023,8 +1093,10 @@ def process_supplier_payment_entry(payment_entry):
                 "fx_from_currency": resolved["commission_currency"],
                 "fx_to_currency": resolved["settlement_currency"],
                 "fx_rate": resolved["settlement_fx_rate"],
-                "fx_date": _get_attr(pe, "posting_date", None) or frappe.utils.nowdate(),
-                "fx_source": "Payment Entry",
+                "fx_date": _get_attr(settlement, "settlement_fx_date", None)
+                or _get_attr(pe, "posting_date", None)
+                or frappe.utils.nowdate(),
+                "fx_source": "Commission Settlement",
             }
             # Remove None-valued optional? keep; factory validates required.
             name = create_and_submit_payout_event(payload)
@@ -1036,7 +1108,12 @@ def process_supplier_payment_entry(payment_entry):
         try:
             ev_rows = frappe.get_all(
                 "Commission Payout Event",
-                filters={"source_row": ref_name, "docstatus": 1},
+                filters={
+                    "source_doctype": "Payment Entry",
+                    "source_name": _get_attr(pe, "name", None),
+                    "source_row": ref_name,
+                    "docstatus": 1,
+                },
                 fields=[
                     "source_amount",
                     "settlement_amount",
