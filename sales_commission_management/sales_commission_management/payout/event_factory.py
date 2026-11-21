@@ -25,26 +25,39 @@ def generate_event_key(source_doctype, source_name, source_row, settlement, sett
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def get_or_create_payout_event(event_key, payload, **kwargs):
+def get_or_create_payout_event(event_data):
     """Retrieve an existing payout event or create a new one.
 
     Idempotent: calling twice with the same key returns the same event.
-    Payload is mandatory for verification. Handles concurrent inserts by
-    catching DuplicateEntryError and retrieving the existing event using
-    a locking read. Verifies that the existing event's payload matches.
+    event_data must be a dict containing at minimum 'event_key' and the
+    financial/source fields. The same canonical data is used for both
+    insertion and later comparison.
+
+    Handles concurrent inserts by catching DuplicateEntryError and
+    retrieving the existing event using a locking read. Verifies that
+    the existing event's payload matches the requested payload.
     """
-    if not payload:
-        frappe.throw(_("Payload is required for payout event creation."))
+    if not event_data or not isinstance(event_data, dict):
+        frappe.throw(_("Event data must be a non-empty dict."))
+    if not event_data.get("event_key"):
+        frappe.throw(_("Event Key is required in event data."))
+
+    event_key = event_data["event_key"]
+
+    # Canonical payload: all fields except doctype and event_key.
+    canonical_payload = {k: v for k, v in event_data.items() if k not in ("doctype", "event_key")}
 
     existing = frappe.db.get_value("Commission Payout Event", {"event_key": event_key}, "name")
     if existing:
-        _verify_payload_match(existing, payload)
+        _verify_payload_match(existing, canonical_payload)
         return existing
 
-    kwargs["event_key"] = event_key
-    kwargs["doctype"] = "Commission Payout Event"
+    # Build the document from the canonical data.
+    doc_data = dict(canonical_payload)
+    doc_data["doctype"] = "Commission Payout Event"
+    doc_data["event_key"] = event_key
     try:
-        doc = frappe.get_doc(kwargs)
+        doc = frappe.get_doc(doc_data)
         doc.insert(ignore_permissions=True)
         return doc.name
     except frappe.DuplicateEntryError:
@@ -61,7 +74,7 @@ def get_or_create_payout_event(event_key, payload, **kwargs):
         )
         if locked:
             existing = locked[0].name
-            _verify_payload_match(existing, payload)
+            _verify_payload_match(existing, canonical_payload)
             return existing
         raise
 
@@ -69,16 +82,23 @@ def get_or_create_payout_event(event_key, payload, **kwargs):
 def _verify_payload_match(existing_name, payload):
     """Verify that an existing event's payload matches the requested payload.
 
-    Raises if any financial or source field differs.
+    Uses a locking read to get current data. Fails closed if the record
+    cannot be retrieved.
     """
-    db_values = frappe.db.get_value(
-        "Commission Payout Event",
-        existing_name,
-        list(payload.keys()),
+    locked = frappe.db.sql(
+        """
+        SELECT *
+        FROM `tabCommission Payout Event`
+        WHERE name = %s
+        FOR UPDATE
+        """,
+        (existing_name,),
         as_dict=True,
     )
-    if not db_values:
-        return
+    if not locked:
+        frappe.throw(_("Could not retrieve existing payout event {0}.").format(existing_name))
+
+    db_values = locked[0]
     for field, requested_value in payload.items():
         db_value = db_values.get(field)
         if db_value != requested_value:

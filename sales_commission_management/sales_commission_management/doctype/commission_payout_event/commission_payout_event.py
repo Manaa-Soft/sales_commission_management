@@ -148,7 +148,7 @@ class CommissionPayoutEvent(Document):
         if self.company_amount and not self.company_currency:
             frappe.throw(_("Company currency is required when company amount is set."))
         # FX snapshot consistency.
-        if self.fx_from_currency or self.fx_to_currency:
+        if self.fx_from_currency or self.fx_to_currency or self.fx_rate:
             if not self.fx_from_currency or not self.fx_to_currency:
                 frappe.throw(_("Both FX from and to currencies are required."))
             if not self.fx_rate:
