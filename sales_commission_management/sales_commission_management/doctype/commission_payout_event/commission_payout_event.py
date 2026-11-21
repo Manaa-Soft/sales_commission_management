@@ -4,6 +4,7 @@ import json
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt
+from sales_commission_management.sales_commission_management.utils import currency_precision as _currency_precision
 
 
 class CommissionPayoutEvent(Document):
@@ -218,7 +219,28 @@ class CommissionPayoutEvent(Document):
             allocated_amount = frappe.db.get_value(
                 "Payment Entry Reference", self.source_row, "allocated_amount"
             )
-            if allocated_amount is not None and flt(allocated_amount) != flt(self.source_amount):
+            # Fail closed: a missing allocated amount is not a valid match.
+            if allocated_amount is None:
+                frappe.throw(
+                    _("Source row has no allocated amount.")
+                )
+            # Fetch the Payment Entry for currency context.
+            pe = frappe.get_doc("Payment Entry", self.source_name)
+            # Currency alignment: the Payment Entry Reference's allocated amount
+            # is labelled in the party (paid_to) account currency. The event's
+            # source currency must represent the same currency, otherwise the
+            # numeric comparison is meaningless in a multi-currency payment.
+            alloc_currency = getattr(pe, "paid_to_account_currency", None)
+            if not alloc_currency:
+                alloc_currency = frappe.get_cached_value("Account", pe.paid_to, "account_currency")
+            if alloc_currency and self.source_currency and alloc_currency != self.source_currency:
+                frappe.throw(
+                    _("Source currency ({0}) must match the Payment Entry Reference allocated currency ({1}).").format(
+                        self.source_currency, alloc_currency
+                    )
+                )
+            precision = _currency_precision(self.source_currency)
+            if flt(allocated_amount, precision) != flt(self.source_amount, precision):
                 frappe.throw(
                     _("Source amount ({0}) must agree with the Payment Entry Reference allocated amount ({1}).").format(
                         self.source_amount, allocated_amount

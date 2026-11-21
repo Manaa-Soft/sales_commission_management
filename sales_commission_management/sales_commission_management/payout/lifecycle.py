@@ -68,13 +68,18 @@ def submit_payout_event(event_name, source_validation_fn=None):
     # Trusted server-side authorization: ordinary roles have no write/submit
     # permission on Commission Payout Event. We elevate only for this submit
     # and restore immediately, keeping direct user permissions restricted.
+    # Preserve and restore the previous permission-flag state instead of
+    # unconditionally resetting it (which could clobber an existing
+    # request-level permission context).
+    prev_doc_flag = bool(getattr(doc.flags, "ignore_permissions", False))
+    prev_req_flag = bool(getattr(frappe.flags, "ignore_permissions", False))
     doc.flags.ignore_permissions = True
     frappe.flags.ignore_permissions = True
     try:
         doc.submit()
     finally:
-        doc.flags.ignore_permissions = False
-        frappe.flags.ignore_permissions = False
+        doc.flags.ignore_permissions = prev_doc_flag
+        frappe.flags.ignore_permissions = prev_req_flag
 
     return doc.name
 
