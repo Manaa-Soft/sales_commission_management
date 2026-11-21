@@ -1,4 +1,4 @@
-import frappe
+﻿import frappe
 import hashlib
 import json
 import time
@@ -71,8 +71,15 @@ def _normalize_value(fieldname, value):
             except Exception:
                 return value
         return str(value) if value else None
-    if ft in ("Currency", "Float", "Percent"):
+    if ft == "Currency":
         from frappe.utils import flt
+        from sales_commission_management.sales_commission_management.utils import currency_precision
+        return flt(value, currency_precision())
+    if ft in ("Float", "Percent"):
+        from frappe.utils import flt
+        precision = getattr(field, "precision", None)
+        if precision:
+            return flt(value, int(precision))
         return flt(value, 6)
     if ft in ("Int", "Check"):
         return int(value) if value is not None else 0
@@ -148,18 +155,40 @@ def get_or_create_payout_event(event_data):
     doc_data = dict(canonical_payload)
     doc_data["doctype"] = "Commission Payout Event"
     doc_data["event_key"] = event_key
-    try:
-        doc = frappe.get_doc(doc_data)
-        doc.insert(ignore_permissions=True)
-        return doc.name
-    except frappe.DuplicateEntryError:
-        # Race condition: another worker inserted first. Use locking read with retry.
-        for attempt in range(3):
-            try:
+    # Try insertion with retry for contention errors.
+    for attempt in range(3):
+        try:
+            doc = frappe.get_doc(doc_data)
+            doc.insert(ignore_permissions=True)
+            return doc.name
+        except Exception as e:
+            # Check if it's a duplicate entry or contention error.
+            is_dup = isinstance(e, frappe.DuplicateEntryError)
+            is_contention = False
+            pending = [e]
+            seen = set()
+            while pending:
+                current = pending.pop()
+                if not isinstance(current, BaseException) or id(current) in seen:
+                    continue
+                seen.add(id(current))
+                args = getattr(current, "args", ()) or ()
+                if args and args[0] in (1205, 1213, "1205", "1213"):
+                    is_contention = True
+                    break
+                if args and isinstance(args[0], BaseException):
+                    pending.append(args[0])
+                for attr in ("orig", "__cause__", "__context__"):
+                    nested = getattr(current, attr, None)
+                    if isinstance(nested, BaseException):
+                        pending.append(nested)
+
+            if is_dup or is_contention:
+                # Race condition: another worker inserted first. Use locking read.
                 locked = frappe.db.sql(
                     """
                     SELECT name
-                    FROM `tabCommission Payout Event`
+                    FROM 	abCommission Payout Event
                     WHERE event_key = %s
                     FOR UPDATE
                     """,
@@ -170,15 +199,11 @@ def get_or_create_payout_event(event_data):
                     existing = locked[0].name
                     _verify_payload_match(existing, canonical_payload)
                     return existing
-                # If still not found, retry.
                 if attempt < 2:
                     time.sleep(0.1)
                     continue
                 frappe.throw(_("Could not retrieve existing payout event for key {0}.").format(event_key))
-            except Exception as e:
-                if attempt < 2:
-                    time.sleep(0.1)
-                    continue
+            else:
                 raise
 
 
