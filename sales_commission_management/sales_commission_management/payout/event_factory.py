@@ -9,7 +9,7 @@ REQUIRED_PAYOUT_FIELDS = {
     "event_type", "posting_date", "evidence_level",
     "settlement", "settlement_item", "commission_entry",
     "company", "beneficiary_type", "beneficiary",
-    "source_doctype", "source_name",
+    "source_doctype", "source_name", "source_row",
     "source_currency", "source_amount",
     "settlement_currency", "settlement_amount",
     "commission_currency", "commission_amount",
@@ -135,29 +135,31 @@ def get_or_create_payout_event(event_data):
     # Canonical payload: all fields except doctype and event_key.
     canonical_payload = {k: v for k, v in event_data.items() if k not in ("doctype", "event_key")}
 
-    # First attempt: locking read.
-    locked = frappe.db.sql(
-        """
-        SELECT name
-        FROM `tabCommission Payout Event`
-        WHERE event_key = %s
-        FOR UPDATE
-        """,
-        (event_key,),
-        as_dict=True,
-    )
-    if locked:
-        existing = locked[0].name
-        _verify_payload_match(existing, canonical_payload)
-        return existing
-
     # Build the document from the canonical data.
     doc_data = dict(canonical_payload)
     doc_data["doctype"] = "Commission Payout Event"
     doc_data["event_key"] = event_key
-    # Try insertion with retry for contention errors.
+
+    # Full retry loop covering both lookup and insertion.
     for attempt in range(3):
         try:
+            # Locking read for existing event.
+            locked = frappe.db.sql(
+                """
+                SELECT name
+                FROM 	abCommission Payout Event
+                WHERE event_key = %s
+                FOR UPDATE
+                """,
+                (event_key,),
+                as_dict=True,
+            )
+            if locked:
+                existing = locked[0].name
+                _verify_payload_match(existing, canonical_payload)
+                return existing
+
+            # No existing event: attempt insertion.
             doc = frappe.get_doc(doc_data)
             doc.insert(ignore_permissions=True)
             return doc.name
@@ -205,7 +207,6 @@ def get_or_create_payout_event(event_data):
                 frappe.throw(_("Could not retrieve existing payout event for key {0}.").format(event_key))
             else:
                 raise
-
 
 def _verify_payload_match(existing_name, payload):
     """Verify that an existing event's payload matches the requested payload.
