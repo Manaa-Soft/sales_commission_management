@@ -1703,6 +1703,70 @@ def _active_return_financial_totals(original_entry):
     return _sum_return_adjustment_balances(adjustment_balances)
 
 
+def _get_original_split_share(orig, snapshot):
+    company_basis = abs(flt(orig.company_basis_amount))
+    allocated_basis = abs(flt(orig.commission_basis_amount))
+    if company_basis <= 0:
+        frappe.throw(
+            _("Cannot determine original company basis for {0}.").format(
+                orig.name
+            )
+        )
+    derived_share = allocated_basis / company_basis
+    snapshot_share = flt((snapshot or {}).get("split_share"))
+    if snapshot_share > 0:
+        if not 0 < snapshot_share <= 1.0001:
+            frappe.throw(
+                _("Invalid contributor split for {0}.").format(orig.name)
+            )
+        if abs(snapshot_share - derived_share) > 0.001:
+            frappe.throw(
+                _("Contributor split snapshot mismatch for {0}.").format(
+                    orig.name
+                )
+            )
+        return snapshot_share
+    if 0 < derived_share <= 1.0001:
+        return derived_share
+    frappe.throw(
+        _("Invalid contributor split for {0}.").format(orig.name)
+    )
+
+
+def _validate_existing_cancellation_reversal(
+    existing_doc,
+    target_adjustment,
+    original_entry,
+    allocation,
+):
+    if (
+        existing_doc.reverses_entry != target_adjustment
+        or existing_doc.original_entry != original_entry
+        or abs(
+            flt(existing_doc.earned_commission)
+            - flt(allocation["commission"], 2)
+        ) > _RETURN_MONEY_TOLERANCE
+        or abs(
+            flt(existing_doc.commission_basis_amount)
+            - flt(allocation["basis"], 2)
+        ) > _RETURN_MONEY_TOLERANCE
+        or abs(
+            flt(existing_doc.accrued_amount)
+            - flt(allocation["accrued"], 2)
+        ) > _RETURN_MONEY_TOLERANCE
+        or abs(
+            flt(existing_doc.source_qty)
+            - flt(allocation["qty"], 6)
+        ) > _RETURN_QTY_TOLERANCE
+    ):
+        frappe.throw(
+            _(
+                "Existing cancellation reversal {0} does not match "
+                "the expected allocation for {1}."
+            ).format(existing_doc.name, target_adjustment)
+        )
+
+
 def _calculate_return_basis_company(orig, original_item, allocation, snapshot, original_qty):
     """Calculate returned basis in company currency after contributor split.
 
@@ -2471,32 +2535,12 @@ def reconcile_return_cancellation(doc, method=None):
                 existing_doc = frappe.get_doc(
                     "Commission Entry", existing_entry
                 )
-                if (
-                    existing_doc.reverses_entry != target_adjustment
-                    or existing_doc.original_entry != orig_name
-                    or abs(
-                        flt(existing_doc.earned_commission)
-                        - flt(alloc["commission"], 2)
-                    ) > 0.005
-                    or abs(
-                        flt(existing_doc.commission_basis_amount)
-                        - flt(alloc["basis"], 2)
-                    ) > 0.005
-                    or abs(
-                        flt(existing_doc.accrued_amount)
-                        - flt(alloc["accrued"], 2)
-                    ) > 0.005
-                    or abs(
-                        flt(existing_doc.source_qty)
-                        - flt(alloc["qty"], 6)
-                    ) > _RETURN_QTY_TOLERANCE
-                ):
-                    frappe.throw(
-                        _(
-                            "Existing cancellation reversal {0} does not match "
-                            "expected allocation for {1}."
-                        ).format(existing_entry, target_adjustment)
-                    )
+                _validate_existing_cancellation_reversal(
+                    existing_doc,
+                    target_adjustment,
+                    orig_name,
+                    alloc,
+                )
                 continue
 
             comp = frappe.copy_doc(adj_doc)
@@ -2532,32 +2576,17 @@ def reconcile_return_cancellation(doc, method=None):
                     {"event_key": alloc_ev_key, "docstatus": ["!=", 2]},
                     "name",
                 )
-                if dup_name:
-                    dup_doc = frappe.get_doc(
-                        "Commission Entry", dup_name
-                    )
-                    if (
-                        dup_doc.reverses_entry != target_adjustment
-                        or dup_doc.original_entry != orig_name
-                        or abs(
-                            flt(dup_doc.earned_commission)
-                            - flt(alloc["commission"], 2)
-                        ) > 0.005
-                        or abs(
-                            flt(dup_doc.commission_basis_amount)
-                            - flt(alloc["basis"], 2)
-                        ) > 0.005
-                        or abs(
-                            flt(dup_doc.accrued_amount)
-                            - flt(alloc["accrued"], 2)
-                        ) > 0.005
-                    ):
-                        frappe.throw(
-                            _(
-                                "Duplicate cancellation reversal {0} does not "
-                                "match expected allocation for {1}."
-                            ).format(dup_name, target_adjustment)
-                        )
+                if not dup_name:
+                    raise
+                dup_doc = frappe.get_doc(
+                    "Commission Entry", dup_name
+                )
+                _validate_existing_cancellation_reversal(
+                    dup_doc,
+                    target_adjustment,
+                    orig_name,
+                    alloc,
+                )
                 continue
             comp.submit()
 
