@@ -323,11 +323,12 @@ def get_payroll_evidence_level(salary_slip=None, payroll_entry=None, bank_entry=
                                 return "Payroll Bank Entry"
         return None
     if salary_slip:
-        if frappe.db.exists("Salary Slip", salary_slip):
-            status = frappe.db.get_value("Salary Slip", salary_slip, "docstatus")
-            if status == 1:
-                return "Payroll Accrued"
-        return None
+        if not frappe.db.exists("Salary Slip", salary_slip):
+            return None
+        status = frappe.db.get_value("Salary Slip", salary_slip, "docstatus")
+        if status != 1:
+            return None
+        return "Payroll Accrued"
     return None
 
 
@@ -432,24 +433,33 @@ def validate_employee_payroll_link(settlement, additional_salary, salary_slip=No
             )
             if not linked:
                 frappe.throw(_("Bank Entry does not reference the Payroll Entry."))
-            # Validate bank_transaction if provided.
-            if bank_transaction:
-                if not frappe.db.exists("Bank Transaction", bank_transaction):
-                    frappe.throw(_("Bank Transaction {0} does not exist.").format(bank_transaction))
-                bt_status = frappe.db.get_value("Bank Transaction", bank_transaction, "status")
-                if bt_status != "Reconciled":
-                    frappe.throw(_("Bank Transaction must be Reconciled."))
-                allocations = frappe.get_all(
-                    "Bank Transaction Payments",
-                    filters={
-                        "parent": bank_transaction,
-                        "payment_document": "Journal Entry",
-                        "payment_entry": bank_entry,
-                    },
-                    limit=1,
-                )
-                if not allocations:
-                    frappe.throw(_("Bank Transaction does not reference the Bank Entry."))
+            # bank_transaction validation is done independently below.
 
+    # Validate bank_transaction independently (requires bank_entry and payroll_entry).
+    if bank_transaction:
+        if not bank_entry or not payroll_entry:
+            frappe.throw(_("Bank Transaction validation requires Bank Entry and Payroll Entry."))
+        if not frappe.db.exists("Bank Transaction", bank_transaction):
+            frappe.throw(_("Bank Transaction {0} does not exist.").format(bank_transaction))
+        bt_status = frappe.db.get_value("Bank Transaction", bank_transaction, "status")
+        if bt_status != "Reconciled":
+            frappe.throw(_("Bank Transaction must be Reconciled."))
+        bt_docstatus = frappe.db.get_value("Bank Transaction", bank_transaction, "docstatus")
+        if bt_docstatus != 1:
+            frappe.throw(_("Bank Transaction must be submitted."))
+        bt_company = frappe.db.get_value("Bank Transaction", bank_transaction, "company")
+        if bt_company and sett.company and bt_company != sett.company:
+            frappe.throw(_("Bank Transaction company must match settlement company."))
+        allocations = frappe.get_all(
+            "Bank Transaction Payments",
+            filters={
+                "parent": bank_transaction,
+                "payment_document": "Journal Entry",
+                "payment_entry": bank_entry,
+            },
+            limit=1,
+        )
+        if not allocations:
+            frappe.throw(_("Bank Transaction does not reference the Bank Entry."))
     elif payroll_entry or bank_entry or bank_transaction:
         frappe.throw(_("Payroll Entry, Bank Entry, or Bank Transaction requires a Salary Slip for validation."))
