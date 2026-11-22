@@ -1539,6 +1539,37 @@ def _active_return_financial_totals(original_entry):
     }
 
 
+def _get_original_split_share(orig, snapshot):
+    """Resolve contributor split from original immutable financial snapshots."""
+    company_basis = abs(flt(orig.company_basis_amount))
+    allocated_basis = abs(flt(orig.commission_basis_amount))
+    if company_basis <= 0:
+        frappe.throw(
+            _("Cannot determine original company basis for {0}.").format(
+                orig.name
+            )
+        )
+    derived_share = allocated_basis / company_basis
+    snapshot_share = flt((snapshot or {}).get("split_share"))
+    if snapshot_share > 0:
+        if not 0 < snapshot_share <= 1.0001:
+            frappe.throw(
+                _("Invalid contributor split for {0}.").format(orig.name)
+            )
+        if abs(snapshot_share - derived_share) > 0.001:
+            frappe.throw(
+                _("Contributor split snapshot mismatch for {0}.").format(
+                    orig.name
+                )
+            )
+        return snapshot_share
+    if 0 < derived_share <= 1.0001:
+        return derived_share
+    frappe.throw(
+        _("Invalid contributor split for {0}.").format(orig.name)
+    )
+
+
 def _calculate_return_basis_company(orig, original_item, allocation, snapshot, original_qty):
     """Calculate returned basis in company currency after contributor split.
 
@@ -1573,11 +1604,20 @@ def _calculate_return_basis_company(orig, original_item, allocation, snapshot, o
         )
         full_returned_basis = allocation["net_company"] - returned_cost
     elif basis_type in ("Fixed Amount", "Fixed"):
-        # Fixed Amount: use original fixed-amount snapshot * returned quantity ratio.
-        fixed_snapshot = flt(orig.fixed_amount_snapshot)
-        if fixed_snapshot <= 0:
-            fixed_snapshot = flt((snapshot or {}).get("fixed_amount", 0))
-        full_returned_basis = fixed_snapshot * (allocation["qty"] / original_qty) if original_qty else 0.0
+        if original_qty <= 0:
+            frappe.throw(
+                _("Invalid original quantity for entry {0}.").format(
+                    orig.name
+                )
+            )
+        quantity_ratio = (
+            flt(allocation["qty"]) / original_qty
+        )
+        # company_basis_amount is stored in company currency
+        # and represents the full basis before contributor allocation.
+        full_returned_basis = (
+            abs(flt(orig.company_basis_amount)) * quantity_ratio
+        )
     else:
         full_returned_basis = flt(allocation["net_company"])
     # Apply contributor split.
@@ -1846,18 +1886,27 @@ def handle_return_invoice(doc, method=None):
         if calc_method in ("Fixed Per Unit",):
             ratio = (effective_returned / original_qty) if original_qty else 0.0
         elif calc_method == "Fixed Per Line":
-            # Use cumulative returned quantity to determine full reversal.
-            if cumulative_returned >= original_qty - 0.0001:
-                # Reverse only the remaining commission.
-                remaining_commission = max(0.0, original_commission - history.get("commission", 0.0))
-                if remaining_commission > 0 and original_commission > 0:
-                    ratio = remaining_commission / original_commission
-                else:
-                    ratio = 0.0
-                    continue
-            else:
-                ratio = 0.0
+            # This contains all submitted returns, including the current return.
+            cumulative_returned = flt(
+                returned_totals.get(orig.source_row, 0)
+            )
+            if cumulative_returned > original_qty + 0.0001:
+                frappe.throw(
+                    _("Returned quantity exceeds original quantity for row {0}.").format(
+                        orig.source_row
+                    )
+                )
+            # Wait until the complete original invoice row is returned.
+            if cumulative_returned < original_qty - 0.0001:
                 continue
+            # Reverse only the remaining commission.
+            remaining_commission = max(
+                0.0,
+                original_commission - history.get("commission", 0.0)
+            )
+            if remaining_commission <= 0.005:
+                continue
+            ratio = remaining_commission / original_commission
         else:
             returned_basis = _calculate_return_basis_company(
                 orig, original_item, allocation, snapshot, original_qty
