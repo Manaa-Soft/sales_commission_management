@@ -1582,27 +1582,38 @@ def _get_return_adjustment_remaining_balances(original_entry):
         reversed_amounts = reversed_totals.get(adjustment.name, {})
         remaining = {
             "name": adjustment.name,
-            "basis": max(
-                0.0,
+            "basis": (
                 abs(flt(adjustment.commission_basis_amount))
-                - reversed_amounts.get("basis", 0.0),
+                - reversed_amounts.get("basis", 0.0)
             ),
-            "commission": max(
-                0.0,
+            "commission": (
                 abs(flt(adjustment.earned_commission))
-                - reversed_amounts.get("commission", 0.0),
+                - reversed_amounts.get("commission", 0.0)
             ),
-            "accrued": max(
-                0.0,
+            "accrued": (
                 abs(flt(adjustment.accrued_amount))
-                - reversed_amounts.get("accrued", 0.0),
+                - reversed_amounts.get("accrued", 0.0)
             ),
-            "qty": max(
-                0.0,
+            "qty": (
                 abs(flt(adjustment.source_qty))
-                - reversed_amounts.get("qty", 0.0),
+                - reversed_amounts.get("qty", 0.0)
             ),
         }
+        tolerances = {
+            "basis": _RETURN_MONEY_TOLERANCE,
+            "commission": _RETURN_MONEY_TOLERANCE,
+            "accrued": _RETURN_MONEY_TOLERANCE,
+            "qty": _RETURN_QTY_TOLERANCE,
+        }
+        for field, tolerance in tolerances.items():
+            if remaining[field] < -tolerance:
+                frappe.throw(
+                    _(
+                        "Return Adjustment {0} is over-reversed for {1}. "
+                        "Check its cancellation history."
+                    ).format(adjustment.name, field)
+                )
+            remaining[field] = max(0.0, remaining[field])
         results.append(remaining)
     return results
 
@@ -1685,108 +1696,11 @@ def _sum_return_adjustment_balances(adjustment_balances):
 
 
 def _active_return_financial_totals(original_entry):
-    """Return active cumulative basis, commission and accrual clawbacks.
-
-    Accounts for both Return Adjustment entries and their Cancellation
-    Reversal entries.
-    """
-    adjustments = frappe.get_all(
-        "Commission Entry",
-        filters={
-            "original_entry": original_entry,
-            "event_type": "Return Adjustment",
-            "docstatus": 1,
-        },
-        fields=[
-            "name",
-            "commission_basis_amount",
-            "earned_commission",
-            "accrued_amount",
-            "source_qty",
-        ],
+    """Return active cumulative return adjustment balances."""
+    adjustment_balances = (
+        _get_return_adjustment_remaining_balances(original_entry)
     )
-    if not adjustments:
-        return {
-            "basis": 0.0,
-            "commission": 0.0,
-            "accrued": 0.0,
-            "qty": 0.0,
-        }
-    adjustment_names = [row.name for row in adjustments]
-    reversals = frappe.get_all(
-        "Commission Entry",
-        filters={
-            "reverses_entry": ["in", adjustment_names],
-            "event_type": "Cancellation Reversal",
-            "docstatus": 1,
-        },
-        fields=[
-            "reverses_entry",
-            "commission_basis_amount",
-            "earned_commission",
-            "accrued_amount",
-            "source_qty",
-        ],
-    )
-    reversal_map = {}
-    for rv in reversals:
-        reversal_map.setdefault(rv.reverses_entry, []).append(rv)
-
-    total_basis = 0.0
-    total_commission = 0.0
-    total_accrued = 0.0
-    total_qty = 0.0
-    for adj in adjustments:
-        adj_basis = abs(flt(adj.commission_basis_amount))
-        adj_comm = abs(flt(adj.earned_commission))
-        adj_accrued = abs(flt(adj.accrued_amount))
-        adj_qty = abs(flt(adj.source_qty))
-        for rv in reversal_map.get(adj.name, []):
-            adj_basis -= abs(flt(rv.commission_basis_amount))
-            adj_comm -= abs(flt(rv.earned_commission))
-            adj_accrued -= abs(flt(rv.accrued_amount))
-            adj_qty -= abs(flt(rv.source_qty))
-        total_basis += max(0.0, adj_basis)
-        total_commission += max(0.0, adj_comm)
-        total_accrued += max(0.0, adj_accrued)
-        total_qty += max(0.0, adj_qty)
-    return {
-        "basis": total_basis,
-        "commission": total_commission,
-        "accrued": total_accrued,
-        "qty": total_qty,
-    }
-
-
-def _get_original_split_share(orig, snapshot):
-    """Resolve contributor split from original immutable financial snapshots."""
-    company_basis = abs(flt(orig.company_basis_amount))
-    allocated_basis = abs(flt(orig.commission_basis_amount))
-    if company_basis <= 0:
-        frappe.throw(
-            _("Cannot determine original company basis for {0}.").format(
-                orig.name
-            )
-        )
-    derived_share = allocated_basis / company_basis
-    snapshot_share = flt((snapshot or {}).get("split_share"))
-    if snapshot_share > 0:
-        if not 0 < snapshot_share <= 1.0001:
-            frappe.throw(
-                _("Invalid contributor split for {0}.").format(orig.name)
-            )
-        if abs(snapshot_share - derived_share) > 0.001:
-            frappe.throw(
-                _("Contributor split snapshot mismatch for {0}.").format(
-                    orig.name
-                )
-            )
-        return snapshot_share
-    if 0 < derived_share <= 1.0001:
-        return derived_share
-    frappe.throw(
-        _("Invalid contributor split for {0}.").format(orig.name)
-    )
+    return _sum_return_adjustment_balances(adjustment_balances)
 
 
 def _calculate_return_basis_company(orig, original_item, allocation, snapshot, original_qty):
@@ -2554,6 +2468,35 @@ def reconcile_return_cancellation(doc, method=None):
                 "name",
             )
             if existing_entry:
+                existing_doc = frappe.get_doc(
+                    "Commission Entry", existing_entry
+                )
+                if (
+                    existing_doc.reverses_entry != target_adjustment
+                    or existing_doc.original_entry != orig_name
+                    or abs(
+                        flt(existing_doc.earned_commission)
+                        - flt(alloc["commission"], 2)
+                    ) > 0.005
+                    or abs(
+                        flt(existing_doc.commission_basis_amount)
+                        - flt(alloc["basis"], 2)
+                    ) > 0.005
+                    or abs(
+                        flt(existing_doc.accrued_amount)
+                        - flt(alloc["accrued"], 2)
+                    ) > 0.005
+                    or abs(
+                        flt(existing_doc.source_qty)
+                        - flt(alloc["qty"], 6)
+                    ) > _RETURN_QTY_TOLERANCE
+                ):
+                    frappe.throw(
+                        _(
+                            "Existing cancellation reversal {0} does not match "
+                            "expected allocation for {1}."
+                        ).format(existing_entry, target_adjustment)
+                    )
                 continue
 
             comp = frappe.copy_doc(adj_doc)
@@ -2584,6 +2527,37 @@ def reconcile_return_cancellation(doc, method=None):
             try:
                 comp.insert(ignore_permissions=True)
             except frappe.DuplicateEntryError:
+                dup_name = frappe.db.get_value(
+                    "Commission Entry",
+                    {"event_key": alloc_ev_key, "docstatus": ["!=", 2]},
+                    "name",
+                )
+                if dup_name:
+                    dup_doc = frappe.get_doc(
+                        "Commission Entry", dup_name
+                    )
+                    if (
+                        dup_doc.reverses_entry != target_adjustment
+                        or dup_doc.original_entry != orig_name
+                        or abs(
+                            flt(dup_doc.earned_commission)
+                            - flt(alloc["commission"], 2)
+                        ) > 0.005
+                        or abs(
+                            flt(dup_doc.commission_basis_amount)
+                            - flt(alloc["basis"], 2)
+                        ) > 0.005
+                        or abs(
+                            flt(dup_doc.accrued_amount)
+                            - flt(alloc["accrued"], 2)
+                        ) > 0.005
+                    ):
+                        frappe.throw(
+                            _(
+                                "Duplicate cancellation reversal {0} does not "
+                                "match expected allocation for {1}."
+                            ).format(dup_name, target_adjustment)
+                        )
                 continue
             comp.submit()
 
