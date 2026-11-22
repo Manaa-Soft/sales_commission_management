@@ -93,7 +93,7 @@ def resolve_employee_payroll_currencies(settlement, additional_salary):
         frappe.throw(_("Settlement document must match the Additional Salary."))
     if as_doc.employee != sett.employee:
         frappe.throw(_("Additional Salary employee must match settlement employee."))
-    if as_doc.company and as_doc.company != sett.company:
+    if not as_doc.company or as_doc.company != sett.company:
         frappe.throw(_("Additional Salary company must match settlement company."))
 
     salary_currency = getattr(as_doc, "currency", None)
