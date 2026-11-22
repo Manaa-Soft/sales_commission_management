@@ -3,6 +3,7 @@ from frappe.tests import IntegrationTestCase
 from sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry import (
     _event_key,
     _item_group_path,
+    reconcile_return_cancellation,
 )
 
 
@@ -45,3 +46,6 @@ class TestCommissionEngine(IntegrationTestCase):
             "Return Adjustment",
         )
         self.assertNotEqual(k1, k3)
+
+    def test_reconcile_function_callable(self):
+        self.assertTrue(callable(reconcile_return_cancellation))

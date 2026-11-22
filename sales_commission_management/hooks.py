@@ -21,7 +21,10 @@ doc_events = {
     "Sales Invoice": {
         "before_submit": "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.neutralize_native_commission",
         "on_submit": "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.generate_commission_entries",
-        "on_cancel": "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.reverse_commission_entries",
+        "on_cancel": [
+            "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.reverse_commission_entries",
+            "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.reconcile_return_cancellation",
+        ],
         "before_update_after_submit": "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.neutralize_native_commission_on_update",
     },
     "POS Invoice": {

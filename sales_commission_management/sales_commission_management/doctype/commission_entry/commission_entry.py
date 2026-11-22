@@ -1465,6 +1465,63 @@ def _is_original_invoice_fully_returned(original_doc, returned_totals):
     return has_items
 
 
+def _get_submitted_return_allocations_cumulative(original_doc):
+    """Cumulative submitted return allocations by original row name.
+
+    Returns a dict mapping original row name -> {qty, stock_qty, net_company}
+    across all submitted return invoices against original_doc.
+    """
+    return_names = frappe.get_all(
+        "Sales Invoice",
+        filters={
+            "return_against": original_doc.name,
+            "is_return": 1,
+            "docstatus": 1,
+        },
+        pluck="name",
+    )
+    if not return_names:
+        return {}
+    returned_rows = frappe.get_all(
+        "Sales Invoice Item",
+        filters={
+            "parent": ["in", return_names],
+            "parenttype": "Sales Invoice",
+        },
+        fields=[
+            "name",
+            "item_code",
+            "sales_invoice_item",
+            "qty",
+            "stock_qty",
+            "conversion_factor",
+            "base_net_amount",
+        ],
+    )
+    original_items = {r.name: r for r in (original_doc.items or [])}
+    totals = {}
+    for row in returned_rows:
+        source_row = row.get("sales_invoice_item")
+        if not source_row:
+            continue
+        original_item = original_items.get(source_row)
+        if not original_item or row.get("item_code") != original_item.item_code:
+            continue
+        original_cf = flt(original_item.get("conversion_factor")) or 1.0
+        if original_cf <= 0:
+            continue
+        returned_stock_qty = _get_row_stock_qty(row)
+        returned_qty = returned_stock_qty / original_cf
+        allocation = totals.setdefault(
+            source_row,
+            {"qty": 0.0, "stock_qty": 0.0, "net_company": 0.0},
+        )
+        allocation["qty"] += returned_qty
+        allocation["stock_qty"] += returned_stock_qty
+        allocation["net_company"] += abs(flt(row.get("base_net_amount")))
+    return totals
+
+
 def _active_return_financial_totals(original_entry):
     """Return active cumulative basis, commission and accrual clawbacks.
 
@@ -2173,6 +2230,187 @@ def reverse_commission_entries(doc, method=None):
                         a.cost_center = cost_center
                 je.insert(ignore_permissions=True)
                 je.submit()
+
+
+def reconcile_return_cancellation(doc, method=None):
+    """Reconcile commission clawbacks when a return invoice is cancelled.
+
+    A cancellation of an earlier partial return can leave later returns having
+    created more clawback than is currently justified. This function recomputes
+    the required cumulative clawback per original commission entry from the
+    remaining submitted returns and creates immutable compensating entries for
+    any excess.
+    """
+    if not getattr(doc, "is_return", 0):
+        return
+    original_name = getattr(doc, "return_against", None)
+    if not original_name:
+        return
+
+    # Lock original invoice to serialize concurrent processing.
+    frappe.db.sql(
+        "SELECT name FROM `tabSales Invoice` WHERE name = %s FOR UPDATE",
+        original_name,
+    )
+    original_doc = frappe.get_doc("Sales Invoice", original_name)
+    if original_doc.docstatus != 1:
+        return
+
+    returned_totals = _get_submitted_return_quantities(original_doc)
+    cumulative_allocations = _get_submitted_return_allocations_cumulative(original_doc)
+    invoice_fully_returned = _is_original_invoice_fully_returned(
+        original_doc, returned_totals
+    )
+
+    original_items = {row.name: row for row in (original_doc.items or [])}
+
+    original_entries = frappe.get_all(
+        "Commission Entry",
+        filters={"sales_invoice": original_name, "docstatus": 1},
+        fields=[
+            "name",
+            "item_code",
+            "source_row",
+            "source_qty",
+            "earned_commission",
+            "commission_basis_amount",
+            "company_basis_amount",
+            "calculation_snapshot",
+            "beneficiary_type",
+            "sales_person",
+            "sales_partner",
+            "commission_basis",
+            "plan",
+            "pool_code",
+            "original_entry",
+        ],
+    )
+    if not original_entries:
+        return
+
+    for orig in original_entries:
+        orig_name = orig.name
+        snapshot = frappe.parse_json(orig.calculation_snapshot or "{}") or {}
+        calc_method = snapshot.get("calculation_method") or "Percentage"
+
+        original_item = original_items.get(orig.source_row)
+        original_qty = abs(flt(orig.source_qty))
+        if original_qty <= 0 and original_item is not None:
+            original_qty = abs(flt(original_item.qty))
+        if original_qty <= 0:
+            continue
+
+        original_basis = abs(flt(orig.commission_basis_amount))
+        original_commission = abs(flt(orig.earned_commission))
+        try:
+            from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import _accrued_for_entry
+
+            original_accrued = abs(flt(_accrued_for_entry(orig_name)))
+        except Exception:
+            original_accrued = abs(flt(orig.get("accrued_amount", 0)))
+
+        # Compute required cumulative ratio.
+        ratio = 0.0
+        if calc_method == "Fixed Per Invoice":
+            ratio = 1.0 if invoice_fully_returned else 0.0
+        elif calc_method == "Fixed Per Line":
+            cum_qty = returned_totals.get(orig.source_row, 0.0)
+            ratio = 1.0 if (cum_qty >= original_qty - 0.0001 and original_qty > 0) else 0.0
+        elif calc_method in ("Fixed Per Unit", "Fixed Amount", "Fixed"):
+            cum_qty = returned_totals.get(orig.source_row, 0.0)
+            ratio = min(1.0, cum_qty / original_qty) if original_qty else 0.0
+        else:
+            cum_alloc = cumulative_allocations.get(orig.source_row)
+            if cum_alloc and original_item is not None:
+                returned_basis = _calculate_return_basis_company(
+                    orig, original_item, cum_alloc, snapshot, original_qty
+                )
+                if original_basis > 0:
+                    ratio = min(1.0, returned_basis / original_basis)
+                else:
+                    cum_qty = returned_totals.get(orig.source_row, 0.0)
+                    ratio = min(1.0, cum_qty / original_qty) if original_qty else 0.0
+
+        required_commission = original_commission * ratio
+        required_basis = original_basis * ratio
+        required_accrued = original_accrued * ratio
+        required_qty = original_qty * ratio
+
+        existing = _active_return_financial_totals(orig_name)
+        excess_commission = existing.get("commission", 0.0) - required_commission
+        excess_basis = existing.get("basis", 0.0) - required_basis
+        excess_accrued = existing.get("accrued", 0.0) - required_accrued
+        excess_qty = existing.get("qty", 0.0) - required_qty
+
+        if excess_commission <= 0.005 and excess_basis <= 0.005:
+            continue
+
+        # Find a Return Adjustment entry to reverse against.
+        adjustments = frappe.get_all(
+            "Commission Entry",
+            filters={
+                "original_entry": orig_name,
+                "event_type": "Return Adjustment",
+                "docstatus": 1,
+            },
+            fields=["name"],
+            order_by="name asc",
+        )
+        if not adjustments:
+            continue
+        target_adjustment = adjustments[-1].name
+        adj_doc = frappe.get_doc("Commission Entry", target_adjustment)
+
+        ev_key = _event_key(
+            "Sales Invoice",
+            doc.name,
+            orig_name,
+            orig.plan,
+            orig.pool_code,
+            orig.beneficiary_type,
+            orig.sales_person or orig.sales_partner,
+            "Cancellation Reversal",
+        )
+        existing_entry = frappe.db.get_value(
+            "Commission Entry", {"event_key": ev_key, "docstatus": ["!=", 2]}, "name"
+        )
+        if existing_entry:
+            continue
+
+        excess_commission = max(0.0, excess_commission)
+        excess_basis = max(0.0, excess_basis)
+        excess_accrued = max(0.0, excess_accrued)
+        excess_qty = max(0.0, excess_qty)
+
+        comp = frappe.copy_doc(adj_doc)
+        comp.event_key = ev_key
+        comp.event_type = "Cancellation Reversal"
+        comp.source_doctype = "Sales Invoice"
+        comp.source_name = doc.name
+        comp.sales_invoice = doc.name
+        comp.return_invoice = doc.name
+        comp.posting_date = doc.posting_date
+        comp.earned_commission = flt(excess_commission, 2)
+        comp.commission_basis_amount = flt(excess_basis, 2)
+        comp.earned_delta = flt(excess_commission, 6)
+        comp.accrued_amount = flt(excess_accrued, 2)
+        comp.collection_eligible_amount = flt(excess_commission, 2)
+        comp.payable_amount = flt(excess_commission, 2)
+        comp.outstanding_amount = flt(excess_commission, 2)
+        comp.source_qty = flt(excess_qty, 6)
+        comp.status = "Reversed"
+        comp.collection_status = "Not Eligible"
+        comp.settlement_status = "Not Reserved"
+        comp.remarks = (
+            f"Reconciliation clawback reversal due to cancellation of {doc.name}"
+        )
+        comp.reverses_entry = target_adjustment
+        comp.original_entry = orig_name
+        try:
+            comp.insert(ignore_permissions=True)
+        except frappe.DuplicateEntryError:
+            continue
+        comp.submit()
 
 
 def _is_lock_contention_error(exc):
