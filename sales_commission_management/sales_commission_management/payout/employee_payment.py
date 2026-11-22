@@ -82,6 +82,20 @@ def resolve_employee_payroll_currencies(settlement, additional_salary):
     if sett.docstatus != 1:
         frappe.throw(_("Commission Settlement must be submitted."))
 
+    # Validate Additional Salary is linked to this settlement.
+    if as_doc.ref_doctype != "Commission Settlement" or as_doc.ref_docname != settlement:
+        frappe.throw(_("Additional Salary must be linked to this settlement."))
+    if sett.settlement_method != "Additional Salary":
+        frappe.throw(_("Settlement method must be Additional Salary."))
+    if sett.settlement_document_type != "Additional Salary":
+        frappe.throw(_("Settlement document type must be Additional Salary."))
+    if sett.settlement_document != additional_salary:
+        frappe.throw(_("Settlement document must match the Additional Salary."))
+    if as_doc.employee != sett.employee:
+        frappe.throw(_("Additional Salary employee must match settlement employee."))
+    if as_doc.company and as_doc.company != sett.company:
+        frappe.throw(_("Additional Salary company must match settlement company."))
+
     salary_currency = getattr(as_doc, "currency", None)
     payroll_date = getattr(as_doc, "payroll_date", None) or sett.period_from or frappe.utils.nowdate()
 
@@ -148,15 +162,27 @@ def resolve_employee_payroll_currencies(settlement, additional_salary):
 
     # Salary to commission rate.
     salary_to_commission_rate = 1.0
+    salary_to_commission_date = payroll_date
     if salary_currency != commission_currency:
-        # Reuse inverse of saved settlement FX rate when available and valid.
-        if salary_currency == commission_currency:
-            salary_to_commission_rate = 1.0
-        elif flt(sett.settlement_fx_rate) > 0 and salary_currency == sett.commission_currency:
-            # Inverse: commission->salary rate saved, so salary->commission = 1/saved
-            saved_rate = flt(sett.settlement_fx_rate)
-            if saved_rate > 0:
-                salary_to_commission_rate = 1.0 / saved_rate
+        # Reuse inverse of saved settlement FX rate when currencies are
+        # swapped (saved rate is commission->salary, need salary->commission).
+        saved_rate = flt(sett.settlement_fx_rate)
+        saved_date = getattr(sett, "settlement_fx_date", None)
+        if saved_rate > 0 and _is_finite_positive(saved_rate):
+            # Saved rate is commission->salary; inverse is salary->commission.
+            inverse = 1.0 / saved_rate
+            if _is_finite_positive(inverse):
+                salary_to_commission_rate = inverse
+                if saved_date:
+                    salary_to_commission_date = saved_date
+            else:
+                from frappe.utils import get_exchange_rate
+                rate = get_exchange_rate(salary_currency, commission_currency, payroll_date)
+                if not rate or not _is_finite_positive(rate):
+                    frappe.throw(
+                        _("Missing exchange rate from {0} to {1}.").format(salary_currency, commission_currency)
+                    )
+                salary_to_commission_rate = rate
         else:
             from frappe.utils import get_exchange_rate
             rate = get_exchange_rate(salary_currency, commission_currency, payroll_date)
@@ -178,7 +204,7 @@ def resolve_employee_payroll_currencies(settlement, additional_salary):
         "company_currency": company_currency,
         "company_amount": company_amount,
         "salary_to_commission_rate": salary_to_commission_rate,
-        "salary_to_commission_date": payroll_date,
+        "salary_to_commission_date": salary_to_commission_date,
         "commission_to_company_rate": commission_to_company_rate,
         "commission_to_company_date": payroll_date,
     }
@@ -366,17 +392,36 @@ def validate_employee_payroll_link(settlement, additional_salary, salary_slip=No
             voucher_type = frappe.db.get_value("Journal Entry", bank_entry, "voucher_type")
             if voucher_type not in ("Bank Entry", "Cash Entry"):
                 frappe.throw(_("Bank Entry must be a Bank or Cash Entry."))
-            if payroll_entry:
-                linked = frappe.db.exists(
-                    "Journal Entry Account",
-                    {
-                        "parent": bank_entry,
-                        "reference_type": "Payroll Entry",
-                        "reference_name": payroll_entry,
+            if not payroll_entry:
+                frappe.throw(_("Bank Entry validation requires a Payroll Entry."))
+            linked = frappe.db.exists(
+                "Journal Entry Account",
+                {
+                    "parent": bank_entry,
+                    "reference_type": "Payroll Entry",
+                    "reference_name": payroll_entry,
+                },
+            )
+            if not linked:
+                frappe.throw(_("Bank Entry does not reference the Payroll Entry."))
+            # Validate bank_transaction if provided.
+            if bank_transaction:
+                if not frappe.db.exists("Bank Transaction", bank_transaction):
+                    frappe.throw(_("Bank Transaction {0} does not exist.").format(bank_transaction))
+                bt_status = frappe.db.get_value("Bank Transaction", bank_transaction, "status")
+                if bt_status != "Reconciled":
+                    frappe.throw(_("Bank Transaction must be Reconciled."))
+                allocations = frappe.get_all(
+                    "Bank Transaction Payments",
+                    filters={
+                        "parent": bank_transaction,
+                        "payment_document": "Journal Entry",
+                        "payment_entry": bank_entry,
                     },
+                    limit=1,
                 )
-                if not linked:
-                    frappe.throw(_("Bank Entry does not reference the Payroll Entry."))
+                if not allocations:
+                    frappe.throw(_("Bank Transaction does not reference the Bank Entry."))
 
     elif payroll_entry or bank_entry or bank_transaction:
         frappe.throw(_("Payroll Entry, Bank Entry, or Bank Transaction requires a Salary Slip for validation."))
