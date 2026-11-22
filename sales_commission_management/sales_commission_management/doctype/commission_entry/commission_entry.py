@@ -1821,6 +1821,42 @@ def _calculate_return_basis_company(orig, original_item, allocation, snapshot, o
     returned_basis = full_returned_basis * split_share
     return flt(returned_basis, 6)
 
+def _validate_commission_fx_snapshot(orig):
+    import math
+
+    orig_comm_curr = getattr(orig, "commission_currency", None)
+    orig_comp_curr = getattr(orig, "company_currency", None)
+
+    if not orig_comm_curr or not orig_comp_curr:
+        frappe.throw(
+            _("Missing commission or company currency for entry {0}.").format(
+                orig.name
+            )
+        )
+
+    orig_rate = flt(orig.commission_to_company_rate)
+
+    if not math.isfinite(orig_rate) or orig_rate <= 0:
+        frappe.throw(
+            _("Invalid commission-to-company rate for entry {0}.").format(
+                orig.name
+            )
+        )
+
+    if orig_comm_curr == orig_comp_curr:
+        if abs(orig_rate - 1.0) > 1e-9:
+            frappe.throw(
+                _("Commission and company currencies match but rate is not 1.0 "
+                  "for entry {0}.").format(orig.name)
+            )
+
+    if orig_comm_curr != orig_comp_curr and orig_rate <= 0:
+        frappe.throw(
+            _("Invalid commission-to-company rate for foreign currency "
+              "entry {0}.").format(orig.name)
+        )
+
+
 def handle_return_invoice(doc, method=None):
     """Handle credit notes / returns: create proportional clawback entries.
 
@@ -1903,40 +1939,7 @@ def handle_return_invoice(doc, method=None):
     # These do not require an anchor row in the current return.
     for orig in original_entries:
         # Validate commission currency and conversion rate consistency.
-        orig_rate = flt(orig.commission_to_company_rate)
-        orig_comm_curr = getattr(orig, "commission_currency", None)
-        orig_comp_curr = getattr(orig, "company_currency", None)
-
-        # Require both currencies.
-        if not orig_comm_curr or not orig_comp_curr:
-            frappe.throw(
-                _("Missing commission or company currency for entry {0}.").format(
-                    orig.name
-                )
-            )
-
-        # Reject non-finite rates.
-        import math
-        if not math.isfinite(orig_rate) or orig_rate <= 0:
-            frappe.throw(
-                _("Invalid commission-to-company rate for entry {0}.").format(
-                    orig.name
-                )
-            )
-
-        # When currencies are identical, rate must be 1.0.
-        if orig_comm_curr == orig_comp_curr and abs(orig_rate - 1.0) > 0.0001:
-            frappe.throw(
-                _("Commission and company currencies match but rate is not 1.0 "
-                  "for entry {0}.").format(orig.name)
-            )
-
-        # When currencies differ, require a valid positive snapshot.
-        if orig_comm_curr != orig_comp_curr and orig_rate <= 0:
-            frappe.throw(
-                _("Invalid commission-to-company rate for foreign currency "
-                  "entry {0}.").format(orig.name)
-            )
+        _validate_commission_fx_snapshot(orig)
 
         snapshot = frappe.parse_json(orig.calculation_snapshot or "{}") or {}
         calc_method = snapshot.get("calculation_method") or "Percentage"
@@ -2054,40 +2057,7 @@ def handle_return_invoice(doc, method=None):
         key = orig.get("name")
 
         # Validate commission currency and conversion rate consistency.
-        orig_rate = flt(orig.commission_to_company_rate)
-        orig_comm_curr = getattr(orig, "commission_currency", None)
-        orig_comp_curr = getattr(orig, "company_currency", None)
-
-        # Require both currencies.
-        if not orig_comm_curr or not orig_comp_curr:
-            frappe.throw(
-                _("Missing commission or company currency for entry {0}.").format(
-                    orig.name
-                )
-            )
-
-        # Reject non-finite rates.
-        import math
-        if not math.isfinite(orig_rate) or orig_rate <= 0:
-            frappe.throw(
-                _("Invalid commission-to-company rate for entry {0}.").format(
-                    orig.name
-                )
-            )
-
-        # When currencies are identical, rate must be 1.0.
-        if orig_comm_curr == orig_comp_curr and abs(orig_rate - 1.0) > 0.0001:
-            frappe.throw(
-                _("Commission and company currencies match but rate is not 1.0 "
-                  "for entry {0}.").format(orig.name)
-            )
-
-        # When currencies differ, require a valid positive snapshot.
-        if orig_comm_curr != orig_comp_curr and orig_rate <= 0:
-            frappe.throw(
-                _("Invalid commission-to-company rate for foreign currency "
-                  "entry {0}.").format(orig.name)
-            )
+        _validate_commission_fx_snapshot(orig)
 
         snapshot = frappe.parse_json(orig.calculation_snapshot or "{}") or {}
         calc_method = snapshot.get("calculation_method") or "Percentage"
