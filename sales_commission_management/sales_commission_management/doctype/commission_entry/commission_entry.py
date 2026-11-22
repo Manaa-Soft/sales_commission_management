@@ -1904,11 +1904,38 @@ def handle_return_invoice(doc, method=None):
     for orig in original_entries:
         # Validate commission currency and conversion rate consistency.
         orig_rate = flt(orig.commission_to_company_rate)
-        if orig_rate <= 0:
+        orig_comm_curr = getattr(orig, "commission_currency", None)
+        orig_comp_curr = getattr(orig, "company_currency", None)
+
+        # Require both currencies.
+        if not orig_comm_curr or not orig_comp_curr:
+            frappe.throw(
+                _("Missing commission or company currency for entry {0}.").format(
+                    orig.name
+                )
+            )
+
+        # Reject non-finite rates.
+        import math
+        if not math.isfinite(orig_rate) or orig_rate <= 0:
             frappe.throw(
                 _("Invalid commission-to-company rate for entry {0}.").format(
                     orig.name
                 )
+            )
+
+        # When currencies are identical, rate must be 1.0.
+        if orig_comm_curr == orig_comp_curr and abs(orig_rate - 1.0) > 0.0001:
+            frappe.throw(
+                _("Commission and company currencies match but rate is not 1.0 "
+                  "for entry {0}.").format(orig.name)
+            )
+
+        # When currencies differ, require a valid positive snapshot.
+        if orig_comm_curr != orig_comp_curr and orig_rate <= 0:
+            frappe.throw(
+                _("Invalid commission-to-company rate for foreign currency "
+                  "entry {0}.").format(orig.name)
             )
 
         snapshot = frappe.parse_json(orig.calculation_snapshot or "{}") or {}
@@ -1998,8 +2025,7 @@ def handle_return_invoice(doc, method=None):
                 "transaction_currency": orig.transaction_currency,
                 "company_currency": orig.company_currency,
                 "conversion_rate_snapshot": orig.conversion_rate_snapshot,
-                "commission_currency": orig.get("commission_currency")
-                or orig.get("company_currency"),
+                "commission_currency": orig.get("commission_currency"),
                 "commission_to_company_rate": flt(
                     orig.commission_to_company_rate
                 ),
@@ -2029,11 +2055,38 @@ def handle_return_invoice(doc, method=None):
 
         # Validate commission currency and conversion rate consistency.
         orig_rate = flt(orig.commission_to_company_rate)
-        if orig_rate <= 0:
+        orig_comm_curr = getattr(orig, "commission_currency", None)
+        orig_comp_curr = getattr(orig, "company_currency", None)
+
+        # Require both currencies.
+        if not orig_comm_curr or not orig_comp_curr:
+            frappe.throw(
+                _("Missing commission or company currency for entry {0}.").format(
+                    orig.name
+                )
+            )
+
+        # Reject non-finite rates.
+        import math
+        if not math.isfinite(orig_rate) or orig_rate <= 0:
             frappe.throw(
                 _("Invalid commission-to-company rate for entry {0}.").format(
                     orig.name
                 )
+            )
+
+        # When currencies are identical, rate must be 1.0.
+        if orig_comm_curr == orig_comp_curr and abs(orig_rate - 1.0) > 0.0001:
+            frappe.throw(
+                _("Commission and company currencies match but rate is not 1.0 "
+                  "for entry {0}.").format(orig.name)
+            )
+
+        # When currencies differ, require a valid positive snapshot.
+        if orig_comm_curr != orig_comp_curr and orig_rate <= 0:
+            frappe.throw(
+                _("Invalid commission-to-company rate for foreign currency "
+                  "entry {0}.").format(orig.name)
             )
 
         snapshot = frappe.parse_json(orig.calculation_snapshot or "{}") or {}
@@ -2222,8 +2275,7 @@ def handle_return_invoice(doc, method=None):
                 "transaction_currency": orig.transaction_currency,
                 "company_currency": orig.company_currency,
                 "conversion_rate_snapshot": orig.conversion_rate_snapshot,
-                "commission_currency": orig.get("commission_currency")
-                or orig.get("company_currency"),
+                "commission_currency": orig.get("commission_currency"),
                 "commission_to_company_rate": flt(
                     orig.commission_to_company_rate
                 ),

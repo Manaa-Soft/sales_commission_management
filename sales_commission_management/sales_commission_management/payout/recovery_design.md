@@ -49,14 +49,14 @@ Recovery due before recovery = max(0, Net paid - max(0, Net entitlement))
 Outstanding recovery = max(0, Recovery due before recovery - Net recovered)
 ```
 
-### Currency Handling (P1 fix)
+### Currency Handling
 
 - **Original entitlement**: Convert `earned_commission` (commission currency) to company
   currency using the original entry's immutable `commission_to_company_rate` snapshot.
   Never use today's exchange rate.
 
 - **Return adjustments**: Convert using the original adjustment entry's
-  `commission_to_company_rate` snapshot (now propagated from original entry).
+  `commission_to_company_rate` snapshot (propagated from original entry).
 
 - **Cancellation reversals**: Convert using the original reversal entry's
   `commission_to_company_rate` snapshot (or the original entry's rate).
@@ -68,7 +68,7 @@ Outstanding recovery = max(0, Recovery due before recovery - Net recovered)
 - All final comparisons are in company currency. No mixing of commission
   currency and company currency.
 
-### Cancellation Reversal Sources (P1 fix)
+### Cancellation Reversal Sources
 
 The recovery engine must account for BOTH types of cancellation reversals:
 
@@ -111,7 +111,7 @@ compensating reversals without relying on event_type filtering.
 | Recovery complete | Outstanding = 0 (obligation previously existed) | All recoverable amount has been recovered |
 | Over-recovery (exception) | Net recovered > recovery due before recovery + tolerance | More recovered than owed — raises frappe.ValidationError |
 
-### Over-Recovery Handling (P1 fix)
+### Over-Recovery Handling
 
 ```
 recovery_due_before_recovery = max(0.0, net_paid - max(0.0, net_entitlement))
@@ -124,7 +124,7 @@ If net_recovered > recovery_due_before_recovery + _RETURN_MONEY_TOLERANCE:
 
 Over-recovery is an exception, not a returned boolean state.
 
-### Payout Allocation (P2 improvement)
+### Payout Allocation
 
 The return structure includes explicit payout allocation:
 
@@ -142,23 +142,36 @@ The return structure includes explicit payout allocation:
 }
 ```
 
-Allocation algorithm:
-1. Calculate each payout's net amount after its own submitted Payout Reversals.
-2. Calculate total recovery obligation before recoveries.
-3. Allocate that obligation to payouts oldest first (by posting_date, then name).
-4. Allocate net recovered amounts against those obligations, oldest first.
-5. Calculate each payout's outstanding recovery balance.
+Allocation algorithm (exact):
+1. Calculate each payout's net amount after its own submitted Payout Reversals:
+   `net_payout_i = payout_amount_i - submitted_payout_reversals_i`
+2. Calculate total recovery obligation before recoveries:
+   `recovery_due = max(0, net_paid - max(0, net_entitlement))`
+3. Allocate recovery_due to payouts oldest first (by posting_date, then name):
+   `due_i = min(net_payout_i, remaining_recovery_due)`
+   `remaining_recovery_due -= due_i`
+4. Allocate net_recovered against those obligations, oldest first:
+   `recovered_i = min(due_i, remaining_net_recovered)`
+   `remaining_net_recovered -= recovered_i`
+5. Calculate each payout's outstanding recovery balance:
+   `recoverable_balance_i = due_i - recovered_i`
 
-Invariant:
+Invariants:
 ```
-sum(payout recoverable balances) = outstanding recovery
+sum(due_i) == recovery_due_before_recovery
+sum(recovered_i) == net_recovered
+sum(recoverable_balance_i) == outstanding_recovery
 ```
+
+(The second invariant assumes over-recovery has already been rejected.)
 
 A Recovery Reversal must restore the exact payout allocation of the Recovery
-event it reverses. Exact linkage belongs in P3.4.4 (recovery_of field on
-Commission Payout Event).
+event it reverses. The original Recovery event must retain its allocation
+details (preferably in a child table linked to individual payout events).
+The reversal restores those stored allocations, not a new FIFO calculation.
+Exact linkage belongs in P3.4.4 (recovery_of field on Commission Payout Event).
 
-### Shared Locking Protocol (P2 fix)
+### Shared Locking Protocol
 
 All ledger writers must acquire the same lock to prevent race conditions:
 
