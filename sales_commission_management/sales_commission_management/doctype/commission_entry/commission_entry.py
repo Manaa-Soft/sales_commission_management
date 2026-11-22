@@ -1856,6 +1856,18 @@ def _validate_commission_fx_snapshot(orig):
               "entry {0}.").format(orig.name)
         )
 
+    # When commission currency equals transaction currency, the stored rate
+    # should be consistent with the conversion_rate_snapshot.
+    if orig_comm_curr == getattr(orig, "transaction_currency", None):
+        snapshot_rate = flt(getattr(orig, "conversion_rate_snapshot", 0))
+        if snapshot_rate > 0 and abs(orig_rate - snapshot_rate) > 1e-6:
+            frappe.throw(
+                _("Commission-to-company rate {0} does not match transaction "
+                  "conversion rate {1} for entry {2}.").format(
+                    orig_rate, snapshot_rate, orig.name
+                )
+            )
+
 
 def handle_return_invoice(doc, method=None):
     """Handle credit notes / returns: create proportional clawback entries.
@@ -1938,15 +1950,15 @@ def handle_return_invoice(doc, method=None):
     # Process Fixed Per Invoice entries first (invoice-level, not row-level).
     # These do not require an anchor row in the current return.
     for orig in original_entries:
-        # Validate commission currency and conversion rate consistency.
-        _validate_commission_fx_snapshot(orig)
-
         snapshot = frappe.parse_json(orig.calculation_snapshot or "{}") or {}
         calc_method = snapshot.get("calculation_method") or "Percentage"
         if calc_method != "Fixed Per Invoice":
             continue
         if not invoice_fully_returned:
             continue
+
+        # Validate only entries that will generate a Return Adjustment.
+        _validate_commission_fx_snapshot(orig)
 
         item = orig.item_code
         key = orig.get("name")
@@ -2056,9 +2068,6 @@ def handle_return_invoice(doc, method=None):
         item = orig.item_code
         key = orig.get("name")
 
-        # Validate commission currency and conversion rate consistency.
-        _validate_commission_fx_snapshot(orig)
-
         snapshot = frappe.parse_json(orig.calculation_snapshot or "{}") or {}
         calc_method = snapshot.get("calculation_method") or "Percentage"
 
@@ -2118,6 +2127,9 @@ def handle_return_invoice(doc, method=None):
         effective_returned = min(rq, remaining_qty)
         if effective_returned <= 0:
             continue
+
+        # Validate only entries that will generate a Return Adjustment.
+        _validate_commission_fx_snapshot(orig)
 
         # Cumulative returned quantity (for Fixed Per Line).
         cumulative_returned = already_returned_qty + effective_returned

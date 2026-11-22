@@ -49,6 +49,20 @@ Recovery due before recovery = max(0, Net paid - max(0, Net entitlement))
 Outstanding recovery = max(0, Recovery due before recovery - Net recovered)
 ```
 
+### Precision Normalization
+
+All monetary amounts are normalized using `currency_precision()` before comparison
+and allocation. The same precision is applied consistently to:
+
+- Recovery due before recovery
+- Net recovered
+- Per-payout due
+- Per-payout recovered
+- Outstanding recovery
+
+The three allocation invariants are evaluated against these normalized amounts.
+Do not compare unrounded amounts with rounded allocation results.
+
 ### Currency Handling
 
 - **Original entitlement**: Convert `earned_commission` (commission currency) to company
@@ -67,6 +81,16 @@ Outstanding recovery = max(0, Recovery due before recovery - Net recovered)
 
 - All final comparisons are in company currency. No mixing of commission
   currency and company currency.
+
+### Historical FX Audit (P1)
+
+Before recovery calculations use historical entries, audit that:
+- When `commission_currency == transaction_currency`, the stored
+  `commission_to_company_rate` is consistent with `conversion_rate_snapshot`.
+- For third-currency commissions, verify the independently resolved historical
+  snapshot against available evidence.
+- Do not automatically replace questionable historical rates with today's
+  exchange rate. Flag for manual review.
 
 ### Cancellation Reversal Sources
 
@@ -142,11 +166,11 @@ The return structure includes explicit payout allocation:
 }
 ```
 
-Allocation algorithm (exact):
+Allocation algorithm (exact, using normalized amounts):
 1. Calculate each payout's net amount after its own submitted Payout Reversals:
-   `net_payout_i = payout_amount_i - submitted_payout_reversals_i`
+   `net_payout_i = normalize(payout_amount_i - submitted_payout_reversals_i)`
 2. Calculate total recovery obligation before recoveries:
-   `recovery_due = max(0, net_paid - max(0, net_entitlement))`
+   `recovery_due = normalize(max(0, net_paid - max(0, net_entitlement)))`
 3. Allocate recovery_due to payouts oldest first (by posting_date, then name):
    `due_i = min(net_payout_i, remaining_recovery_due)`
    `remaining_recovery_due -= due_i`
@@ -156,7 +180,7 @@ Allocation algorithm (exact):
 5. Calculate each payout's outstanding recovery balance:
    `recoverable_balance_i = due_i - recovered_i`
 
-Invariants:
+Invariants (evaluated against normalized amounts):
 ```
 sum(due_i) == recovery_due_before_recovery
 sum(recovered_i) == net_recovered
