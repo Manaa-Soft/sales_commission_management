@@ -43,6 +43,9 @@ class CommissionEntry(Document):
                 "beneficiary_type",
                 "event_type",
                 "event_key",
+                "original_entry",
+                "return_invoice",
+                "reverses_entry",
             }
             for f in immutable_fields:
                 if self.has_value_changed(f):
@@ -1548,6 +1551,8 @@ def reverse_commission_entries(doc, method=None):
         clawback.collection_status = "Not Eligible"
         clawback.settlement_status = "Not Reserved"
         clawback.remarks = f"Clawback due to cancellation of {doc.name}"
+        clawback.reverses_entry = original.name
+        clawback.original_entry = original.original_entry or original.name
         try:
             clawback.insert(ignore_permissions=True)
         except frappe.DuplicateEntryError:
