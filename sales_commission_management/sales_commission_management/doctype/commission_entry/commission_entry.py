@@ -1313,14 +1313,314 @@ def generate_commission_on_payment(payment_entry, method=None):
         generate_commission_entries(inv, method=method, force=True)
 
 
+def _get_row_stock_qty(item):
+    """Get stock quantity for a Sales Invoice Item row."""
+    sq = flt(getattr(item, "stock_qty", 0))
+    if sq:
+        return abs(sq)
+    qty = abs(flt(getattr(item, "qty", 0)))
+    cf = flt(getattr(item, "conversion_factor", 0)) or 1.0
+    return qty * cf
+
+
+def _build_return_allocations(return_doc, original_doc):
+    """Map returned quantities and amounts to exact original invoice item rows.
+
+    Uses Sales Invoice Item.sales_invoice_item to identify the original row.
+    Never allocates by item_code alone.
+    """
+    original_items = {row.name: row for row in (original_doc.items or [])}
+    allocations = {}
+    for returned_item in return_doc.items or []:
+        original_row_name = getattr(returned_item, "sales_invoice_item", None)
+        if not original_row_name:
+            frappe.throw(
+                _(
+                    "Return row {0} is not linked to an original Sales Invoice "
+                    "Item row. Please recreate or correct the return reference."
+                ).format(returned_item.idx)
+            )
+        original_item = original_items.get(original_row_name)
+        if not original_item:
+            frappe.throw(
+                _(
+                    "Return row {0} references invalid original invoice row {1}."
+                ).format(returned_item.idx, original_row_name)
+            )
+        if returned_item.item_code != original_item.item_code:
+            frappe.throw(
+                _("Item mismatch on return row {0}.").format(returned_item.idx)
+            )
+        original_stock_uom = original_item.get("stock_uom")
+        return_stock_uom = returned_item.get("stock_uom")
+        if (
+            original_stock_uom
+            and return_stock_uom
+            and original_stock_uom != return_stock_uom
+        ):
+            frappe.throw(
+                _("Stock UOM mismatch for original row {0}.").format(
+                    original_row_name
+                )
+            )
+        original_cf = flt(original_item.get("conversion_factor")) or 1.0
+        if original_cf <= 0:
+            frappe.throw(
+                _("Invalid original conversion factor for row {0}.").format(
+                    original_row_name
+                )
+            )
+        returned_stock_qty = _get_row_stock_qty(returned_item)
+        returned_qty = returned_stock_qty / original_cf
+        if returned_qty <= 0:
+            continue
+        allocation = allocations.setdefault(
+            original_row_name,
+            {
+                "qty": 0.0,
+                "stock_qty": 0.0,
+                "net_company": 0.0,
+            },
+        )
+        allocation["qty"] += returned_qty
+        allocation["stock_qty"] += returned_stock_qty
+        allocation["net_company"] += abs(
+            flt(returned_item.get("base_net_amount"))
+        )
+    return allocations
+
+
+def _get_submitted_return_quantities(original_doc):
+    """Get cumulative submitted return quantities by original row name.
+
+    Uses submitted return invoices as the authoritative source.
+    """
+    return_names = frappe.get_all(
+        "Sales Invoice",
+        filters={
+            "return_against": original_doc.name,
+            "is_return": 1,
+            "docstatus": 1,
+        },
+        pluck="name",
+    )
+    if not return_names:
+        return {}
+    returned_rows = frappe.get_all(
+        "Sales Invoice Item",
+        filters={
+            "parent": ["in", return_names],
+            "parenttype": "Sales Invoice",
+        },
+        fields=[
+            "name",
+            "item_code",
+            "sales_invoice_item",
+            "qty",
+            "stock_qty",
+            "conversion_factor",
+        ],
+    )
+    totals = {}
+    for row in returned_rows:
+        source_row = row.get("sales_invoice_item")
+        if not source_row:
+            frappe.throw(
+                _("Submitted return item {0} has no original row reference.").format(
+                    row.name
+                )
+            )
+        original_items = {r.name: r for r in (original_doc.items or [])}
+        original_item = original_items.get(source_row)
+        if not original_item or row.item_code != original_item.item_code:
+            frappe.throw(
+                _("Invalid original invoice row reference on return item {0}.").format(
+                    row.name
+                )
+            )
+        original_cf = flt(original_item.get("conversion_factor")) or 1.0
+        if original_cf <= 0:
+            frappe.throw(
+                _("Invalid original conversion factor for row {0}.").format(
+                    source_row
+                )
+            )
+        returned_qty = _get_row_stock_qty(row) / original_cf
+        totals[source_row] = totals.get(source_row, 0.0) + returned_qty
+    return totals
+
+
+def _is_original_invoice_fully_returned(original_doc, returned_totals):
+    """Determine whether every original invoice item row is fully returned."""
+    has_items = False
+    for original_item in original_doc.items or []:
+        original_qty = abs(flt(original_item.qty))
+        if original_qty <= 0:
+            continue
+        has_items = True
+        source_row = original_item.name
+        returned_qty = returned_totals.get(source_row, 0.0)
+        if returned_qty < original_qty - 0.0001:
+            return False
+    return has_items
+
+
+def _active_return_financial_totals(original_entry):
+    """Return active cumulative basis, commission and accrual clawbacks.
+
+    Accounts for both Return Adjustment entries and their Cancellation
+    Reversal entries.
+    """
+    adjustments = frappe.get_all(
+        "Commission Entry",
+        filters={
+            "original_entry": original_entry,
+            "event_type": "Return Adjustment",
+            "docstatus": 1,
+        },
+        fields=[
+            "name",
+            "commission_basis_amount",
+            "earned_commission",
+            "accrued_amount",
+            "source_qty",
+        ],
+    )
+    if not adjustments:
+        return {
+            "basis": 0.0,
+            "commission": 0.0,
+            "accrued": 0.0,
+            "qty": 0.0,
+        }
+    adjustment_names = [row.name for row in adjustments]
+    reversals = frappe.get_all(
+        "Commission Entry",
+        filters={
+            "reverses_entry": ["in", adjustment_names],
+            "event_type": "Cancellation Reversal",
+            "docstatus": 1,
+        },
+        fields=[
+            "reverses_entry",
+            "commission_basis_amount",
+            "earned_commission",
+            "accrued_amount",
+            "source_qty",
+        ],
+    )
+    reversal_map = {}
+    for rv in reversals:
+        reversal_map.setdefault(rv.reverses_entry, []).append(rv)
+
+    total_basis = 0.0
+    total_commission = 0.0
+    total_accrued = 0.0
+    total_qty = 0.0
+    for adj in adjustments:
+        adj_basis = abs(flt(adj.commission_basis_amount))
+        adj_comm = abs(flt(adj.earned_commission))
+        adj_accrued = abs(flt(adj.accrued_amount))
+        adj_qty = abs(flt(adj.source_qty))
+        for rv in reversal_map.get(adj.name, []):
+            adj_basis -= abs(flt(rv.commission_basis_amount))
+            adj_comm -= abs(flt(rv.earned_commission))
+            adj_accrued -= abs(flt(rv.accrued_amount))
+            adj_qty -= abs(flt(rv.source_qty))
+        total_basis += max(0.0, adj_basis)
+        total_commission += max(0.0, adj_comm)
+        total_accrued += max(0.0, adj_accrued)
+        total_qty += max(0.0, adj_qty)
+    return {
+        "basis": total_basis,
+        "commission": total_commission,
+        "accrued": total_accrued,
+        "qty": total_qty,
+    }
+
+
+def _calculate_return_basis_company(orig, original_item, allocation, snapshot):
+    """Calculate the returned basis in company currency.
+
+    Uses the original entry's company-basis snapshot and the original
+    invoice row. Does not load the current Commission Plan.
+    """
+    basis_type = orig.commission_basis
+    if basis_type == "Net Total":
+        return flt(allocation["net_company"], 6)
+    if basis_type == "Gross Profit":
+        original_net = abs(flt(original_item.base_net_amount))
+        original_profit = abs(flt(orig.company_basis_amount))
+        original_cost = original_net - original_profit
+        if original_cost < -0.01:
+            frappe.throw(
+                _("Invalid original gross profit snapshot for entry {0}.").format(
+                    orig.name
+                )
+            )
+        original_stock_qty = _get_row_stock_qty(original_item)
+        if original_stock_qty <= 0:
+            frappe.throw(
+                _("Cannot determine original stock quantity for row {0}.").format(
+                    original_item.name
+                )
+            )
+        returned_cost = (
+            max(0.0, original_cost)
+            * allocation["stock_qty"]
+            / original_stock_qty
+        )
+        returned_basis = allocation["net_company"] - returned_cost
+        return flt(returned_basis, 6)
+    return flt(allocation["net_company"], 6)
+
 def handle_return_invoice(doc, method=None):
-    """Handle credit notes / returns: create proportional clawback entries."""
+    """Handle credit notes / returns: create proportional clawback entries.
+
+    Uses exact original invoice item row matching via sales_invoice_item.
+    Fails closed on missing/invalid original invoice references.
+    """
     original_name = getattr(doc, "return_against", None)
     if not original_name:
         return
 
     if _entries_exist(doc.name):
         return
+
+    # Lock original invoice to serialize concurrent return processing.
+    frappe.db.sql(
+        """
+        SELECT name
+        FROM `tabSales Invoice`
+        WHERE name = %s
+        FOR UPDATE
+        """,
+        original_name,
+    )
+
+    # Fail closed: do not suppress original invoice lookup errors.
+    original_doc = frappe.get_doc("Sales Invoice", original_name)
+    if original_doc.docstatus != 1:
+        frappe.throw(_("Original invoice must be submitted."))
+    if original_doc.company != doc.company:
+        frappe.throw(
+            _("Return and original invoice must have the same company.")
+        )
+    if original_doc.customer != doc.customer:
+        frappe.throw(
+            _("Return and original invoice must have the same customer.")
+        )
+
+    original_items = {row.name: row for row in (original_doc.items or [])}
+
+    # Build exact row allocations from return document.
+    allocations = _build_return_allocations(doc, original_doc)
+
+    # Get submitted return quantities (authoritative source).
+    returned_totals = _get_submitted_return_quantities(original_doc)
+    invoice_fully_returned = _is_original_invoice_fully_returned(
+        original_doc, returned_totals
+    )
 
     original_entries = frappe.get_all(
         "Commission Entry",
@@ -1330,8 +1630,12 @@ def handle_return_invoice(doc, method=None):
             "item_code",
             "source_row",
             "source_qty",
+            "source_uom",
             "earned_commission",
             "commission_basis_amount",
+            "company_basis_amount",
+            "fixed_amount_snapshot",
+            "calculation_snapshot",
             "beneficiary_type",
             "sales_person",
             "sales_partner",
@@ -1347,107 +1651,102 @@ def handle_return_invoice(doc, method=None):
     if not original_entries:
         return
 
-    # Use absolute quantities for returns (ERPNext stores return qty as negative).
-    returned_qty = {}
-    for item in doc.items or []:
-        returned_qty[item.item_code] = returned_qty.get(item.item_code, 0) + abs(
-            flt(item.qty)
-        )
-
-    try:
-        original_doc = frappe.get_doc("Sales Invoice", original_name)
-    except Exception:
-        original_doc = None
-    original_qty = {}
-    if original_doc:
-        for item in original_doc.items:
-            original_qty[item.item_code] = original_qty.get(item.item_code, 0) + abs(
-                flt(item.qty)
-            )
-
-    # Cumulative already-returned quantity from prior Return Adjustment entries,
-    # so multiple partial returns never reverse more than the original commission.
-    already_returned = {}
-    prior_returns = frappe.get_all(
-        "Commission Entry",
-        filters={
-            "original_invoice": original_name,
-            "event_type": "Return Adjustment",
-            "docstatus": 1,
-        },
-        fields=["item_code", "source_row", "original_entry", "source_qty"],
-    )
-    for pr in prior_returns:
-        key = pr.get("original_entry") or pr.get("source_row") or pr.get("item_code")
-        already_returned[key] = already_returned.get(key, 0) + abs(
-            flt(pr.source_qty)
-        )
-
-    # Detect ambiguous return allocation: ambiguity arises only when the same
-    # item_code appears on multiple *distinct* original invoice item rows.
-    # Multiple contributors sharing one invoice row are not ambiguous.
-    rows_by_item = {}
-    for oe in original_entries:
-        rows_by_item.setdefault(oe.item_code, set()).add(
-            getattr(oe, "source_row", None)
-        )
-
     for orig in original_entries:
         item = orig.item_code
-        distinct_rows = rows_by_item.get(item, set())
-        if len(distinct_rows) > 1 and returned_qty.get(item, 0) > 0:
+        key = orig.get("name")
+
+        original_item = original_items.get(orig.source_row)
+        if not original_item:
             frappe.throw(
-                _(
-                    "Return allocation is ambiguous: item {0} appears on multiple "
-                    "distinct original invoice rows. Match returns to the original "
-                    "invoice item row explicitly."
-                ).format(item)
+                _("Missing original invoice row for entry {0}.").format(orig.name)
             )
 
-        key = orig.get("name")
-        # Fail closed: resolve a genuine positive original quantity.
-        oq = abs(flt(orig.source_qty))
-        if not oq or oq <= 0:
-            oq = abs(flt(original_qty.get(item, 0)))
-        if not oq or oq <= 0:
+        original_qty = abs(flt(orig.source_qty))
+        if original_qty <= 0:
+            original_qty = abs(flt(original_item.qty))
+        if original_qty <= 0:
             frappe.throw(
-                _("Cannot determine original quantity for item {0} in entry {1}.").format(
-                    item, orig.name
+                _("Cannot determine original quantity for entry {0}.").format(
+                    orig.name
                 )
             )
-        rq = returned_qty.get(item, 0)
+
+        # Find the returned quantity for this exact original row.
+        allocation = allocations.get(orig.source_row)
+        if not allocation:
+            # No return for this row; skip.
+            continue
+
+        rq = allocation["qty"]
+
         # Skip if no return quantity for this item.
         if rq <= 0:
             continue
+
+        # Get active return financial totals (cancellation-aware).
+        history = _active_return_financial_totals(orig.name)
+        original_basis = abs(flt(orig.commission_basis_amount))
+        original_commission = abs(flt(orig.earned_commission))
+
         # remaining quantity that can still be returned
-        remaining = max(0.0, oq - already_returned.get(key, 0))
-        if remaining <= 0:
+        already_returned_qty = history.get("qty", 0.0)
+        remaining_qty = max(0.0, original_qty - already_returned_qty)
+        if remaining_qty <= 0:
             continue
+
         # Reject if return exceeds remaining (do not silently cap).
-        if rq > remaining + 0.0001:
+        if rq > remaining_qty + 0.0001:
             frappe.throw(
                 _(
                     "Return quantity {0} exceeds remaining returnable quantity {1} "
                     "for item {2} in entry {3}."
-                ).format(rq, remaining, item, orig.name)
+                ).format(rq, remaining_qty, item, orig.name)
             )
-        effective_returned = min(rq, remaining)
+
+        effective_returned = min(rq, remaining_qty)
         if effective_returned <= 0:
             continue
-        ratio = (effective_returned / oq) if oq else 0.0
+
+        # Calculate the reversal ratio.
+        snapshot = frappe.parse_json(orig.calculation_snapshot or "{}") or {}
+        calc_method = snapshot.get("calculation_method") or "Percentage"
+        basis_type = orig.commission_basis
+
+        if calc_method in ("Fixed Per Unit",):
+            ratio = (effective_returned / original_qty) if original_qty else 0.0
+        elif calc_method == "Fixed Per Line":
+            if effective_returned >= original_qty - 0.0001:
+                ratio = 1.0
+            else:
+                ratio = 0.0
+                continue
+        elif calc_method == "Fixed Per Invoice":
+            if not invoice_fully_returned:
+                continue
+            ratio = 1.0
+        else:
+            returned_basis = _calculate_return_basis_company(
+                orig, original_item, allocation, snapshot
+            )
+            if original_basis > 0:
+                ratio = min(1.0, returned_basis / original_basis)
+            else:
+                ratio = (effective_returned / original_qty) if original_qty else 0.0
+
         if ratio < 0:
             ratio = 0.0
         if ratio > 1:
             ratio = 1.0
 
+        if ratio <= 0:
+            continue
+
         clawback_commission = -1 * flt(orig.earned_commission) * ratio
         clawback_basis = -1 * flt(orig.commission_basis_amount) * ratio
 
-        # Reverse the accrued portion of the original entry proportionally so
-        # Periodic Accrual settlement netting reflects the return.
+        # Reverse the accrued portion proportionally.
         from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import _accrued_for_entry
 
-        # Fail closed: do not fall back to stale accrued_amount.
         _orig_accrued = _accrued_for_entry(orig.name)
         clawback_accrued = -1 * flt(_orig_accrued) * ratio
 
@@ -1493,7 +1792,8 @@ def handle_return_invoice(doc, method=None):
                 "transaction_currency": orig.transaction_currency,
                 "company_currency": orig.company_currency,
                 "conversion_rate_snapshot": orig.conversion_rate_snapshot,
-                "commission_currency": orig.get("commission_currency") or orig.get("company_currency"),
+                "commission_currency": orig.get("commission_currency")
+                or orig.get("company_currency"),
                 "earned_delta": flt(clawback_commission, 6),
                 "sales_invoice": doc.name,
                 "exchange_rate": orig.conversion_rate_snapshot,
@@ -1513,8 +1813,6 @@ def handle_return_invoice(doc, method=None):
         except frappe.DuplicateEntryError:
             continue
         entry.submit()
-
-
 def reverse_commission_entries(doc, method=None):
     """Triggered on Sales Invoice cancellation: full clawback of all entries."""
     existing_entries = frappe.get_all(
