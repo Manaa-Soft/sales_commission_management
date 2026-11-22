@@ -100,20 +100,6 @@ def resolve_employee_payroll_currencies(settlement, additional_salary):
     if not as_doc.company or as_doc.company != sett.company:
         frappe.throw(_("Additional Salary company must match settlement company."))
 
-    # Validate Additional Salary is linked to this settlement.
-    if as_doc.ref_doctype != "Commission Settlement" or as_doc.ref_docname != settlement:
-        frappe.throw(_("Additional Salary must be linked to this settlement."))
-    if sett.settlement_method != "Additional Salary":
-        frappe.throw(_("Settlement method must be Additional Salary."))
-    if sett.settlement_document_type != "Additional Salary":
-        frappe.throw(_("Settlement document type must be Additional Salary."))
-    if sett.settlement_document != additional_salary:
-        frappe.throw(_("Settlement document must match the Additional Salary."))
-    if as_doc.employee != sett.employee:
-        frappe.throw(_("Additional Salary employee must match settlement employee."))
-    if not as_doc.company or as_doc.company != sett.company:
-        frappe.throw(_("Additional Salary company must match settlement company."))
-
     salary_currency = getattr(as_doc, "currency", None)
     payroll_date = getattr(as_doc, "payroll_date", None) or sett.period_from or frappe.utils.nowdate()
 
@@ -251,10 +237,15 @@ def get_payroll_evidence_level(salary_slip=None, payroll_entry=None, bank_entry=
         'Bank Reconciled' - Reconciled Bank Transaction linked to the payroll bank entry
     """
     if bank_transaction and bank_entry and payroll_entry:
-        # If salary_slip is provided, verify it belongs to this payroll entry.
-        if salary_slip and frappe.db.exists("Salary Slip", salary_slip):
+        # If salary_slip is provided, it must exist, be submitted, and belong to this payroll entry.
+        if salary_slip:
+            if not frappe.db.exists("Salary Slip", salary_slip):
+                return None
+            ss_status = frappe.db.get_value("Salary Slip", salary_slip, "docstatus")
+            if ss_status != 1:
+                return None
             ss_pe = frappe.db.get_value("Salary Slip", salary_slip, "payroll_entry")
-            if ss_pe and ss_pe != payroll_entry:
+            if not ss_pe or ss_pe != payroll_entry:
                 return None
         # Verify bank transaction is reconciled and linked to the bank entry
         # which is linked to the payroll entry.
@@ -295,10 +286,15 @@ def get_payroll_evidence_level(salary_slip=None, payroll_entry=None, bank_entry=
                                             return "Bank Reconciled"
         return None
     if payroll_entry and bank_entry:
-        # If salary_slip is provided, verify it belongs to this payroll entry.
-        if salary_slip and frappe.db.exists("Salary Slip", salary_slip):
+        # If salary_slip is provided, it must exist, be submitted, and belong to this payroll entry.
+        if salary_slip:
+            if not frappe.db.exists("Salary Slip", salary_slip):
+                return None
+            ss_status = frappe.db.get_value("Salary Slip", salary_slip, "docstatus")
+            if ss_status != 1:
+                return None
             ss_pe = frappe.db.get_value("Salary Slip", salary_slip, "payroll_entry")
-            if ss_pe and ss_pe != payroll_entry:
+            if not ss_pe or ss_pe != payroll_entry:
                 return None
         # Verify payroll entry is submitted.
         if frappe.db.exists("Payroll Entry", payroll_entry):
