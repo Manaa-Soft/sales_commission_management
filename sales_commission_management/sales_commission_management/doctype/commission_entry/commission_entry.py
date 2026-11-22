@@ -1539,22 +1539,23 @@ def _active_return_financial_totals(original_entry):
     }
 
 
-def _calculate_return_basis_company(orig, original_item, allocation, snapshot):
-    """Calculate the returned basis in company currency.
+def _calculate_return_basis_company(orig, original_item, allocation, snapshot, original_qty):
+    """Calculate returned basis in company currency after contributor split.
 
-    Uses the original entry's company-basis snapshot and the original
-    invoice row. Does not load the current Commission Plan.
+    Handles Net Total, Gross Profit, and Fixed Amount basis types.
+    Applies the original contributor split to the returned basis.
     """
+    split_share = _get_original_split_share(orig, snapshot)
     basis_type = orig.commission_basis
     if basis_type == "Net Total":
-        return flt(allocation["net_company"], 6)
-    if basis_type == "Gross Profit":
+        full_returned_basis = flt(allocation["net_company"])
+    elif basis_type == "Gross Profit":
         original_net = abs(flt(original_item.base_net_amount))
         original_profit = abs(flt(orig.company_basis_amount))
         original_cost = original_net - original_profit
         if original_cost < -0.01:
             frappe.throw(
-                _("Invalid original gross profit snapshot for entry {0}.").format(
+                _("Invalid original cost snapshot for entry {0}.").format(
                     orig.name
                 )
             )
@@ -1570,9 +1571,18 @@ def _calculate_return_basis_company(orig, original_item, allocation, snapshot):
             * allocation["stock_qty"]
             / original_stock_qty
         )
-        returned_basis = allocation["net_company"] - returned_cost
-        return flt(returned_basis, 6)
-    return flt(allocation["net_company"], 6)
+        full_returned_basis = allocation["net_company"] - returned_cost
+    elif basis_type in ("Fixed Amount", "Fixed"):
+        # Fixed Amount: use original fixed-amount snapshot * returned quantity ratio.
+        fixed_snapshot = flt(orig.fixed_amount_snapshot)
+        if fixed_snapshot <= 0:
+            fixed_snapshot = flt((snapshot or {}).get("fixed_amount", 0))
+        full_returned_basis = fixed_snapshot * (allocation["qty"] / original_qty) if original_qty else 0.0
+    else:
+        full_returned_basis = flt(allocation["net_company"])
+    # Apply contributor split.
+    returned_basis = full_returned_basis * split_share
+    return flt(returned_basis, 6)
 
 def handle_return_invoice(doc, method=None):
     """Handle credit notes / returns: create proportional clawback entries.
@@ -1651,9 +1661,128 @@ def handle_return_invoice(doc, method=None):
     if not original_entries:
         return
 
+    # Process Fixed Per Invoice entries first (invoice-level, not row-level).
+    # These do not require an anchor row in the current return.
+    for orig in original_entries:
+        snapshot = frappe.parse_json(orig.calculation_snapshot or "{}") or {}
+        calc_method = snapshot.get("calculation_method") or "Percentage"
+        if calc_method != "Fixed Per Invoice":
+            continue
+        if not invoice_fully_returned:
+            continue
+
+        item = orig.item_code
+        key = orig.get("name")
+        original_item = original_items.get(orig.source_row)
+        if not original_item:
+            # For invoice-level, try to find any original item.
+            if not original_items:
+                frappe.throw(
+                    _("Missing original invoice items for entry {0}.").format(orig.name)
+                )
+            original_item = list(original_items.values())[0]
+
+        original_qty = abs(flt(orig.source_qty))
+        if original_qty <= 0:
+            original_qty = abs(flt(original_item.qty))
+        if original_qty <= 0:
+            frappe.throw(
+                _("Cannot determine original quantity for entry {0}.").format(
+                    orig.name
+                )
+            )
+
+        history = _active_return_financial_totals(orig.name)
+        already_returned_qty = history.get("qty", 0.0)
+        # Fixed Per Invoice: reverse only once (full invoice).
+        if history.get("commission", 0.0) > 0:
+            # Already reversed; skip.
+            continue
+
+        ratio = 1.0
+
+        clawback_commission = -1 * flt(orig.earned_commission) * ratio
+        clawback_basis = -1 * flt(orig.commission_basis_amount) * ratio
+
+        from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import _accrued_for_entry
+
+        _orig_accrued = _accrued_for_entry(orig.name)
+        clawback_accrued = -1 * flt(_orig_accrued) * ratio
+
+        ev_key = _event_key(
+            "Sales Invoice",
+            doc.name,
+            orig.get("name"),
+            orig.get("plan"),
+            orig.get("pool_code"),
+            orig.beneficiary_type,
+            orig.sales_person or orig.sales_partner,
+            "Return Adjustment",
+        )
+
+        existing = frappe.db.get_value(
+            "Commission Entry", {"event_key": ev_key, "docstatus": ["!=", 2]}, "name"
+        )
+        if existing:
+            continue
+
+        entry = frappe.get_doc(
+            {
+                "doctype": "Commission Entry",
+                "event_key": ev_key,
+                "event_type": "Return Adjustment",
+                "company": doc.company,
+                "posting_date": doc.posting_date,
+                "source_doctype": "Sales Invoice",
+                "source_name": doc.name,
+                "original_invoice": original_name,
+                "return_invoice": doc.name,
+                "plan": orig.plan,
+                "pool_code": orig.pool_code,
+                "beneficiary_type": orig.beneficiary_type,
+                "sales_person": orig.sales_person,
+                "sales_partner": orig.sales_partner,
+                "source_row": getattr(orig, "source_row", None),
+                "source_qty": flt(original_qty, 6),
+                "original_entry": orig.name,
+                "item_code": orig.item_code,
+                "commission_basis": orig.commission_basis,
+                "commission_basis_amount": flt(clawback_basis, 2),
+                "transaction_currency": orig.transaction_currency,
+                "company_currency": orig.company_currency,
+                "conversion_rate_snapshot": orig.conversion_rate_snapshot,
+                "commission_currency": orig.get("commission_currency")
+                or orig.get("company_currency"),
+                "earned_delta": flt(clawback_commission, 6),
+                "sales_invoice": doc.name,
+                "exchange_rate": orig.conversion_rate_snapshot,
+                "earned_commission": flt(clawback_commission, 2),
+                "collection_eligible_amount": flt(clawback_commission, 2),
+                "payable_amount": flt(clawback_commission, 2),
+                "accrued_amount": flt(clawback_accrued, 2),
+                "paid_amount": 0,
+                "settled_amount": 0,
+                "outstanding_amount": flt(clawback_commission, 2),
+                "status": "Reversed",
+                "remarks": f"Clawback for return {doc.name} against {original_name}",
+            }
+        )
+        try:
+            entry.insert(ignore_permissions=True)
+        except frappe.DuplicateEntryError:
+            continue
+        entry.submit()
+
     for orig in original_entries:
         item = orig.item_code
         key = orig.get("name")
+
+        snapshot = frappe.parse_json(orig.calculation_snapshot or "{}") or {}
+        calc_method = snapshot.get("calculation_method") or "Percentage"
+
+        # Skip Fixed Per Invoice (handled above).
+        if calc_method == "Fixed Per Invoice":
+            continue
 
         original_item = original_items.get(orig.source_row)
         if not original_item:
@@ -1687,6 +1816,7 @@ def handle_return_invoice(doc, method=None):
         history = _active_return_financial_totals(orig.name)
         original_basis = abs(flt(orig.commission_basis_amount))
         original_commission = abs(flt(orig.earned_commission))
+        original_accrued = abs(flt(history.get("accrued", 0))) or abs(flt(orig.accrued_amount))
 
         # remaining quantity that can still be returned
         already_returned_qty = history.get("qty", 0.0)
@@ -1707,31 +1837,45 @@ def handle_return_invoice(doc, method=None):
         if effective_returned <= 0:
             continue
 
+        # Cumulative returned quantity (for Fixed Per Line).
+        cumulative_returned = already_returned_qty + effective_returned
+
         # Calculate the reversal ratio.
-        snapshot = frappe.parse_json(orig.calculation_snapshot or "{}") or {}
-        calc_method = snapshot.get("calculation_method") or "Percentage"
         basis_type = orig.commission_basis
 
         if calc_method in ("Fixed Per Unit",):
             ratio = (effective_returned / original_qty) if original_qty else 0.0
         elif calc_method == "Fixed Per Line":
-            if effective_returned >= original_qty - 0.0001:
-                ratio = 1.0
+            # Use cumulative returned quantity to determine full reversal.
+            if cumulative_returned >= original_qty - 0.0001:
+                # Reverse only the remaining commission.
+                remaining_commission = max(0.0, original_commission - history.get("commission", 0.0))
+                if remaining_commission > 0 and original_commission > 0:
+                    ratio = remaining_commission / original_commission
+                else:
+                    ratio = 0.0
+                    continue
             else:
                 ratio = 0.0
                 continue
-        elif calc_method == "Fixed Per Invoice":
-            if not invoice_fully_returned:
-                continue
-            ratio = 1.0
         else:
             returned_basis = _calculate_return_basis_company(
-                orig, original_item, allocation, snapshot
+                orig, original_item, allocation, snapshot, original_qty
             )
             if original_basis > 0:
                 ratio = min(1.0, returned_basis / original_basis)
             else:
                 ratio = (effective_returned / original_qty) if original_qty else 0.0
+
+        # Enforce cumulative limits.
+        remaining_basis_limit = max(0.0, original_basis - history.get("basis", 0.0))
+        if clawback_basis_abs := abs(flt(orig.commission_basis_amount) * ratio):
+            if clawback_basis_abs > remaining_basis_limit + 0.0001:
+                ratio = remaining_basis_limit / original_basis if original_basis > 0 else 0.0
+        remaining_comm_limit = max(0.0, original_commission - history.get("commission", 0.0))
+        clawback_comm_abs = abs(flt(orig.earned_commission) * ratio)
+        if clawback_comm_abs > remaining_comm_limit + 0.0001:
+            ratio = remaining_comm_limit / original_commission if original_commission > 0 else 0.0
 
         if ratio < 0:
             ratio = 0.0
@@ -1748,8 +1892,26 @@ def handle_return_invoice(doc, method=None):
         from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import _accrued_for_entry
 
         _orig_accrued = _accrued_for_entry(orig.name)
-        clawback_accrued = -1 * flt(_orig_accrued) * ratio
+        _already_reversed_accrued = history.get("accrued", 0.0)
+        _remaining_accrued = max(0.0, abs(_orig_accrued) - _already_reversed_accrued)
+        clawback_accrued = -1 * min(abs(_orig_accrued) * ratio, _remaining_accrued)
 
+        ev_key = _event_key(
+            "Sales Invoice",
+            doc.name,
+            orig.get("name"),
+            orig.get("plan"),
+            orig.get("pool_code"),
+            orig.beneficiary_type,
+            orig.sales_person or orig.sales_partner,
+            "Return Adjustment",
+        )
+
+        existing = frappe.db.get_value(
+            "Commission Entry", {"event_key": ev_key, "docstatus": ["!=", 2]}, "name"
+        )
+        if existing:
+            continue
         ev_key = _event_key(
             "Sales Invoice",
             doc.name,
