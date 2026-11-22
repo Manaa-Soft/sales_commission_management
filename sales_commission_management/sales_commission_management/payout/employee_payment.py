@@ -348,6 +348,12 @@ def validate_employee_payroll_link(settlement, additional_salary, salary_slip=No
     if sett.beneficiary_type != "Sales Person":
         frappe.throw(_("Settlement must be for a Sales Person."))
 
+    # Payroll and bank evidence must always have a Salary Slip.
+    if (payroll_entry or bank_entry or bank_transaction) and not salary_slip:
+        frappe.throw(
+            _("Salary Slip is required when validating Payroll Entry, Bank Entry, or Bank Transaction.")
+        )
+
     if not frappe.db.exists("Additional Salary", additional_salary):
         frappe.throw(_("Additional Salary {0} does not exist.").format(additional_salary))
     as_doc = frappe.get_doc("Additional Salary", additional_salary)
@@ -367,8 +373,11 @@ def validate_employee_payroll_link(settlement, additional_salary, salary_slip=No
     if as_doc.employee != sett.employee:
         frappe.throw(_("Additional Salary employee must match settlement employee."))
 
+    if not as_doc.company or as_doc.company != sett.company:
+        frappe.throw(_("Additional Salary company must match settlement company."))
+
     emp_company = frappe.db.get_value("Employee", as_doc.employee, "company")
-    if emp_company and emp_company != sett.company:
+    if not emp_company or emp_company != sett.company:
         frappe.throw(_("Employee company must match settlement company."))
 
     if salary_slip:
@@ -455,5 +464,4 @@ def validate_employee_payroll_link(settlement, additional_salary, salary_slip=No
         )
         if not allocations:
             frappe.throw(_("Bank Transaction does not reference the Bank Entry."))
-    elif payroll_entry or bank_entry or bank_transaction:
-        frappe.throw(_("Payroll Entry, Bank Entry, or Bank Transaction requires a Salary Slip for validation."))
+    # Early guard above ensures salary_slip is present when any payroll/bank evidence is supplied.
