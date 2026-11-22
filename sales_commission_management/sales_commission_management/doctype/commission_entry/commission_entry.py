@@ -37,8 +37,8 @@ class CommissionEntry(Document):
                 "company",
                 "sales_person",
                 "sales_partner",
-                "commission_plan",
-                "commission_rule",
+                "plan",
+                "rule",
                 "pool_code",
                 "beneficiary_type",
                 "event_type",
@@ -46,6 +46,12 @@ class CommissionEntry(Document):
                 "original_entry",
                 "return_invoice",
                 "reverses_entry",
+                "source_row",
+                "original_invoice",
+                "source_name",
+                "source_doctype",
+                "calculation_snapshot",
+                "commission_basis",
             }
             for f in immutable_fields:
                 if self.has_value_changed(f):
