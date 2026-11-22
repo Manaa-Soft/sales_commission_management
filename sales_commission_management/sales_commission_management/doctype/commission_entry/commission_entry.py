@@ -1892,6 +1892,7 @@ def handle_return_invoice(doc, method=None):
             "company_currency",
             "commission_currency",
             "conversion_rate_snapshot",
+            "commission_to_company_rate",
             "pool_code",
         ],
     )
@@ -1901,6 +1902,15 @@ def handle_return_invoice(doc, method=None):
     # Process Fixed Per Invoice entries first (invoice-level, not row-level).
     # These do not require an anchor row in the current return.
     for orig in original_entries:
+        # Validate commission currency and conversion rate consistency.
+        orig_rate = flt(orig.commission_to_company_rate)
+        if orig_rate <= 0:
+            frappe.throw(
+                _("Invalid commission-to-company rate for entry {0}.").format(
+                    orig.name
+                )
+            )
+
         snapshot = frappe.parse_json(orig.calculation_snapshot or "{}") or {}
         calc_method = snapshot.get("calculation_method") or "Percentage"
         if calc_method != "Fixed Per Invoice":
@@ -1990,6 +2000,9 @@ def handle_return_invoice(doc, method=None):
                 "conversion_rate_snapshot": orig.conversion_rate_snapshot,
                 "commission_currency": orig.get("commission_currency")
                 or orig.get("company_currency"),
+                "commission_to_company_rate": flt(
+                    orig.commission_to_company_rate
+                ),
                 "earned_delta": flt(clawback_commission, 6),
                 "sales_invoice": doc.name,
                 "exchange_rate": orig.conversion_rate_snapshot,
@@ -2013,6 +2026,15 @@ def handle_return_invoice(doc, method=None):
     for orig in original_entries:
         item = orig.item_code
         key = orig.get("name")
+
+        # Validate commission currency and conversion rate consistency.
+        orig_rate = flt(orig.commission_to_company_rate)
+        if orig_rate <= 0:
+            frappe.throw(
+                _("Invalid commission-to-company rate for entry {0}.").format(
+                    orig.name
+                )
+            )
 
         snapshot = frappe.parse_json(orig.calculation_snapshot or "{}") or {}
         calc_method = snapshot.get("calculation_method") or "Percentage"
@@ -2202,6 +2224,9 @@ def handle_return_invoice(doc, method=None):
                 "conversion_rate_snapshot": orig.conversion_rate_snapshot,
                 "commission_currency": orig.get("commission_currency")
                 or orig.get("company_currency"),
+                "commission_to_company_rate": flt(
+                    orig.commission_to_company_rate
+                ),
                 "earned_delta": flt(clawback_commission, 6),
                 "sales_invoice": doc.name,
                 "exchange_rate": orig.conversion_rate_snapshot,

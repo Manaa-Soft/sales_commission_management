@@ -20,7 +20,6 @@ def get_commission_recovery_position(commission_entry):
         - net_recovered: float (company currency) — Recoveries - Recovery Reversals
         - recovery_due_before_recovery: float — max(0, net_paid - net_entitlement)
         - outstanding_recovery: float — max(0, recovery_due_before_recovery - net_recovered)
-        - has_over_recovery: bool — True if net_recovered > recovery_due_before_recovery + tolerance
         - currency: str — company currency
         - commission_entry: str — the original entry name
         - payout_events: list — Payout event names (ordered by posting_date, name)
@@ -48,8 +47,6 @@ Net recovered = Sum of Recovery event company_amount - Sum of Recovery Reversal 
 Recovery due before recovery = max(0, Net paid - max(0, Net entitlement))
 
 Outstanding recovery = max(0, Recovery due before recovery - Net recovered)
-
-Has over-recovery = Net recovered > Recovery due before recovery + tolerance
 ```
 
 ### Currency Handling (P1 fix)
@@ -59,7 +56,7 @@ Has over-recovery = Net recovered > Recovery due before recovery + tolerance
   Never use today's exchange rate.
 
 - **Return adjustments**: Convert using the original adjustment entry's
-  `commission_to_company_rate` snapshot.
+  `commission_to_company_rate` snapshot (now propagated from original entry).
 
 - **Cancellation reversals**: Convert using the original reversal entry's
   `commission_to_company_rate` snapshot (or the original entry's rate).
@@ -108,24 +105,24 @@ compensating reversals without relying on event_type filtering.
 
 | State | Condition | Meaning |
 |---|---|---|
-| No recovery due | `outstanding_recovery == 0` | Either no returns exceeded unpaid commission, or all paid amounts recovered |
-| Partial recovery | `0 < outstanding_recovery < net_paid` | Some commission paid but not yet recovered |
-| Full recovery | `outstanding_recovery == net_paid` | All paid commission needs recovery |
-| Over-recovery (error) | `net_recovered > recovery_due_before_recovery + tolerance` | More recovered than owed — raises frappe.ValidationError |
+| No recovery obligation | Recovery due before recovery = 0 | No returns exceeded unpaid commission |
+| Full recovery required | Outstanding = recovery due before recovery | All recovery obligation is outstanding |
+| Partially recovered | 0 < Outstanding < recovery due before recovery | Some amount has been recovered |
+| Recovery complete | Outstanding = 0 (obligation previously existed) | All recoverable amount has been recovered |
+| Over-recovery (exception) | Net recovered > recovery due before recovery + tolerance | More recovered than owed — raises frappe.ValidationError |
 
 ### Over-Recovery Handling (P1 fix)
 
 ```
 recovery_due_before_recovery = max(0.0, net_paid - max(0.0, net_entitlement))
 
-has_over_recovery = net_recovered > recovery_due_before_recovery + _RETURN_MONEY_TOLERANCE
-
 outstanding_recovery = max(0.0, recovery_due_before_recovery - net_recovered)
+
+If net_recovered > recovery_due_before_recovery + _RETURN_MONEY_TOLERANCE:
+    raise frappe.ValidationError with diagnostic amounts
 ```
 
-If `has_over_recovery` is True, raise `frappe.ValidationError` with diagnostic
-amounts (net_paid, net_entitlement, net_recovered, recovery_due_before_recovery).
-Do not return a boolean state — raise the exception.
+Over-recovery is an exception, not a returned boolean state.
 
 ### Payout Allocation (P2 improvement)
 
@@ -145,13 +142,21 @@ The return structure includes explicit payout allocation:
 }
 ```
 
-Allocation strategy (oldest first):
-1. Order payout events by posting_date, then name (ascending).
-2. Allocate recovery against payouts in order (oldest first).
-3. Each payout's recoverable amount = `min(payout_amount, remaining_recovery_due)`.
+Allocation algorithm:
+1. Calculate each payout's net amount after its own submitted Payout Reversals.
+2. Calculate total recovery obligation before recoveries.
+3. Allocate that obligation to payouts oldest first (by posting_date, then name).
+4. Allocate net recovered amounts against those obligations, oldest first.
+5. Calculate each payout's outstanding recovery balance.
 
-This enables traceable linkage between recovered money and original payouts
-for the recovery-event implementation (P3.4.4).
+Invariant:
+```
+sum(payout recoverable balances) = outstanding recovery
+```
+
+A Recovery Reversal must restore the exact payout allocation of the Recovery
+event it reverses. Exact linkage belongs in P3.4.4 (recovery_of field on
+Commission Payout Event).
 
 ### Shared Locking Protocol (P2 fix)
 
@@ -193,8 +198,6 @@ All ledger writers must acquire the same lock to prevent race conditions:
 - `Commission Entry` DocType (original, Return Adjustment, Cancellation Reversal)
 - `Commission Payout Event` DocType (Payout, Payout Reversal, Recovery, Recovery Reversal)
 - `currency_precision` helper from utils.py
-- `_accrued_for_entry` from commission_accrual_batch.py
-- `_get_return_adjustment_remaining_balances` from commission_entry.py
 
 ### Implementation Order
 
