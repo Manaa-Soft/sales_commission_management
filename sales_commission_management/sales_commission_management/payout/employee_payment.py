@@ -421,6 +421,10 @@ def validate_employee_payroll_link(settlement, additional_salary, salary_slip=No
             je_status = frappe.db.get_value("Journal Entry", bank_entry, "docstatus")
             if je_status != 1:
                 frappe.throw(_("Bank Entry must be submitted."))
+            # Journal Entry must belong to the same company as the settlement.
+            je_company = frappe.db.get_value("Journal Entry", bank_entry, "company")
+            if not je_company or je_company != sett.company:
+                frappe.throw(_("Bank Entry company must match settlement company."))
             voucher_type = frappe.db.get_value("Journal Entry", bank_entry, "voucher_type")
             if voucher_type not in ("Bank Entry", "Cash Entry"):
                 frappe.throw(_("Bank Entry must be a Bank or Cash Entry."))
