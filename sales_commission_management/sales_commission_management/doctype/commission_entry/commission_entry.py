@@ -1399,11 +1399,35 @@ def handle_return_invoice(doc, method=None):
             )
 
         key = orig.get("name")
-        oq = abs(flt(orig.source_qty)) or original_qty.get(item, 0) or 1
+        # Fail closed: resolve a genuine positive original quantity.
+        oq = abs(flt(orig.source_qty))
+        if not oq or oq <= 0:
+            oq = abs(flt(original_qty.get(item, 0)))
+        if not oq or oq <= 0:
+            frappe.throw(
+                _("Cannot determine original quantity for item {0} in entry {1}.").format(
+                    item, orig.name
+                )
+            )
         rq = returned_qty.get(item, 0)
+        # Skip if no return quantity for this item.
+        if rq <= 0:
+            continue
         # remaining quantity that can still be returned
         remaining = max(0.0, oq - already_returned.get(key, 0))
-        effective_returned = min(rq, remaining) if remaining > 0 else 0
+        if remaining <= 0:
+            continue
+        # Reject if return exceeds remaining (do not silently cap).
+        if rq > remaining + 0.0001:
+            frappe.throw(
+                _(
+                    "Return quantity {0} exceeds remaining returnable quantity {1} "
+                    "for item {2} in entry {3}."
+                ).format(rq, remaining, item, orig.name)
+            )
+        effective_returned = min(rq, remaining)
+        if effective_returned <= 0:
+            continue
         ratio = (effective_returned / oq) if oq else 0.0
         if ratio < 0:
             ratio = 0.0
@@ -1475,7 +1499,6 @@ def handle_return_invoice(doc, method=None):
                 "settled_amount": 0,
                 "outstanding_amount": flt(clawback_commission, 2),
                 "status": "Reversed" if ratio >= 0.999 else "Adjusted",
-                "original_entry": orig.name,
                 "remarks": f"Clawback for return {doc.name} against {original_name}",
             }
         )
