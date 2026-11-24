@@ -607,3 +607,209 @@ def create_recovery_event(event_data):
     event_data.setdefault("event_type", "Recovery")
     name = get_or_create_payout_event(event_data)
     return name
+
+# GL entry functions for recovery accounting (P3.4.6)
+
+def create_recovery_receivable_gl_entry(
+    company,
+    commission_entry,
+    recovery_amount,
+    currency,
+    posting_date,
+    remarks=None,
+):
+    """Create GL entries for a recovery receivable.
+
+    When a paid commission becomes recoverable (due to returns after payout):
+    - Debit: Commission Recovery Receivable account
+    - Credit: Commission Expense or Payroll Expense account
+
+    Args:
+        company: Company name.
+        commission_entry: Name of the original Commission Entry.
+        recovery_amount: Amount to recognize as receivable (company currency).
+        currency: Company currency.
+        posting_date: Date for the GL entry.
+        remarks: Optional remarks.
+
+    Returns:
+        str: Name of the created Journal Entry, or None if no account mapping.
+    """
+    import frappe
+    from frappe.utils import flt
+    from sales_commission_management.sales_commission_management.utils import (
+        currency_precision as _cp,
+    )
+
+    if not company or not commission_entry or not recovery_amount:
+        return None
+
+    mapping = None
+    try:
+        mappings = frappe.get_all(
+            "Commission Account Mapping",
+            filters={"company": company, "enabled": 1},
+            fields=[
+                "commission_expense_account",
+                "payroll_commission_expense_account",
+                "commission_recovery_receivable_account",
+                "cost_center",
+            ],
+            limit=1,
+        )
+        if mappings:
+            mapping = mappings[0]
+    except Exception:
+        return None
+
+    if not mapping:
+        return None
+
+    receivable_account = mapping.get("commission_recovery_receivable_account")
+    if not receivable_account:
+        return None
+
+    expense_account = mapping.get("commission_expense_account")
+    if not expense_account:
+        expense_account = mapping.get("payroll_commission_expense_account")
+    if not expense_account:
+        return None
+
+    cost_center = mapping.get("cost_center")
+
+    try:
+        je = frappe.get_doc({
+            "doctype": "Journal Entry",
+            "voucher_type": "Journal Entry",
+            "company": company,
+            "posting_date": posting_date,
+            "accounts": [
+                {
+                    "account": receivable_account,
+                    "debit_in_account_currency": flt(recovery_amount, _cp(currency)),
+                    "credit_in_account_currency": 0,
+                },
+                {
+                    "account": expense_account,
+                    "debit_in_account_currency": 0,
+                    "credit_in_account_currency": flt(recovery_amount, _cp(currency)),
+                },
+            ],
+            "user_remark": remarks or "Commission recovery receivable for {0}".format(
+                commission_entry
+            ),
+        })
+        if cost_center:
+            for a in je.accounts:
+                a.cost_center = cost_center
+        je.insert(ignore_permissions=True)
+        je.submit()
+        return je.name
+    except Exception:
+        frappe.log_error(
+            frappe.get_traceback(),
+            "create_recovery_receivable_gl_entry failed for {0}".format(
+                commission_entry
+            ),
+        )
+        return None
+
+
+def create_recovery_collection_gl_entry(
+    company,
+    commission_entry,
+    recovery_amount,
+    currency,
+    posting_date,
+    bank_account=None,
+    remarks=None,
+):
+    """Create GL entries for an actual recovery collection.
+
+    When money is actually recovered (cash collected or offset applied):
+    - Debit: Bank or Payable account
+    - Credit: Commission Recovery Receivable account
+
+    Args:
+        company: Company name.
+        commission_entry: Name of the original Commission Entry.
+        recovery_amount: Amount collected (company currency).
+        currency: Company currency.
+        posting_date: Date for the GL entry.
+        bank_account: Bank/Payable account to debit.
+        remarks: Optional remarks.
+
+    Returns:
+        str: Name of the created Journal Entry, or None.
+    """
+    if not company or not commission_entry or not recovery_amount:
+        return None
+
+    mapping = None
+    try:
+        mappings = frappe.get_all(
+            "Commission Account Mapping",
+            filters={"company": company, "enabled": 1},
+            fields=[
+                "commission_recovery_receivable_account",
+                "cost_center",
+            ],
+            limit=1,
+        )
+        if mappings:
+            mapping = mappings[0]
+    except Exception:
+        return None
+
+    if not mapping:
+        return None
+
+    receivable_account = mapping.get("commission_recovery_receivable_account")
+    if not receivable_account:
+        return None
+
+    if not bank_account:
+        bank_account = frappe.db.get_value(
+            "Account", {"account_type": "Bank", "company": company}, "name"
+        )
+    if not bank_account:
+        return None
+
+    cost_center = mapping.get("cost_center")
+
+    try:
+        je = frappe.get_doc({
+            "doctype": "Journal Entry",
+            "voucher_type": "Journal Entry",
+            "company": company,
+            "posting_date": posting_date,
+            "accounts": [
+                {
+                    "account": bank_account,
+                    "debit_in_account_currency": flt(recovery_amount, _cp(currency)),
+                    "credit_in_account_currency": 0,
+                },
+                {
+                    "account": receivable_account,
+                    "debit_in_account_currency": 0,
+                    "credit_in_account_currency": flt(recovery_amount, _cp(currency)),
+                },
+            ],
+            "user_remark": remarks or "Commission recovery collection for {0}".format(
+                commission_entry
+            ),
+        })
+        if cost_center:
+            for a in je.accounts:
+                a.cost_center = cost_center
+        je.insert(ignore_permissions=True)
+        je.submit()
+        return je.name
+    except Exception:
+        frappe.log_error(
+            frappe.get_traceback(),
+            "create_recovery_collection_gl_entry failed for {0}".format(
+                commission_entry
+            ),
+        )
+        return None

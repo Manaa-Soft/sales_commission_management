@@ -1,39 +1,87 @@
 {
- "actions": [],
- "creation": "2026-01-01 00:00:00.000000",
- "doctype": "DocType",
- "editable_grid": 1,
- "engine": "InnoDB",
+  "actions": [],
+  "creation": "2026-01-01 00:00:00.000000",
+  "doctype": "DocType",
+  "editable_grid": 1,
+  "engine": "InnoDB",
   "field_order": [
-   "company",
-   "commission_expense_account",
-   "accrued_commission_payable_account",
-   "commission_payable_account",
-   "payroll_commission_expense_account",
-   "cost_center",
-   "default_supplier_payment_term",
-   "enabled"
+    "company",
+    "commission_expense_account",
+    "accrued_commission_payable_account",
+    "commission_payable_account",
+    "payroll_commission_expense_account",
+    "commission_recovery_receivable_account",
+    "cost_center",
+    "default_supplier_payment_term",
+    "enabled"
   ],
- "fields": [
-  { "fieldname": "company", "fieldtype": "Link", "label": "Company", "options": "Company", "reqd": 1 },
-  { "fieldname": "commission_expense_account", "fieldtype": "Link", "label": "Commission Expense Account", "options": "Account" },
-   { "fieldname": "accrued_commission_payable_account", "fieldtype": "Link", "label": "Accrued Commission Payable Account", "options": "Account" },
-   { "fieldname": "commission_payable_account", "fieldtype": "Link", "label": "Commission Payable Account", "options": "Account" },
-   { "fieldname": "payroll_commission_expense_account", "fieldtype": "Link", "label": "Payroll Commission Expense Account", "options": "Account" },
-  { "fieldname": "cost_center", "fieldtype": "Link", "label": "Cost Center", "options": "Cost Center" },
-  { "fieldname": "default_supplier_payment_term", "fieldtype": "Link", "label": "Default Supplier Payment Term", "options": "Payment Terms Template" },
-  { "fieldname": "enabled", "fieldtype": "Check", "label": "Enabled", "default": "1" }
- ],
- "istable": 1,
- "links": [],
- "modified": "2026-01-01 00:00:00.000000",
- "modified_by": "Administrator",
- "module": "Sales Commission Management",
- "name": "Commission Account Mapping",
- "owner": "Administrator",
- "permissions": [],
- "sort_field": "creation",
- "sort_order": "ASC",
- "states": [],
- "track_changes": 1
+  "fields": [
+    {
+      "fieldname": "company",
+      "fieldtype": "Link",
+      "label": "Company",
+      "options": "Company",
+      "reqd": 1
+    },
+    {
+      "fieldname": "commission_expense_account",
+      "fieldtype": "Link",
+      "label": "Commission Expense Account",
+      "options": "Account"
+    },
+    {
+      "fieldname": "accrued_commission_payable_account",
+      "fieldtype": "Link",
+      "label": "Accrued Commission Payable Account",
+      "options": "Account"
+    },
+    {
+      "fieldname": "commission_payable_account",
+      "fieldtype": "Link",
+      "label": "Commission Payable Account",
+      "options": "Account"
+    },
+    {
+      "fieldname": "payroll_commission_expense_account",
+      "fieldtype": "Link",
+      "label": "Payroll Commission Expense Account",
+      "options": "Account"
+    },
+    {
+      "fieldname": "commission_recovery_receivable_account",
+      "fieldtype": "Link",
+      "label": "Commission Recovery Receivable Account",
+      "options": "Account"
+    },
+    {
+      "fieldname": "cost_center",
+      "fieldtype": "Link",
+      "label": "Cost Center",
+      "options": "Cost Center"
+    },
+    {
+      "fieldname": "default_supplier_payment_term",
+      "fieldtype": "Link",
+      "label": "Default Supplier Payment Term",
+      "options": "Payment Terms Template"
+    },
+    {
+      "fieldname": "enabled",
+      "fieldtype": "Check",
+      "label": "Enabled",
+      "default": "1"
+    }
+  ],
+  "istable": 1,
+  "links": [],
+  "modified": "2026-01-01 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Sales Commission Management",
+  "name": "Commission Account Mapping",
+  "owner": "Administrator",
+  "permissions": [],
+  "sort_field": "creation",
+  "sort_order": "ASC",
+  "states": [],
+  "track_changes": 1
 }
