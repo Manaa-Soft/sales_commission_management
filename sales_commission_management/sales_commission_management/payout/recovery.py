@@ -1,9 +1,8 @@
-"""Commission recovery position calculation.
+"""Commission recovery position calculation and recovery source validation.
 
-This module provides the recovery position engine for P3.4.2.
-It calculates the recoverable balance for a commission entry based on
-submitted ledger events (original commission, returns, cancellations,
-payouts, payout reversals, recoveries, recovery reversals).
+This module provides:
+- P3.4.2: Recovery position engine (get_commission_recovery_position)
+- P3.4.5: Recovery source validation (supplier and employee)
 """
 
 import math
@@ -27,7 +26,7 @@ def get_commission_recovery_position(commission_entry):
         commission_entry: Name of the original Commission Entry.
 
     Returns:
-        dict with recovery position details (see recovery_design.md).
+        dict with recovery position details.
 
     Raises:
         frappe.ValidationError: If the commission entry is invalid or
@@ -73,7 +72,6 @@ def get_commission_recovery_position(commission_entry):
     precision = _cp(company_currency)
 
     # --- Original commission (converted to company currency) ---
-    comm_currency = orig.commission_currency or company_currency
     rate = flt(orig.commission_to_company_rate)
     if rate <= 0:
         rate = 1.0
@@ -81,7 +79,7 @@ def get_commission_recovery_position(commission_entry):
         flt(orig.earned_commission) * rate, precision
     )
 
-    # --- Return adjustments (negative clawbacks) ---
+    # --- Return adjustments ---
     adjustments = frappe.get_all(
         "Commission Entry",
         filters={
@@ -99,7 +97,7 @@ def get_commission_recovery_position(commission_entry):
     )
     adjustment_names = [a.name for a in adjustments]
 
-    # --- Cancellation reversals of Return Adjustments (positive restores) ---
+    # --- Cancellation reversals of Return Adjustments ---
     cancel_of_returns = []
     if adjustment_names:
         cancel_of_returns = frappe.get_all(
@@ -118,7 +116,7 @@ def get_commission_recovery_position(commission_entry):
             ],
         )
 
-    # --- Cancellation reversals directly referencing original (negative) ---
+    # --- Cancellation reversals directly referencing original ---
     cancel_of_original = frappe.get_all(
         "Commission Entry",
         filters={
@@ -140,13 +138,11 @@ def get_commission_recovery_position(commission_entry):
     for adj in adjustments:
         adj_rate = flt(adj.commission_to_company_rate) or 1.0
         adj_comm_curr = adj.commission_currency or company_currency
-        adj_company = adj.company_currency or company_currency
-        # Convert if needed
         if adj_comm_curr != company_currency and adj_rate > 0:
             adj_amount = flt(flt(adj.earned_commission) * adj_rate, precision)
         else:
             adj_amount = flt(adj.earned_commission, precision)
-        net_entitlement_raw += adj_amount  # Return adjustments are negative
+        net_entitlement_raw += adj_amount
 
     for cr in cancel_of_returns:
         cr_rate = flt(cr.commission_to_company_rate) or 1.0
@@ -155,7 +151,7 @@ def get_commission_recovery_position(commission_entry):
             cr_amount = flt(flt(cr.earned_commission) * cr_rate, precision)
         else:
             cr_amount = flt(cr.earned_commission, precision)
-        net_entitlement_raw += cr_amount  # Restores (positive)
+        net_entitlement_raw += cr_amount
 
     for co in cancel_of_original:
         co_rate = flt(co.commission_to_company_rate) or 1.0
@@ -164,7 +160,7 @@ def get_commission_recovery_position(commission_entry):
             co_amount = flt(flt(co.earned_commission) * co_rate, precision)
         else:
             co_amount = flt(co.earned_commission, precision)
-        net_entitlement_raw += co_amount  # Full clawback (negative)
+        net_entitlement_raw += co_amount
 
     net_entitlement = flt(max(0.0, net_entitlement_raw), precision)
 
@@ -200,17 +196,14 @@ def get_commission_recovery_position(commission_entry):
         ],
     )
 
-    # Build reversal map by original payout event
     reversal_map = {}
     for pr in payout_reversals:
         reversal_map.setdefault(pr.reversal_of, []).append(pr)
 
-    # Calculate net payout per event
     net_paid = 0.0
     payout_allocations = []
     for pe in payout_events:
         pe_amount = flt(pe.company_amount, precision)
-        # Subtract payout reversals for this event
         pe_reversals = reversal_map.get(pe.name, [])
         reversal_total = flt(
             sum(flt(pr.company_amount, precision) for pr in pe_reversals),
@@ -282,11 +275,9 @@ def get_commission_recovery_position(commission_entry):
 
     for alloc in payout_allocations:
         net_pe = alloc["net_payout"]
-        # due_i = min(net_payout_i, remaining_recovery_due)
         due_i = flt(min(net_pe, remaining_recovery_due), precision)
         remaining_recovery_due = flt(remaining_recovery_due - due_i, precision)
 
-        # recovered_i = min(due_i, remaining_net_recovered)
         recovered_i = flt(min(due_i, remaining_net_recovered), precision)
         remaining_net_recovered = flt(remaining_net_recovered - recovered_i, precision)
 
@@ -312,3 +303,307 @@ def get_commission_recovery_position(commission_entry):
         ),
         "payout_allocations": payout_allocations,
     }
+
+
+# ---------------------------------------------------------------------------
+# P3.4.5 — Recovery source validation
+# ---------------------------------------------------------------------------
+
+
+def validate_supplier_recovery_link(
+    settlement,
+    payment_entry,
+    payment_entry_reference,
+    company,
+):
+    """Validate a supplier recovery (refund receipt) against a settlement.
+
+    Ensures the Payment Entry is a genuine supplier refund linked to the
+    settlement's Purchase Invoice, with correct company and amounts.
+
+    Args:
+        settlement: Name of the Commission Settlement.
+        payment_entry: Name of the supplier Payment Entry (refund).
+        payment_entry_reference: Name of the Payment Entry Reference row.
+        company: Expected company.
+
+    Raises:
+        frappe.ValidationError on any mismatch.
+    """
+    if not frappe.db.exists("Commission Settlement", settlement):
+        frappe.throw(_("Commission Settlement {0} does not exist.").format(settlement))
+
+    sett = frappe.get_doc("Commission Settlement", settlement)
+    if sett.docstatus != 1:
+        frappe.throw(_("Commission Settlement must be submitted."))
+
+    if sett.company != company:
+        frappe.throw(
+            _("Settlement company must match {0}.").format(company)
+        )
+
+    if not frappe.db.exists("Payment Entry", payment_entry):
+        frappe.throw(_("Payment Entry {0} does not exist.").format(payment_entry))
+
+    pe = frappe.get_doc("Payment Entry", payment_entry)
+    if pe.docstatus != 1:
+        frappe.throw(_("Payment Entry must be submitted."))
+
+    if pe.company != company:
+        frappe.throw(
+            _("Payment Entry company must match settlement company.")
+        )
+
+    # Must be a payment to supplier (refund direction for recovery).
+    if pe.payment_type not in ("Pay", None):
+        frappe.throw(
+            _("Payment Entry must be a Pay type for supplier recovery.")
+        )
+
+    if pe.party_type != "Supplier":
+        frappe.throw(_("Payment Entry must be for a Supplier."))
+
+    # Validate the reference row exists and belongs to this payment entry.
+    if not frappe.db.exists("Payment Entry Reference", payment_entry_reference):
+        frappe.throw(
+            _("Payment Entry Reference {0} does not exist.").format(
+                payment_entry_reference
+            )
+        )
+
+    ref = frappe.get_doc("Payment Entry Reference", payment_entry_reference)
+    if ref.parent != payment_entry:
+        frappe.throw(
+            _("Payment Entry Reference must belong to Payment Entry {0}.").format(
+                payment_entry
+            )
+        )
+
+    # If the settlement has a linked Purchase Invoice, validate the reference
+    # matches it.
+    if sett.settlement_document_type == "Purchase Invoice" and sett.settlement_document:
+        if ref.reference_doctype != "Purchase Invoice":
+            frappe.throw(
+                _("Payment Entry Reference must be for a Purchase Invoice.")
+            )
+        if ref.reference_name != sett.settlement_document:
+            frappe.throw(
+                _("Payment Entry Reference must match the settlement's "
+                  "Purchase Invoice {0}.").format(sett.settlement_document)
+            )
+
+    # Validate allocated amount is positive.
+    allocated = flt(ref.allocated_amount)
+    if allocated <= 0:
+        frappe.throw(_("Allocated amount must be positive."))
+
+    return True
+
+
+def validate_employee_recovery_link(
+    settlement,
+    additional_salary,
+    salary_slip=None,
+    payroll_entry=None,
+    bank_entry=None,
+    bank_transaction=None,
+):
+    """Validate an employee recovery (payroll deduction) against a settlement.
+
+    Similar to validate_employee_payroll_link but validates the deduction
+    component rather than the earnings component of the Salary Slip.
+
+    Args:
+        settlement: Name of the Commission Settlement.
+        additional_salary: Name of the Additional Salary (deduction).
+        salary_slip: Optional Salary Slip name.
+        payroll_entry: Optional Payroll Entry name.
+        bank_entry: Optional Bank/Cash Journal Entry name.
+        bank_transaction: Optional Bank Transaction name.
+
+    Raises:
+        frappe.ValidationError on any mismatch.
+    """
+    if not frappe.db.exists("Commission Settlement", settlement):
+        frappe.throw(_("Commission Settlement {0} does not exist.").format(settlement))
+
+    sett = frappe.get_doc("Commission Settlement", settlement)
+    if sett.docstatus != 1:
+        frappe.throw(_("Commission Settlement must be submitted."))
+
+    if sett.beneficiary_type != "Sales Person":
+        frappe.throw(_("Settlement must be for a Sales Person."))
+
+    if not frappe.db.exists("Additional Salary", additional_salary):
+        frappe.throw(
+            _("Additional Salary {0} does not exist.").format(additional_salary)
+        )
+
+    as_doc = frappe.get_doc("Additional Salary", additional_salary)
+    if as_doc.docstatus != 1:
+        frappe.throw(_("Additional Salary must be submitted."))
+
+    # Exact reverse-link consistency.
+    if as_doc.ref_doctype != "Commission Settlement" or as_doc.ref_docname != settlement:
+        frappe.throw(_("Additional Salary must be linked to this settlement."))
+
+    if as_doc.employee != sett.employee:
+        frappe.throw(_("Additional Salary employee must match settlement employee."))
+
+    # Strict company validation.
+    if not sett.company or not as_doc.company or as_doc.company != sett.company:
+        frappe.throw(
+            _("Additional Salary company must match settlement company.")
+        )
+
+    emp_company = frappe.db.get_value("Employee", as_doc.employee, "company")
+    if not emp_company or emp_company != sett.company:
+        frappe.throw(_("Employee company must match settlement company."))
+
+    # The Salary Component must be a deduction type.
+    if as_doc.salary_component:
+        comp_type = frappe.db.get_value(
+            "Salary Component", as_doc.salary_component, "type"
+        )
+        if comp_type != "Deduction":
+            frappe.throw(
+                _("Salary Component must be a Deduction type for recovery.")
+            )
+
+    # Validate Salary Slip if provided.
+    if salary_slip:
+        if not frappe.db.exists("Salary Slip", salary_slip):
+            frappe.throw(_("Salary Slip {0} does not exist.").format(salary_slip))
+        ss = frappe.get_doc("Salary Slip", salary_slip)
+        if ss.docstatus != 1:
+            frappe.throw(_("Salary Slip must be submitted."))
+        if ss.employee != as_doc.employee:
+            frappe.throw(_("Salary Slip employee must match."))
+        if ss.company != sett.company:
+            frappe.throw(_("Salary Slip company must match settlement company."))
+
+        # Verify the Additional Salary appears in deductions.
+        found = False
+        for ded in (ss.deductions or []):
+            if getattr(ded, "additional_salary", None) == additional_salary:
+                found = True
+                break
+        if not found:
+            frappe.throw(
+                _("Additional Salary not found in Salary Slip deductions.")
+            )
+
+    # Payroll Entry validation.
+    if payroll_entry:
+        if not frappe.db.exists("Payroll Entry", payroll_entry):
+            frappe.throw(_("Payroll Entry {0} does not exist.").format(payroll_entry))
+        pe_status = frappe.db.get_value("Payroll Entry", payroll_entry, "docstatus")
+        if pe_status != 1:
+            frappe.throw(_("Payroll Entry must be submitted."))
+        pe_company = frappe.db.get_value("Payroll Entry", payroll_entry, "company")
+        if not pe_company or pe_company != sett.company:
+            frappe.throw(
+                _("Payroll Entry company must match settlement company.")
+            )
+
+    # Bank Entry validation.
+    if bank_entry:
+        if not frappe.db.exists("Journal Entry", bank_entry):
+            frappe.throw(_("Bank Entry {0} does not exist.").format(bank_entry))
+        je_status = frappe.db.get_value("Journal Entry", bank_entry, "docstatus")
+        if je_status != 1:
+            frappe.throw(_("Bank Entry must be submitted."))
+        je_company = frappe.db.get_value("Journal Entry", bank_entry, "company")
+        if not je_company or je_company != sett.company:
+            frappe.throw(
+                _("Bank Entry company must match settlement company.")
+            )
+        voucher_type = frappe.db.get_value("Journal Entry", bank_entry, "voucher_type")
+        if voucher_type not in ("Bank Entry", "Cash Entry"):
+            frappe.throw(_("Bank Entry must be a Bank or Cash Entry."))
+
+    # Bank Transaction validation.
+    if bank_transaction:
+        if not bank_entry or not payroll_entry:
+            frappe.throw(
+                _("Bank Transaction requires Bank Entry and Payroll Entry.")
+            )
+        if not frappe.db.exists("Bank Transaction", bank_transaction):
+            frappe.throw(
+                _("Bank Transaction {0} does not exist.").format(bank_transaction)
+            )
+        bt = frappe.db.get_value(
+            "Bank Transaction",
+            bank_transaction,
+            ["docstatus", "status", "company"],
+            as_dict=True,
+        )
+        if not bt or bt.docstatus != 1:
+            frappe.throw(_("Bank Transaction must be submitted."))
+        if bt.status != "Reconciled":
+            frappe.throw(_("Bank Transaction must be Reconciled."))
+        if not bt.company or bt.company != sett.company:
+            frappe.throw(
+                _("Bank Transaction company must match settlement company.")
+            )
+
+    return True
+
+
+def create_recovery_event(event_data):
+    """Create and submit a Recovery payout event.
+
+    Uses the event_factory to create a Recovery-type Commission Payout Event.
+    Requires recovery_of to link to the original Payout event.
+
+    Args:
+        event_data: dict with required fields for a Recovery event.
+            Must include recovery_of (name of original Payout event).
+
+    Returns:
+        str: Name of the created Recovery event.
+
+    Raises:
+        frappe.ValidationError on validation failure.
+    """
+    if not event_data or not isinstance(event_data, dict):
+        frappe.throw(_("Event data must be a non-empty dict."))
+
+    if not event_data.get("recovery_of"):
+        frappe.throw(_("recovery_of is required for Recovery events."))
+
+    # Validate the original payout event exists and is submitted.
+    recovery_of = event_data["recovery_of"]
+    if not frappe.db.exists("Commission Payout Event", recovery_of):
+        frappe.throw(
+            _("Original Payout Event {0} does not exist.").format(recovery_of)
+        )
+
+    orig_event = frappe.get_doc("Commission Payout Event", recovery_of)
+    if orig_event.docstatus != 1:
+        frappe.throw(_("Original Payout Event must be submitted."))
+
+    if orig_event.event_type != "Payout":
+        frappe.throw(_("recovery_of must reference a Payout event."))
+
+    # Validate company and beneficiary consistency.
+    if event_data.get("company") and event_data["company"] != orig_event.company:
+        frappe.throw(_("Company must match original Payout Event."))
+    if event_data.get("beneficiary") and event_data["beneficiary"] != orig_event.beneficiary:
+        frappe.throw(_("Beneficiary must match original Payout Event."))
+    if event_data.get("commission_entry") and event_data["commission_entry"] != orig_event.commission_entry:
+        frappe.throw(_("Commission Entry must match original Payout Event."))
+    if event_data.get("settlement") and event_data["settlement"] != orig_event.settlement:
+        frappe.throw(_("Settlement must match original Payout Event."))
+
+    # Use event_factory to create the event.
+    try:
+        from sales_commission_management.sales_commission_management.payout.event_factory import (
+            get_or_create_payout_event,
+        )
+    except Exception:
+        frappe.throw(_("Event factory is not available."))
+
+    event_data.setdefault("event_type", "Recovery")
+    name = get_or_create_payout_event(event_data)
+    return name
