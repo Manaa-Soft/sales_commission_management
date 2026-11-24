@@ -1957,9 +1957,6 @@ def handle_return_invoice(doc, method=None):
         if not invoice_fully_returned:
             continue
 
-        # Validate only entries that will generate a Return Adjustment.
-        _validate_commission_fx_snapshot(orig)
-
         item = orig.item_code
         key = orig.get("name")
         original_item = original_items.get(orig.source_row)
@@ -1997,6 +1994,9 @@ def handle_return_invoice(doc, method=None):
 
         _orig_accrued = _accrued_for_entry(orig.name)
         clawback_accrued = -1 * flt(_orig_accrued) * ratio
+
+                # Validate only entries that will generate a Return Adjustment.
+        _validate_commission_fx_snapshot(orig)
 
         ev_key = _event_key(
             "Sales Invoice",
@@ -2128,9 +2128,6 @@ def handle_return_invoice(doc, method=None):
         if effective_returned <= 0:
             continue
 
-        # Validate only entries that will generate a Return Adjustment.
-        _validate_commission_fx_snapshot(orig)
-
         # Cumulative returned quantity (for Fixed Per Line).
         cumulative_returned = already_returned_qty + effective_returned
 
@@ -2199,22 +2196,9 @@ def handle_return_invoice(doc, method=None):
         _remaining_accrued = max(0.0, abs(_orig_accrued) - _already_reversed_accrued)
         clawback_accrued = -1 * min(abs(_orig_accrued) * ratio, _remaining_accrued)
 
-        ev_key = _event_key(
-            "Sales Invoice",
-            doc.name,
-            orig.get("name"),
-            orig.get("plan"),
-            orig.get("pool_code"),
-            orig.beneficiary_type,
-            orig.sales_person or orig.sales_partner,
-            "Return Adjustment",
-        )
+        # Validate only entries that will generate a Return Adjustment.
+        _validate_commission_fx_snapshot(orig)
 
-        existing = frappe.db.get_value(
-            "Commission Entry", {"event_key": ev_key, "docstatus": ["!=", 2]}, "name"
-        )
-        if existing:
-            continue
         ev_key = _event_key(
             "Sales Invoice",
             doc.name,

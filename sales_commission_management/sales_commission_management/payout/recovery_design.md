@@ -63,6 +63,8 @@ and allocation. The same precision is applied consistently to:
 The three allocation invariants are evaluated against these normalized amounts.
 Do not compare unrounded amounts with rounded allocation results.
 
+Each allocation's remaining amount is normalized after subtraction.
+
 ### Currency Handling
 
 - **Original entitlement**: Convert `earned_commission` (commission currency) to company
@@ -82,7 +84,7 @@ Do not compare unrounded amounts with rounded allocation results.
 - All final comparisons are in company currency. No mixing of commission
   currency and company currency.
 
-### Historical FX Audit (P1)
+### Historical FX Audit
 
 Before recovery calculations use historical entries, audit that:
 - When `commission_currency == transaction_currency`, the stored
