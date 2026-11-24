@@ -39,31 +39,44 @@ def get_commission_recovery_position(commission_entry):
 
 precision = currency_precision(company_currency)
 
-Net entitlement = normalize(max(0, original + adjustments), precision)
-Net paid = normalize(sum(payout_amount_i) - sum(payout_reversal_i), precision)
-Net recovered = normalize(sum(recovery_i) - sum(recovery_reversal_i), precision)
-Recovery due before recovery = normalize(max(0, net_paid - net_entitlement), precision)
-Outstanding recovery = normalize(max(0, recovery_due_before_recovery - net_recovered), precision)
+# Step 1: Normalize each submitted ledger-event amount.
+original_company = normalize(original_earned_commission * commission_to_company_rate, precision)
+return_adj_company = normalize(sum(return_adjustment amounts), precision)
+cancel_rev_company = normalize(sum(cancellation_reversal amounts), precision)
+
+# Step 2: Calculate net entitlement (normalized).
+net_entitlement = normalize(max(0, original_company + return_adj_company + cancel_rev_company), precision)
+
+# Step 3: Calculate net paid and net recovered from normalized event amounts.
+net_payout_i = normalize(payout_amount_i - payout_reversal_i, precision)  # per payout
+net_paid = normalize(sum(net_payout_i), precision)
+net_recovered = normalize(sum(recovery_i) - sum(recovery_reversal_i), precision)
+
+# Step 4: Calculate recovery obligation (normalized).
+recovery_due_before_recovery = normalize(max(0, net_paid - net_entitlement), precision)
+outstanding_recovery = normalize(max(0, recovery_due_before_recovery - net_recovered), precision)
 ```
 
-All totals are calculated from normalized event amounts. The tolerance
-`_RETURN_MONEY_TOLERANCE` is defined as protection against floating-point
-noise before normalization. After normalization, no additional currency
-precision unit is allowed to pass as acceptable over-recovery.
+### Precision Normalization
 
-### Over-Recovery Handling
+All monetary amounts are normalized using `currency_precision()` before comparison
+and allocation. Normalization follows this order:
 
+1. Normalize each submitted ledger-event amount to company-currency precision.
+2. Calculate the net payout and net recovery for each relevant event group.
+3. Normalize each resulting balance.
+4. Allocate FIFO, normalizing each allocation and remaining balance after subtraction.
+5. Assert the three invariants using those normalized values.
+
+The tolerance `_RETURN_MONEY_TOLERANCE` is defined as protection against
+floating-point noise before normalization. After normalization, no additional
+currency precision unit is allowed to pass as acceptable over-recovery.
+
+Over-recovery check on normalized values (no tolerance after normalization):
 ```
-recovery_due_before_recovery = normalize(max(0.0, net_paid - max(0.0, net_entitlement)), precision)
-
-outstanding_recovery = normalize(max(0.0, recovery_due_before_recovery - net_recovered), precision)
-
-# Over-recovery check on normalized values (no tolerance after normalization)
 if net_recovered > recovery_due_before_recovery:
     raise frappe.ValidationError with diagnostic amounts
 ```
-
-Over-recovery is an exception, not a returned boolean state.
 
 ### Currency Handling
 
@@ -136,6 +149,19 @@ compensating reversals without relying on event_type filtering.
 | Partially recovered | 0 < Outstanding < recovery due before recovery | Some amount has been recovered |
 | Recovery complete | Outstanding = 0 (obligation previously existed) | All recoverable amount has been recovered |
 | Over-recovery (exception) | Net recovered > recovery due before recovery | More recovered than owed — raises frappe.ValidationError |
+
+### Over-Recovery Handling
+
+```
+recovery_due_before_recovery = normalize(max(0.0, net_paid - max(0.0, net_entitlement)), precision)
+
+outstanding_recovery = normalize(max(0.0, recovery_due_before_recovery - net_recovered), precision)
+
+If net_recovered > recovery_due_before_recovery:
+    raise frappe.ValidationError with diagnostic amounts
+```
+
+Over-recovery is an exception, not a returned boolean state.
 
 ### Payout Allocation
 

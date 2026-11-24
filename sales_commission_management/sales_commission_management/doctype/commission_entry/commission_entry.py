@@ -1860,7 +1860,12 @@ def _validate_commission_fx_snapshot(orig):
     # should be consistent with the conversion_rate_snapshot.
     if orig_comm_curr == getattr(orig, "transaction_currency", None):
         snapshot_rate = flt(getattr(orig, "conversion_rate_snapshot", 0))
-        if snapshot_rate > 0 and abs(orig_rate - snapshot_rate) > 1e-6:
+        if not math.isfinite(snapshot_rate) or snapshot_rate <= 0:
+            frappe.throw(
+                _("Missing or invalid transaction conversion rate snapshot "
+                  "for entry {0}.").format(orig.name)
+            )
+        if abs(orig_rate - snapshot_rate) > 1e-6:
             frappe.throw(
                 _("Commission-to-company rate {0} does not match transaction "
                   "conversion rate {1} for entry {2}.").format(
