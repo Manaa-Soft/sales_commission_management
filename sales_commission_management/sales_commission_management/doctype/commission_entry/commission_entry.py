@@ -1995,9 +1995,6 @@ def handle_return_invoice(doc, method=None):
         _orig_accrued = _accrued_for_entry(orig.name)
         clawback_accrued = -1 * flt(_orig_accrued) * ratio
 
-                # Validate only entries that will generate a Return Adjustment.
-        _validate_commission_fx_snapshot(orig)
-
         ev_key = _event_key(
             "Sales Invoice",
             doc.name,
@@ -2014,6 +2011,9 @@ def handle_return_invoice(doc, method=None):
         )
         if existing:
             continue
+
+        # Validate only entries that will generate a Return Adjustment.
+        _validate_commission_fx_snapshot(orig)
 
         entry = frappe.get_doc(
             {
@@ -2196,9 +2196,6 @@ def handle_return_invoice(doc, method=None):
         _remaining_accrued = max(0.0, abs(_orig_accrued) - _already_reversed_accrued)
         clawback_accrued = -1 * min(abs(_orig_accrued) * ratio, _remaining_accrued)
 
-        # Validate only entries that will generate a Return Adjustment.
-        _validate_commission_fx_snapshot(orig)
-
         ev_key = _event_key(
             "Sales Invoice",
             doc.name,
@@ -2215,6 +2212,9 @@ def handle_return_invoice(doc, method=None):
         )
         if existing:
             continue
+
+        # Validate only entries that will generate a Return Adjustment.
+        _validate_commission_fx_snapshot(orig)
 
         entry = frappe.get_doc(
             {
