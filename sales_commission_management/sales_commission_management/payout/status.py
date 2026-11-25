@@ -114,9 +114,13 @@ def _sum_events(events, event_type):
             continue
         amt = None
         if isinstance(e, dict):
-            amt = e.get("settlement_amount")
+            amt = e.get("commission_amount")
+            if amt is None:
+                amt = e.get("settlement_amount")
         else:
-            amt = getattr(e, "settlement_amount", None)
+            amt = getattr(e, "commission_amount", None)
+            if amt is None:
+                amt = getattr(e, "settlement_amount", None)
         total += flt(amt or 0)
     return total
 
@@ -161,38 +165,57 @@ def compute_payout_status(settlement):
     net_recovery = flt(recovery_total - recovery_reversal_total, precision)
 
     # Recoverable balance: aggregate the per-entry recovery positions from the
-    # authoritative recovery engine (recovery.py), which accounts for return
-    # adjustments, payout events, recoveries and reversals per Commission Entry.
+    # authoritative recovery engine (recovery.py), restricted to the payout
+    # allocations belonging to THIS settlement so a shared Commission Entry is
+    # not double-counted across settlements.
     recoverable = 0.0
-    entries = []
-    try:
-        entries = getattr(sett_doc, "entries", None) or []
-    except Exception:
-        entries = []
+    entries = getattr(sett_doc, "entries", None) or []
+    # Group this settlement's payout events by commission entry so we can
+    # compute each entry's share of the settlement's paid amount.
+    entry_paid_for_settlement = {}
+    for e in events:
+        et = e.get("event_type") if isinstance(e, dict) else getattr(e, "event_type", None)
+        if et != _PAYOUT:
+            continue
+        ce = e.get("commission_entry") if isinstance(e, dict) else getattr(e, "commission_entry", None)
+        amt = e.get("settlement_amount") if isinstance(e, dict) else getattr(e, "settlement_amount", None)
+        if ce:
+            entry_paid_for_settlement[ce] = entry_paid_for_settlement.get(ce, 0.0) + flt(amt or 0)
     for row in entries:
-        entry_name = None
-        if isinstance(row, dict):
-            entry_name = row.get("commission_ledger_entry")
-        else:
-            entry_name = getattr(row, "commission_ledger_entry", None)
+        entry_name = row.get("commission_ledger_entry") if isinstance(row, dict) else getattr(row, "commission_ledger_entry", None)
         if not entry_name:
             continue
-        try:
-            from sales_commission_management.sales_commission_management.payout.recovery import (
-                get_commission_recovery_position,
-            )
+        from sales_commission_management.sales_commission_management.payout.recovery import (
+            get_commission_recovery_position,
+        )
 
-            pos = get_commission_recovery_position(entry_name)
-            recoverable += flt(pos.get("outstanding_recovery", 0), precision)
+        pos = get_commission_recovery_position(entry_name)
+        entry_total_paid = flt(pos.get("net_paid", 0), precision)
+        entry_recovery_company = flt(pos.get("outstanding_recovery", 0), precision)
+        # Convert recovery from company currency to commission currency using
+        # the entry's commission-to-company rate (explicit FX basis).
+        try:
+            entry_doc = frappe.get_doc("Commission Entry", entry_name)
         except Exception:
-            # Fail closed: propagate so we never silently report zero recovery.
             raise
+        entry_rate = flt(getattr(entry_doc, "commission_to_company_rate", 0))
+        entry_comm_curr = getattr(entry_doc, "commission_currency", None)
+        entry_comp_curr = getattr(entry_doc, "company_currency", None)
+        if entry_comm_curr and entry_comp_curr and entry_comm_curr == entry_comp_curr:
+            entry_rate = 1.0
+        if not entry_rate or entry_rate <= 0:
+            frappe.throw(
+                _("Invalid commission-to-company rate for entry {0}.").format(entry_name)
+            )
+        entry_recovery = flt(entry_recovery_company / entry_rate, precision)
+        this_paid = flt(entry_paid_for_settlement.get(entry_name, 0), precision)
+        if entry_total_paid > 0 and this_paid > 0:
+            # Restrict to this settlement's share of the entry's total payouts.
+            share = this_paid / entry_total_paid
+            recoverable += entry_recovery * share
+        elif entry_total_paid <= 0 and this_paid > 0:
+            recoverable += entry_recovery
     recoverable = flt(recoverable, precision)
-    # Also account for any excess of paid over payable at settlement level that
-    # is not captured by entry-level positions.
-    excess_paid = flt(max(0.0, actual_paid - total_payable), precision)
-    if excess_paid > recoverable + _minor_unit(precision):
-        recoverable = flt(excess_paid, precision)
 
     outstanding = flt(max(0.0, total_payable - actual_paid), precision)
 
@@ -221,18 +244,15 @@ def compute_payout_status(settlement):
         # Employee route: if a submitted Additional Salary is linked, the
         # settlement is at least payroll-accrued/scheduled, but not Paid.
         payroll_accrued = False
-        try:
-            if getattr(sett_doc, "employee", None) or getattr(sett_doc, "settlement_method", None) == "Additional Salary":
-                as_rows = frappe.get_all(
-                    "Additional Salary",
-                    filters={"ref_doctype": "Commission Settlement", "ref_docname": sett_name, "docstatus": 1},
-                    fields=["name"],
-                    limit=1,
-                )
-                if as_rows:
-                    payroll_accrued = True
-        except Exception:
-            payroll_accrued = False
+        if getattr(sett_doc, "employee", None) or getattr(sett_doc, "settlement_method", None) == "Additional Salary":
+            as_rows = frappe.get_all(
+                "Additional Salary",
+                filters={"ref_doctype": "Commission Settlement", "ref_docname": sett_name, "docstatus": 1},
+                fields=["name"],
+                limit=1,
+            )
+            if as_rows:
+                payroll_accrued = True
         payout_status = "Payroll Accrued" if payroll_accrued else "Not Paid"
     elif actual_paid + tol < total_payable:
         payout_status = "Partially Paid"
@@ -355,6 +375,7 @@ def refresh_settlement_payout_status(settlement):
         sett_name,
         {
             "actual_paid_amount": flt(ps.get("actual_paid_amount", 0), precision),
+            "total_paid": flt(ps.get("actual_paid_amount", 0), precision),
             "outstanding_payout_amount": flt(ps.get("outstanding_payout_amount", 0), precision),
             "recoverable_amount": flt(ps.get("recoverable_amount", 0), precision),
             "payout_status": ps.get("payout_status") or "Not Paid",

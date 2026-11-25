@@ -16,7 +16,8 @@ def currency_precision(currency=None):
     currency_precision = frappe.db.get_default("currency_precision")
     if currency_precision not in (None, ""):
         result = cint(currency_precision)
-        if result > 0:
+        # Accept valid zero-decimal precision (0) as an explicit configuration.
+        if result >= 0 and str(currency_precision).strip() != "":
             return result
 
     number_format = frappe.db.get_default("number_format") or "#,###.##"
@@ -29,9 +30,10 @@ def currency_precision(currency=None):
         decimals = getattr(nf, "decimal_places", None)
         if decimals is None:
             decimals = getattr(nf, "precision", None)
-        result = cint(decimals)
-        if result > 0:
-            return result
+        if decimals is not None:
+            result = cint(decimals)
+            if result >= 0:
+                return result
     except Exception:
         pass
     try:
@@ -41,14 +43,14 @@ def currency_precision(currency=None):
             # In most Frappe versions index 2 holds the decimal places.
             if len(info) > 2:
                 result = cint(info[2])
-                if result > 0:
+                if result >= 0:
                     return result
             for val in info:
-                if isinstance(val, int) and val > 0:
+                if isinstance(val, int) and val >= 0:
                     return val
         else:
             result = cint(info)
-            if result > 0:
+            if result >= 0:
                 return result
     except Exception:
         pass
