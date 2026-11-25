@@ -650,6 +650,23 @@ def create_recovery_event(event_data):
         frappe.throw(_("Event factory is not available."))
 
     event_data["event_type"] = "Recovery"
+
+    # Generate event_key if not provided, including recovery_of for uniqueness.
+    if not event_data.get("event_key"):
+        from sales_commission_management.sales_commission_management.payout.event_factory import (
+            generate_event_key,
+        )
+        event_data["event_key"] = generate_event_key(
+            event_data.get("source_doctype"),
+            event_data.get("source_name"),
+            event_data.get("source_row"),
+            event_data.get("settlement"),
+            event_data.get("settlement_item"),
+            event_data.get("commission_entry"),
+            "Recovery",
+            recovery_of=event_data.get("recovery_of"),
+        )
+
     name = get_or_create_payout_event(event_data)
     return name
 

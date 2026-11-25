@@ -232,8 +232,13 @@ class CommissionPayoutEvent(Document):
             pe = frappe.get_doc("Payment Entry", self.source_name)
             if pe.docstatus != 1:
                 frappe.throw(_("Payment Entry must be submitted."))
-            if pe.payment_type != "Pay":
-                frappe.throw(_("Payment Entry must be a Pay type."))
+            # Payment direction depends on event type.
+            if self.event_type == "Recovery":
+                if pe.payment_type != "Receive":
+                    frappe.throw(_("Payment Entry must be a Receive type for recovery."))
+            else:
+                if pe.payment_type != "Pay":
+                    frappe.throw(_("Payment Entry must be a Pay type."))
             if pe.party_type != "Supplier":
                 frappe.throw(_("Payment Entry must be a Supplier payment."))
             # Validate Payment Entry matches settlement company and supplier.

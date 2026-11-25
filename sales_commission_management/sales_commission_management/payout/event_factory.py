@@ -48,8 +48,11 @@ def generate_event_key(source_doctype, source_name, source_row, settlement, sett
         "commission_entry": commission_entry or "",
         "event_type": event_type or "",
         "reversal_of": reversal_of or "",
-        "recovery_of": recovery_of or "",
     }
+    # Only include recovery_of for Recovery events to preserve backward
+    # compatibility of event keys for other event types.
+    if event_type == "Recovery" and recovery_of:
+        identity["recovery_of"] = recovery_of
     canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
