@@ -679,6 +679,7 @@ def create_recovery_receivable_gl_entry(
     currency,
     posting_date,
     remarks=None,
+    source_event=None,
 ):
     """Create GL entries for a recovery receivable.
 
@@ -703,8 +704,21 @@ def create_recovery_receivable_gl_entry(
         currency_precision as _cp,
     )
 
-    if not company or not commission_entry or not recovery_amount:
-        return None
+    import math
+    if not company or not commission_entry:
+        frappe.throw(_("Company and commission entry are required."))
+    if not math.isfinite(float(recovery_amount)) or float(recovery_amount) <= 0:
+        frappe.throw(_("Recovery amount must be a finite positive number."))
+
+    # Idempotency check by source_event.
+    if source_event:
+        existing = frappe.db.get_value(
+            "Journal Entry",
+            {"user_remark": ["like", "%{0}%".format(source_event)], "docstatus": ["!=", 2]},
+            "name",
+        )
+        if existing:
+            return existing
 
     mapping = None
     try:
@@ -819,6 +833,7 @@ def create_recovery_collection_gl_entry(
     posting_date,
     bank_account=None,
     remarks=None,
+    source_event=None,
 ):
     """Create GL entries for an actual recovery collection.
 
@@ -838,8 +853,21 @@ def create_recovery_collection_gl_entry(
     Returns:
         str: Name of the created Journal Entry, or None.
     """
-    if not company or not commission_entry or not recovery_amount:
-        frappe.throw(_("Company, commission entry, and recovery amount are required."))
+    import math
+    if not company or not commission_entry:
+        frappe.throw(_("Company and commission entry are required."))
+    if not math.isfinite(float(recovery_amount)) or float(recovery_amount) <= 0:
+        frappe.throw(_("Recovery amount must be a finite positive number."))
+
+    # Idempotency check by source_event.
+    if source_event:
+        existing = frappe.db.get_value(
+            "Journal Entry",
+            {"user_remark": ["like", "%{0}%".format(source_event)], "docstatus": ["!=", 2]},
+            "name",
+        )
+        if existing:
+            return existing
 
     mapping = None
     try:

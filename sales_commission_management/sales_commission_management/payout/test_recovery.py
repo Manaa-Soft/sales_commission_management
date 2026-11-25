@@ -92,54 +92,74 @@ class TestRecoveryPosition(IntegrationTestCase):
         from sales_commission_management.sales_commission_management.payout.recovery import (
             create_recovery_receivable_gl_entry,
         )
-        # No account mapping -> returns None
-        result = create_recovery_receivable_gl_entry(
+        # No account mapping -> raises
+        self.assertRaises(
+            frappe.ValidationError,
+            create_recovery_receivable_gl_entry,
             "NONEXISTENT-COMPANY",
             "NONEXISTENT-CE",
             100.0,
             "USD",
             "2026-01-01",
         )
-        self.assertIsNone(result)
 
     def test_recovery_gl_collection_no_mapping(self):
         from sales_commission_management.sales_commission_management.payout.recovery import (
             create_recovery_collection_gl_entry,
         )
-        result = create_recovery_collection_gl_entry(
+        self.assertRaises(
+            frappe.ValidationError,
+            create_recovery_collection_gl_entry,
             "NONEXISTENT-COMPANY",
             "NONEXISTENT-CE",
             100.0,
             "USD",
             "2026-01-01",
         )
-        self.assertIsNone(result)
+
+    def test_recovery_gl_collection_no_bank_account(self):
+        from sales_commission_management.sales_commission_management.payout.recovery import (
+            create_recovery_collection_gl_entry,
+        )
+        # No bank account configured -> raises
+        self.assertRaises(
+            frappe.ValidationError,
+            create_recovery_collection_gl_entry,
+            "NONEXISTENT-COMPANY",
+            "NONEXISTENT-CE",
+            100.0,
+            "USD",
+            "2026-01-01",
+            None,
+        )
 
     def test_recovery_gl_receivable_zero_amount(self):
         from sales_commission_management.sales_commission_management.payout.recovery import (
             create_recovery_receivable_gl_entry,
         )
-        result = create_recovery_receivable_gl_entry(
+        self.assertRaises(
+            frappe.ValidationError,
+            create_recovery_receivable_gl_entry,
             "Test Company",
             "CE-001",
             0,
             "USD",
             "2026-01-01",
         )
-        self.assertIsNone(result)
 
     def test_recovery_gl_collection_zero_amount(self):
         from sales_commission_management.sales_commission_management.payout.recovery import (
             create_recovery_collection_gl_entry,
         )
-        result = create_recovery_collection_gl_entry(
+        self.assertRaises(
+            frappe.ValidationError,
+            create_recovery_collection_gl_entry,
             "Test Company",
             "CE-001",
             0,
             "USD",
             "2026-01-01",
         )
-        self.assertIsNone(result)
 
     def test_recovery_position_mocked_no_events(self):
         """Test recovery position with a mocked submitted Commission Entry
