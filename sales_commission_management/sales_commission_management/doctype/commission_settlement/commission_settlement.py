@@ -315,6 +315,14 @@ class CommissionSettlement(Document):
             update["settlement_fx_rate"] = self.settlement_fx_rate
         if getattr(self, "settlement_fx_date", None) is not None:
             update["settlement_fx_date"] = self.settlement_fx_date
+        if getattr(self, "actual_paid_amount", None) is not None:
+            update["actual_paid_amount"] = self.actual_paid_amount
+        if getattr(self, "outstanding_payout_amount", None) is not None:
+            update["outstanding_payout_amount"] = self.outstanding_payout_amount
+        if getattr(self, "recoverable_amount", None) is not None:
+            update["recoverable_amount"] = self.recoverable_amount
+        if getattr(self, "payout_status", None):
+            update["payout_status"] = self.payout_status
         frappe.db.set_value(
             "Commission Settlement", self.name, update, update_modified=False
         )
@@ -505,6 +513,9 @@ class CommissionSettlement(Document):
         # from a manually typed value. Falls back to 0 when no events exist
         # (e.g. a freshly submitted settlement), preserving prior behaviour.
         actual_paid = 0.0
+        payout_status = None
+        outstanding_payout = None
+        recoverable = None
         try:
             from sales_commission_management.sales_commission_management.payout.status import (
                 compute_payout_status,
@@ -513,8 +524,21 @@ class CommissionSettlement(Document):
             if getattr(self, "name", None):
                 ps = compute_payout_status(self.name)
                 actual_paid = flt(ps.get("actual_paid_amount", 0))
+                payout_status = ps.get("payout_status")
+                outstanding_payout = flt(ps.get("outstanding_payout_amount", 0))
+                recoverable = flt(ps.get("recoverable_amount", 0))
         except Exception:
             actual_paid = 0.0
+        if payout_status is None:
+            payout_status = "Not Paid"
+        if outstanding_payout is None:
+            outstanding_payout = max(0.0, total_payable - actual_paid)
+        if recoverable is None:
+            recoverable = 0.0
+        self.actual_paid_amount = flt(actual_paid, 2)
+        self.outstanding_payout_amount = flt(outstanding_payout, 2)
+        self.recoverable_amount = flt(recoverable, 2)
+        self.payout_status = payout_status
         self.outstanding = flt(max(0.0, total_payable - actual_paid), 2)
 
     def _create_settlement_document(self):

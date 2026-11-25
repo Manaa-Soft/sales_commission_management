@@ -25,6 +25,10 @@
   "total_reserved",
   "total_paid",
   "outstanding",
+  "actual_paid_amount",
+  "outstanding_payout_amount",
+  "recoverable_amount",
+  "payout_status",
   "status",
   "settlement_document_type",
   "settlement_document",
@@ -161,11 +165,40 @@
    "options": "commission_currency"
   },
   {
+   "fieldname": "actual_paid_amount",
+   "fieldtype": "Currency",
+   "label": "Actual Paid Amount",
+   "read_only": 1,
+   "options": "commission_currency"
+  },
+  {
+   "fieldname": "outstanding_payout_amount",
+   "fieldtype": "Currency",
+   "label": "Outstanding Payout Amount",
+   "read_only": 1,
+   "options": "commission_currency"
+  },
+  {
+   "fieldname": "recoverable_amount",
+   "fieldtype": "Currency",
+   "label": "Recoverable Amount",
+   "read_only": 1,
+   "options": "commission_currency"
+  },
+  {
    "fieldname": "status",
    "fieldtype": "Select",
    "label": "Status",
    "options": "Draft\nSubmitted\nApproved\nPartly Settled\nSettled\nCancelled",
    "default": "Draft",
+   "read_only": 1
+  },
+  {
+   "fieldname": "payout_status",
+   "fieldtype": "Select",
+   "label": "Payout Status",
+   "options": "Not Paid\\nPayroll Accrued\\nDisbursement Recorded\\nPartially Paid\\nPaid\\nRecovery Due\\nRecovered\\nCancelled",
+   "default": "Not Paid",
    "read_only": 1
   },
   {
