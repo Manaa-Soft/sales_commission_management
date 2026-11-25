@@ -8,6 +8,9 @@ from frappe.utils import flt
 from sales_commission_management.sales_commission_management.payout.status import (
     compute_payout_status,
 )
+from sales_commission_management.sales_commission_management.utils import (
+    currency_precision as _cp,
+)
 
 
 def execute(filters=None):
@@ -63,24 +66,22 @@ def get_data(filters):
 
     data = []
     for r in rows:
-        try:
-            ps = compute_payout_status(r.name)
-        except Exception:
-            ps = {}
+        ps = compute_payout_status(r.name)
         beneficiary = (
             r.sales_person or r.sales_partner or r.employee or r.supplier or r.beneficiary_type
         )
         currency = ps.get("currency") or r.commission_currency
+        precision = _cp(currency) if currency else 2
         data.append(
             {
                 "settlement": r.name,
                 "company": r.company,
                 "beneficiary": beneficiary,
                 "currency": currency,
-                "payable": flt(ps.get("total_payable", r.total_payable), 2),
-                "actual_paid": flt(ps.get("actual_paid_amount", 0), 2),
-                "outstanding": flt(ps.get("outstanding_payout_amount", 0), 2),
-                "recoverable": flt(ps.get("recoverable_amount", 0), 2),
+                "payable": flt(ps.get("total_payable", r.total_payable), precision),
+                "actual_paid": flt(ps.get("actual_paid_amount", 0), precision),
+                "outstanding": flt(ps.get("outstanding_payout_amount", 0), precision),
+                "recoverable": flt(ps.get("recoverable_amount", 0), precision),
                 "payout_status": ps.get("payout_status") or r.payout_status or "Not Paid",
                 "status": r.status,
             }

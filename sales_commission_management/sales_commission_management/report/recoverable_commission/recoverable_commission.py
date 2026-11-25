@@ -8,6 +8,9 @@ from frappe.utils import flt
 from sales_commission_management.sales_commission_management.payout.recovery import (
     get_commission_recovery_position,
 )
+from sales_commission_management.sales_commission_management.utils import (
+    currency_precision as _cp,
+)
 
 
 def execute(filters=None):
@@ -63,26 +66,25 @@ def get_data(filters):
         # a recovery position.
         if r.event_type in ("Return Adjustment", "Cancellation Reversal"):
             continue
-        try:
-            pos = get_commission_recovery_position(r.name)
-        except Exception:
-            continue
+        pos = get_commission_recovery_position(r.name)
         outstanding = flt(pos.get("outstanding_recovery", 0))
         # Only show entries with a recovery due.
         if outstanding <= 0:
             continue
         beneficiary = r.sales_person or r.sales_partner or r.employee or r.supplier
+        currency = pos.get("currency")
+        precision = _cp(currency) if currency else 2
         data.append(
             {
                 "commission_entry": r.name,
                 "company": r.company,
                 "beneficiary": beneficiary,
-                "currency": pos.get("currency"),
-                "original_commission": flt(pos.get("original_commission", 0), 2),
-                "net_entitlement": flt(pos.get("net_entitlement", 0), 2),
-                "net_paid": flt(pos.get("net_paid", 0), 2),
-                "net_recovered": flt(pos.get("net_recovered", 0), 2),
-                "outstanding_recovery": flt(outstanding, 2),
+                "currency": currency,
+                "original_commission": flt(pos.get("original_commission", 0), precision),
+                "net_entitlement": flt(pos.get("net_entitlement", 0), precision),
+                "net_paid": flt(pos.get("net_paid", 0), precision),
+                "net_recovered": flt(pos.get("net_recovered", 0), precision),
+                "outstanding_recovery": flt(outstanding, precision),
             }
         )
     return data
