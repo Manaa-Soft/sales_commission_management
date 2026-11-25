@@ -103,7 +103,7 @@ def get_commission_recovery_position(commission_entry):
             "commission_to_company_rate",
         ],
     )
-    adjustment_names = [a.name for a in adjustments]
+    adjustment_names = [a["name"] for a in adjustments]
 
     # --- Cancellation reversals of Return Adjustments ---
     cancel_of_returns = []
@@ -165,7 +165,7 @@ def get_commission_recovery_position(commission_entry):
         elif cr_rate <= 0:
             frappe.throw(
                 _("Invalid commission-to-company rate for cancellation {0}.").format(
-                    cr.name
+                    cr["name"]
                 )
             )
         cr_amount = flt(flt(cr.earned_commission) * cr_rate, precision)
@@ -179,7 +179,7 @@ def get_commission_recovery_position(commission_entry):
         elif co_rate <= 0:
             frappe.throw(
                 _("Invalid commission-to-company rate for cancellation {0}.").format(
-                    co.name
+                    co["name"]
                 )
             )
         co_amount = flt(flt(co.earned_commission) * co_rate, precision)
@@ -280,7 +280,7 @@ def get_commission_recovery_position(commission_entry):
     )
 
     # Allocate recovered amounts per referenced payout event.
-    payout_event_names = {pe.name for pe in payout_events}
+    payout_event_names = {pe["name"] for pe in payout_events}
     # Validate recovery references: reject (do not silently skip) any
     # Recovery/Recovery Reversal whose recovery_of does not identify a
     # submitted Payout belonging to this Commission Entry.
@@ -382,12 +382,12 @@ def get_commission_recovery_position(commission_entry):
         "net_recovered": net_recovered,
         "recovery_due_before_recovery": recovery_due_before_recovery,
         "outstanding_recovery": outstanding_recovery,
-        "payout_events": [pe.name for pe in payout_events],
+        "payout_events": [pe["name"] for pe in payout_events],
         "recovery_events": [re["name"] for re in recovery_events],
         "return_adjustments": adjustment_names,
         "cancellation_reversals": (
-            [cr.name for cr in cancel_of_returns]
-            + [co.name for co in cancel_of_original]
+            [cr["name"] for cr in cancel_of_returns]
+            + [co["name"] for co in cancel_of_original]
         ),
         "payout_allocations": payout_allocations,
     }
