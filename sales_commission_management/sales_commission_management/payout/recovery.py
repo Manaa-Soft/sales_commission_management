@@ -55,7 +55,7 @@ def get_commission_recovery_position(commission_entry):
             _("Could not lock Commission Entry {0}.").format(commission_entry)
         )
 
-    orig = locked[0]
+    orig = frappe._dict(locked[0])
     if orig.docstatus != 1:
         frappe.throw(
             _("Commission Entry {0} must be submitted.").format(commission_entry)
@@ -1015,7 +1015,7 @@ def create_recovery_receivable_gl_entry(
     # create Journal Entries. The unique constraint on idempotency_key is the
     # database-level guard.
     claimed = False
-    for _ in range(3):
+    for _i in range(3):
         try:
             frappe.get_doc({
                 "doctype": "Commission GL Idempotency",
@@ -1038,7 +1038,7 @@ def create_recovery_receivable_gl_entry(
         # Another worker owns the slot. Wait for it to finish posting.
         winner = None
         winner_fp = None
-        for _ in range(20):
+        for _i in range(20):
             rows = frappe.db.sql(
                 "SELECT journal_entry, posting_fingerprint "
                 "FROM `tabCommission GL Idempotency` "
@@ -1285,7 +1285,7 @@ def create_recovery_collection_gl_entry(
 
     # Claim the idempotency slot FIRST.
     claimed = False
-    for _ in range(3):
+    for _i in range(3):
         try:
             frappe.get_doc({
                 "doctype": "Commission GL Idempotency",
@@ -1307,7 +1307,7 @@ def create_recovery_collection_gl_entry(
     if not claimed:
         winner = None
         winner_fp = None
-        for _ in range(20):
+        for _i in range(20):
             rows = frappe.db.sql(
                 "SELECT journal_entry, posting_fingerprint "
                 "FROM `tabCommission GL Idempotency` "
