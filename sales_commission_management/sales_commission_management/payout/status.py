@@ -51,6 +51,10 @@ def _resolve_settlement(settlement):
         name = settlement.get("name") or settlement.get("settlement")
         if not name:
             frappe.throw(_("Commission Settlement is required."))
+        if not frappe.db.exists("Commission Settlement", name):
+            frappe.throw(
+                _("Commission Settlement {0} does not exist.").format(name)
+            )
         try:
             doc = frappe._dict(settlement)
         except Exception:
@@ -60,6 +64,10 @@ def _resolve_settlement(settlement):
         return name, doc
     if hasattr(settlement, "name") and hasattr(settlement, "doctype"):
         name = settlement.name
+        if not frappe.db.exists("Commission Settlement", name):
+            frappe.throw(
+                _("Commission Settlement {0} does not exist.").format(name)
+            )
         doc = settlement
     else:
         name = str(settlement)
@@ -358,10 +366,203 @@ def refresh_settlement_payout_status(settlement):
 
 
 # ---------------------------------------------------------------------------
-# Optional whitelisted entry point for client calls.
+# Privileged roles that may read any settlement's payout status.
 # ---------------------------------------------------------------------------
-@frappe.whitelist()
+_PRIVILEGED_ROLES = {"System Manager", "Accounts Manager", "Sales Manager"}
+
+
+def _is_privileged_user():
+    try:
+        return bool(set(frappe.get_roles(frappe.session.user)) & _PRIVILEGED_ROLES)
+    except Exception:
+        return False
+
+
+def _enforce_settlement_read_access(sett_name, sett_doc):
+    """Enforce read access for a Commission Settlement's payout status.
+
+    Guest users are denied. Non-privileged users may only read settlements
+    whose beneficiary is linked to their account.
+    """
+    if frappe.session.user == "Guest":
+        frappe.throw(_("Authentication required."), frappe.PermissionError)
+
+    if _is_privileged_user():
+        return
+
+    beneficiary_type = (
+        getattr(sett_doc, "beneficiary_type", None)
+        or (sett_doc.get("beneficiary_type") if isinstance(sett_doc, dict) else None)
+    )
+
+    if beneficiary_type == "Sales Person":
+        linked = frappe.db.get_value(
+            "Sales Person", {"user": frappe.session.user}, "name"
+        )
+        sp = getattr(sett_doc, "sales_person", None)
+        if isinstance(sett_doc, dict):
+            sp = sp or sett_doc.get("sales_person")
+        if not linked or linked != sp:
+            frappe.throw(
+                _("Insufficient permissions to view this settlement."),
+                frappe.PermissionError,
+            )
+    elif beneficiary_type == "Sales Partner":
+        # Sales Partner has no user link in standard ERPNext; deny for
+        # non-privileged users unless explicitly linked via beneficiary.
+        bp = getattr(sett_doc, "sales_partner", None)
+        if isinstance(sett_doc, dict):
+            bp = bp or sett_doc.get("sales_partner")
+        if not bp or bp != getattr(sett_doc, "beneficiary", None):
+            frappe.throw(
+                _("Insufficient permissions to view this settlement."),
+                frappe.PermissionError,
+            )
+        # Fall through to permission check below for partner.
+        if not frappe.has_permission("Commission Settlement", "read", sett_name):
+            frappe.throw(
+                _("Insufficient permissions to view this settlement."),
+                frappe.PermissionError,
+            )
+    elif beneficiary_type == "Employee":
+        linked_emp = frappe.db.get_value(
+            "Employee", {"user_id": frappe.session.user}, "name"
+        )
+        emp = getattr(sett_doc, "employee", None)
+        if isinstance(sett_doc, dict):
+            emp = emp or sett_doc.get("employee")
+        if not linked_emp or linked_emp != emp:
+            frappe.throw(
+                _("Insufficient permissions to view this settlement."),
+                frappe.PermissionError,
+            )
+    else:
+        # Supplier or unknown beneficiary: deny non-privileged read.
+        frappe.throw(
+            _("Insufficient permissions to view this settlement."),
+            frappe.PermissionError,
+        )
+
+
+def _parse_settlement_list(settlements):
+    """Normalize the various input shapes into a list of settlement names."""
+    if settlements is None:
+        return []
+    if isinstance(settlements, str):
+        s = settlements.strip()
+        if not s:
+            return []
+        # Try JSON array first.
+        try:
+            import json
+
+            parsed = json.loads(s)
+            if isinstance(parsed, list):
+                return [str(x).strip() for x in parsed if str(x).strip()]
+            if isinstance(parsed, str):
+                return [parsed.strip()] if parsed.strip() else []
+        except Exception:
+            pass
+        # Comma/newline separated.
+        parts = [p.strip() for p in s.replace("\n", ",").split(",")]
+        return [p for p in parts if p]
+    if isinstance(settlements, (list, tuple)):
+        out = []
+        for x in settlements:
+            if isinstance(x, dict):
+                n = x.get("name") or x.get("settlement")
+                if n:
+                    out.append(str(n).strip())
+            else:
+                s = str(x).strip()
+                if s:
+                    out.append(s)
+        return out
+    # Single value.
+    s = str(settlements).strip()
+    return [s] if s else []
+
+
+# ---------------------------------------------------------------------------
+# Whitelisted entry points for client calls.
+# ---------------------------------------------------------------------------
+@frappe.whitelist(methods=["GET", "POST"])
 def get_payout_status_for_settlement(settlement=None, **kwargs):
+    """Return the server-derived payout status for a single settlement.
+
+    Hardened (P3.5.3): requires authentication, validates the settlement ref,
+    enforces read permissions and beneficiary scoping.
+    """
     if settlement is None:
-        settlement = kwargs.get("settlement") or kwargs.get("settlement_name") or kwargs.get("name")
-    return compute_payout_status(settlement)
+        settlement = (
+            kwargs.get("settlement")
+            or kwargs.get("settlement_name")
+            or kwargs.get("name")
+        )
+    if not settlement:
+        frappe.throw(_("Commission Settlement is required."), frappe.ValidationError)
+
+    sett_name, sett_doc = _resolve_settlement(settlement)
+
+    if frappe.session.user == "Guest":
+        frappe.throw(_("Authentication required."), frappe.PermissionError)
+
+    if not frappe.has_permission("Commission Settlement", "read", sett_name):
+        frappe.throw(
+            _("Insufficient permissions to view this settlement."),
+            frappe.PermissionError,
+        )
+
+    _enforce_settlement_read_access(sett_name, sett_doc)
+
+    return compute_payout_status(sett_doc)
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def get_payout_status_for_settlements(settlements=None, **kwargs):
+    """Batch helper: return payout statuses for multiple settlements.
+
+    Accepts a list/JSON array/comma-separated string of settlement names.
+    Results are returned as a list of status dicts in the same order as the
+    input (deduplicated). Settlements the caller cannot read are omitted
+    rather than raising, so a partial result is still useful; an empty input
+    returns an empty list.
+    """
+    if settlements is None:
+        settlements = kwargs.get("settlements") or kwargs.get("settlement_names")
+    names = _parse_settlement_list(settlements)
+    # Deduplicate while preserving order.
+    seen = set()
+    unique = []
+    for n in names:
+        if n not in seen:
+            seen.add(n)
+            unique.append(n)
+
+    results = []
+    for n in unique:
+        if not frappe.db.exists("Commission Settlement", n):
+            continue
+        try:
+            doc = frappe.get_doc("Commission Settlement", n)
+        except Exception:
+            continue
+        if not frappe.has_permission("Commission Settlement", "read", n):
+            continue
+        try:
+            _enforce_settlement_read_access(n, doc)
+        except Exception:
+            continue
+        try:
+            results.append(compute_payout_status(doc))
+        except Exception:
+            # Fail closed per settlement: skip rather than abort the batch.
+            continue
+    return results
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def get_payout_status_map(settlements=None, **kwargs):
+    """Batch helper returning a dict keyed by settlement name."""
+    items = get_payout_status_for_settlements(settlements, **kwargs)
+    return {it.get("settlement"): it for it in items if it.get("settlement")}
