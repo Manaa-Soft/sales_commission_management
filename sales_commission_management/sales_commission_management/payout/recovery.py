@@ -699,6 +699,7 @@ def create_recovery_event(event_data):
     try:
         from sales_commission_management.sales_commission_management.payout.event_factory import (
             generate_event_key,
+            _normalize_value,
         )
         from sales_commission_management.sales_commission_management.payout.lifecycle import (
             create_and_submit_payout_event,
@@ -737,17 +738,17 @@ def create_recovery_event(event_data):
         existing_status = locked[0].docstatus
         # Verify payload matches.
         existing_doc = frappe.get_doc("Commission Payout Event", existing_name)
-        for fld in (
-            "event_type", "commission_entry", "company", "beneficiary",
-            "settlement", "settlement_item", "source_doctype", "source_name",
-            "source_row", "recovery_of", "commission_currency",
-            "commission_amount", "company_currency", "company_amount",
-            "settlement_currency", "settlement_amount",
-            "source_amount", "source_currency", "posting_date",
-            "evidence_level", "fx_from_currency", "fx_to_currency", "fx_rate",
-            "fx_date", "fx_source", "remarks",
-        ):
-            if fld in event_data and getattr(existing_doc, fld, None) != event_data.get(fld):
+        # Complete canonical payload comparison: compare every field present on
+        # either side, treating omitted optional values as None (not skipping
+        # them). Normalize dates and currency/numeric values.
+        skip_fields = {"doctype", "name", "owner", "creation", "modified",
+                       "modified_by", "docstatus", "idx", "parent", "parenttype",
+                       "parentfield"}
+        all_fields = set(event_data.keys()) | set(existing_doc.as_dict().keys())
+        for fld in sorted(all_fields - skip_fields):
+            req_val = event_data.get(fld, None)
+            db_val = getattr(existing_doc, fld, None)
+            if _normalize_value(fld, db_val) != _normalize_value(fld, req_val):
                 frappe.throw(
                     _("Existing Recovery event {0} has a different {1}.").format(
                         existing_name, fld
@@ -793,30 +794,66 @@ def create_recovery_event(event_data):
 # GL entry functions for recovery accounting (P3.4.6)
 
 
-def _verify_source_event_identity(source_event, company):
-    """Best-effort: if source_event is a Commission Payout Event, verify it
-    is a submitted Recovery event for the same company. Non-CPE sources are
-    skipped (e.g. Payment Entry / Journal Entry)."""
+def _verify_source_event_identity(source_event, company, commission_entry=None):
+    """Enforce source-event identity before a recovery GL posting.
+
+    - Commission Payout Event: must be submitted, Recovery type, matching
+      company and (when provided) matching commission_entry.
+    - Payment Entry / Journal Entry: must exist and be submitted, with
+      matching company.
+    - Unknown references are rejected (not silently accepted).
+    """
     if not source_event:
-        return
-    # Enforce (not best-effort) when source_event is a Commission Payout Event.
-    if not frappe.db.exists("Commission Payout Event", source_event):
-        return
-    doc = frappe.get_doc("Commission Payout Event", source_event)
-    if doc.docstatus != 1:
-        frappe.throw(
-            _("Source event {0} must be submitted.").format(source_event)
-        )
-    if getattr(doc, "event_type", None) not in (None, "Recovery"):
-        # Only Recovery events are valid sources for recovery GL postings.
-        if doc.event_type != "Recovery":
+        frappe.throw(_("source_event is required for recovery GL postings."))
+
+    # Commission Payout Event
+    if frappe.db.exists("Commission Payout Event", source_event):
+        doc = frappe.get_doc("Commission Payout Event", source_event)
+        if doc.docstatus != 1:
+            frappe.throw(
+                _("Source event {0} must be submitted.").format(source_event)
+            )
+        if getattr(doc, "event_type", None) != "Recovery":
             frappe.throw(
                 _("Source event {0} must be a Recovery event.").format(source_event)
             )
-    if company and getattr(doc, "company", None) and doc.company != company:
-        frappe.throw(
-            _("Source event {0} company must match.").format(source_event)
-        )
+        if company and getattr(doc, "company", None) and doc.company != company:
+            frappe.throw(
+                _("Source event {0} company must match.").format(source_event)
+            )
+        if commission_entry and getattr(doc, "commission_entry", None) and doc.commission_entry != commission_entry:
+            frappe.throw(
+                _("Source event {0} commission entry must match.").format(source_event)
+            )
+        return
+
+    # Payment Entry
+    if frappe.db.exists("Payment Entry", source_event):
+        pe = frappe.get_doc("Payment Entry", source_event)
+        if pe.docstatus != 1:
+            frappe.throw(
+                _("Source event {0} must be submitted.").format(source_event)
+            )
+        if company and getattr(pe, "company", None) and pe.company != company:
+            frappe.throw(
+                _("Source event {0} company must match.").format(source_event)
+            )
+        return
+
+    # Journal Entry
+    if frappe.db.exists("Journal Entry", source_event):
+        je = frappe.get_doc("Journal Entry", source_event)
+        if je.docstatus != 1:
+            frappe.throw(
+                _("Source event {0} must be submitted.").format(source_event)
+            )
+        if company and getattr(je, "company", None) and je.company != company:
+            frappe.throw(
+                _("Source event {0} company must match.").format(source_event)
+            )
+        return
+
+    frappe.throw(_("Source event {0} does not exist.").format(source_event))
 
 
 def _posting_fingerprint(company, commission_entry, recovery_amount, currency,
@@ -878,6 +915,8 @@ def create_recovery_receivable_gl_entry(
     if not source_event:
         frappe.throw(_("source_event is required for recovery GL postings."))
 
+    _verify_source_event_identity(source_event, company, commission_entry)
+
     idem_key = "{0}:{1}".format(source_event, PURPOSE_RECEIVABLE)
     current_fp = _posting_fingerprint(
         company, commission_entry, recovery_amount, currency, posting_date,
@@ -893,7 +932,7 @@ def create_recovery_receivable_gl_entry(
         je_status = frappe.db.get_value("Journal Entry", existing_je.journal_entry, "docstatus")
         if je_status == 1:
             fp = current_fp
-            if existing_je.posting_fingerprint and existing_je.posting_fingerprint != fp:
+            if not existing_je.posting_fingerprint or existing_je.posting_fingerprint != fp:
                 frappe.throw(
                     _("Idempotency key {0} was reused with different posting "
                       "details.").format(idem_key)
@@ -1014,12 +1053,12 @@ def create_recovery_receivable_gl_entry(
         if winner:
             w_status = frappe.db.get_value("Journal Entry", winner, "docstatus")
             if w_status == 1:
-                if winner_fp and winner_fp != current_fp:
+                if not winner_fp or winner_fp != current_fp:
                     frappe.throw(
                         _("Idempotency key {0} was reused with different posting "
                           "details.").format(idem_key)
                     )
-                _verify_source_event_identity(source_event, company)
+                _verify_source_event_identity(source_event, company, commission_entry)
                 return winner
             frappe.throw(
                 _("Concurrent recovery receivable posting for {0} is not "
@@ -1118,6 +1157,8 @@ def create_recovery_collection_gl_entry(
     if not source_event:
         frappe.throw(_("source_event is required for recovery GL postings."))
 
+    _verify_source_event_identity(source_event, company, commission_entry)
+
     idem_key = "{0}:{1}".format(source_event, PURPOSE_COLLECTION)
 
     # Resolve the default bank account early so the fingerprint and the
@@ -1127,6 +1168,7 @@ def create_recovery_collection_gl_entry(
             "Account",
             {"account_type": "Bank", "company": company, "is_group": 0, "disabled": 0},
             "name",
+            order_by="name asc",
         )
     if not bank_account:
         frappe.throw(
@@ -1146,7 +1188,7 @@ def create_recovery_collection_gl_entry(
         je_status = frappe.db.get_value("Journal Entry", existing_je.journal_entry, "docstatus")
         if je_status == 1:
             fp = current_fp
-            if existing_je.posting_fingerprint and existing_je.posting_fingerprint != fp:
+            if not existing_je.posting_fingerprint or existing_je.posting_fingerprint != fp:
                 frappe.throw(
                     _("Idempotency key {0} was reused with different posting "
                       "details.").format(idem_key)
@@ -1280,12 +1322,12 @@ def create_recovery_collection_gl_entry(
         if winner:
             w_status = frappe.db.get_value("Journal Entry", winner, "docstatus")
             if w_status == 1:
-                if winner_fp and winner_fp != current_fp:
+                if not winner_fp or winner_fp != current_fp:
                     frappe.throw(
                         _("Idempotency key {0} was reused with different posting "
                           "details.").format(idem_key)
                     )
-                _verify_source_event_identity(source_event, company)
+                _verify_source_event_identity(source_event, company, commission_entry)
                 return winner
             frappe.throw(
                 _("Concurrent recovery collection posting for {0} is not "
