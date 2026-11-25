@@ -144,22 +144,22 @@ def get_commission_recovery_position(commission_entry):
     # --- Calculate net entitlement (signed sum in company currency) ---
     net_entitlement_raw = original_commission
     for adj in adjustments:
-        adj_rate = flt(adj.commission_to_company_rate)
-        adj_comm_curr = adj.commission_currency or company_currency
+        adj_rate = flt(adj["commission_to_company_rate"])
+        adj_comm_curr = adj["commission_currency"] or company_currency
         if adj_comm_curr == company_currency:
             adj_rate = 1.0
         elif adj_rate <= 0:
             frappe.throw(
                 _("Invalid commission-to-company rate for adjustment {0}.").format(
-                    adj.name
+                    adj["name"]
                 )
             )
-        adj_amount = flt(flt(adj.earned_commission) * adj_rate, precision)
+        adj_amount = flt(flt(adj["earned_commission"]) * adj_rate, precision)
         net_entitlement_raw += adj_amount
 
     for cr in cancel_of_returns:
-        cr_rate = flt(cr.commission_to_company_rate)
-        cr_comm_curr = cr.commission_currency or company_currency
+        cr_rate = flt(cr["commission_to_company_rate"])
+        cr_comm_curr = cr["commission_currency"] or company_currency
         if cr_comm_curr == company_currency:
             cr_rate = 1.0
         elif cr_rate <= 0:
@@ -168,12 +168,12 @@ def get_commission_recovery_position(commission_entry):
                     cr["name"]
                 )
             )
-        cr_amount = flt(flt(cr.earned_commission) * cr_rate, precision)
+        cr_amount = flt(flt(cr["earned_commission"]) * cr_rate, precision)
         net_entitlement_raw += cr_amount
 
     for co in cancel_of_original:
-        co_rate = flt(co.commission_to_company_rate)
-        co_comm_curr = co.commission_currency or company_currency
+        co_rate = flt(co["commission_to_company_rate"])
+        co_comm_curr = co["commission_currency"] or company_currency
         if co_comm_curr == company_currency:
             co_rate = 1.0
         elif co_rate <= 0:
@@ -182,7 +182,7 @@ def get_commission_recovery_position(commission_entry):
                     co["name"]
                 )
             )
-        co_amount = flt(flt(co.earned_commission) * co_rate, precision)
+        co_amount = flt(flt(co["earned_commission"]) * co_rate, precision)
         net_entitlement_raw += co_amount
 
     net_entitlement = flt(max(0.0, net_entitlement_raw), precision)
@@ -294,11 +294,11 @@ def get_commission_recovery_position(commission_entry):
                 )
             )
     for rr in recovery_reversals:
-        po = reversal_payout_map.get(rr.name)
+        po = reversal_payout_map.get(rr["name"])
         if po and po not in payout_event_names:
             frappe.throw(
                 _("Recovery Reversal {0} references an invalid payout.").format(
-                    rr.name
+                    rr["name"]
                 )
             )
 
@@ -734,8 +734,8 @@ def create_recovery_event(event_data):
         as_dict=True,
     )
     if locked:
-        existing_name = locked[0].name
-        existing_status = locked[0].docstatus
+        existing_name = locked[0]["name"]
+        existing_status = locked[0]["docstatus"]
         # Verify payload matches.
         existing_doc = frappe.get_doc("Commission Payout Event", existing_name)
         # Complete canonical payload comparison: compare every field present on
