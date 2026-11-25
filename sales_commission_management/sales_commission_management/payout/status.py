@@ -257,7 +257,7 @@ def compute_payout_status(settlement):
             if as_rows:
                 payroll_accrued = True
         payout_status = "Payroll Accrued" if payroll_accrued else "Not Paid"
-    elif actual_paid + tol < total_payable:
+    elif actual_paid < total_payable:
         payout_status = "Partially Paid"
     else:
         # Fully paid (within tolerance).
