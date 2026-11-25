@@ -48,6 +48,7 @@ def _resolve_settlement(settlement):
         frappe.throw(_("Commission Settlement is required."))
 
     if isinstance(settlement, dict):
+        # Do not trust caller-supplied dict fields; resolve from the database.
         name = settlement.get("name") or settlement.get("settlement")
         if not name:
             frappe.throw(_("Commission Settlement is required."))
@@ -55,12 +56,7 @@ def _resolve_settlement(settlement):
             frappe.throw(
                 _("Commission Settlement {0} does not exist.").format(name)
             )
-        try:
-            doc = frappe._dict(settlement)
-        except Exception:
-            import types
-
-            doc = types.SimpleNamespace(**settlement)
+        doc = frappe.get_doc("Commission Settlement", name)
         return name, doc
     if hasattr(settlement, "name") and hasattr(settlement, "doctype"):
         name = settlement.name
@@ -116,11 +112,25 @@ def _sum_events(events, event_type):
         if isinstance(e, dict):
             amt = e.get("commission_amount")
             if amt is None:
-                amt = e.get("settlement_amount")
+                # Only fall back to settlement_amount when currencies are the
+                # same (verified equivalence), otherwise fail closed.
+                sett_curr = e.get("settlement_currency")
+                comm_curr = e.get("commission_currency")
+                if sett_curr and comm_curr and sett_curr == comm_curr:
+                    amt = e.get("settlement_amount")
         else:
             amt = getattr(e, "commission_amount", None)
             if amt is None:
-                amt = getattr(e, "settlement_amount", None)
+                sett_curr = getattr(e, "settlement_currency", None)
+                comm_curr = getattr(e, "commission_currency", None)
+                if sett_curr and comm_curr and sett_curr == comm_curr:
+                    amt = getattr(e, "settlement_amount", None)
+        if amt is None:
+            frappe.throw(
+                _("Missing commission amount for payout event {0}.").format(
+                    e.get("name") if isinstance(e, dict) else getattr(e, "name", None)
+                )
+            )
         total += flt(amt or 0)
     return total
 
@@ -164,23 +174,16 @@ def compute_payout_status(settlement):
     recovery_reversal_total = _sum_events(events, _RECOVERY_REVERSAL)
     net_recovery = flt(recovery_total - recovery_reversal_total, precision)
 
-    # Recoverable balance: aggregate the per-entry recovery positions from the
-    # authoritative recovery engine (recovery.py), restricted to the payout
-    # allocations belonging to THIS settlement so a shared Commission Entry is
-    # not double-counted across settlements.
+    # Recoverable balance: direct attribution through the payout allocations
+    # belonging to THIS settlement (matching payout-event IDs), avoiding
+    # currency-ratio approximations and cross-settlement duplication.
     recoverable = 0.0
     entries = getattr(sett_doc, "entries", None) or []
-    # Group this settlement's payout events by commission entry so we can
-    # compute each entry's share of the settlement's paid amount.
-    entry_paid_for_settlement = {}
-    for e in events:
-        et = e.get("event_type") if isinstance(e, dict) else getattr(e, "event_type", None)
-        if et != _PAYOUT:
-            continue
-        ce = e.get("commission_entry") if isinstance(e, dict) else getattr(e, "commission_entry", None)
-        amt = e.get("settlement_amount") if isinstance(e, dict) else getattr(e, "settlement_amount", None)
-        if ce:
-            entry_paid_for_settlement[ce] = entry_paid_for_settlement.get(ce, 0.0) + flt(amt or 0)
+    this_settlement_payouts = {
+        (e.get("name") if isinstance(e, dict) else getattr(e, "name", None))
+        for e in events
+        if (e.get("event_type") if isinstance(e, dict) else getattr(e, "event_type", None)) == _PAYOUT
+    }
     for row in entries:
         entry_name = row.get("commission_ledger_entry") if isinstance(row, dict) else getattr(row, "commission_ledger_entry", None)
         if not entry_name:
@@ -190,10 +193,17 @@ def compute_payout_status(settlement):
         )
 
         pos = get_commission_recovery_position(entry_name)
-        entry_total_paid = flt(pos.get("net_paid", 0), precision)
-        entry_recovery_company = flt(pos.get("outstanding_recovery", 0), precision)
-        # Convert recovery from company currency to commission currency using
-        # the entry's commission-to-company rate (explicit FX basis).
+        allocs = pos.get("payout_allocations") or []
+        entry_recovery_company = 0.0
+        for alloc in allocs:
+            pe_name = alloc.get("payout_event") if isinstance(alloc, dict) else getattr(alloc, "payout_event", None)
+            if pe_name in this_settlement_payouts:
+                rb = alloc.get("recoverable_balance") if isinstance(alloc, dict) else getattr(alloc, "recoverable_balance", 0)
+                entry_recovery_company += flt(rb or 0)
+        if entry_recovery_company <= 0:
+            continue
+        # Convert from company currency to commission currency using the
+        # entry's commission-to-company rate (explicit FX basis).
         try:
             entry_doc = frappe.get_doc("Commission Entry", entry_name)
         except Exception:
@@ -207,14 +217,7 @@ def compute_payout_status(settlement):
             frappe.throw(
                 _("Invalid commission-to-company rate for entry {0}.").format(entry_name)
             )
-        entry_recovery = flt(entry_recovery_company / entry_rate, precision)
-        this_paid = flt(entry_paid_for_settlement.get(entry_name, 0), precision)
-        if entry_total_paid > 0 and this_paid > 0:
-            # Restrict to this settlement's share of the entry's total payouts.
-            share = this_paid / entry_total_paid
-            recoverable += entry_recovery * share
-        elif entry_total_paid <= 0 and this_paid > 0:
-            recoverable += entry_recovery
+        recoverable += flt(entry_recovery_company / entry_rate, precision)
     recoverable = flt(recoverable, precision)
 
     outstanding = flt(max(0.0, total_payable - actual_paid), precision)
