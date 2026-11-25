@@ -500,9 +500,22 @@ class CommissionSettlement(Document):
         self.total_payable = flt(total_payable, 2)
         self.total_reserved = flt(total_reserved, 2)
         self.total_paid = flt(total_paid, 2)
-        # amount_included already excludes previously settled amounts, so
-        # outstanding for this settlement is the included amount itself.
-        self.outstanding = flt(total_payable, 2)
+        # P3.5: server-derived payout outstanding. Derive actual paid amount from
+        # the Commission Payout Event ledger (net of reversals) rather than
+        # from a manually typed value. Falls back to 0 when no events exist
+        # (e.g. a freshly submitted settlement), preserving prior behaviour.
+        actual_paid = 0.0
+        try:
+            from sales_commission_management.sales_commission_management.payout.status import (
+                compute_payout_status,
+            )
+
+            if getattr(self, "name", None):
+                ps = compute_payout_status(self.name)
+                actual_paid = flt(ps.get("actual_paid_amount", 0))
+        except Exception:
+            actual_paid = 0.0
+        self.outstanding = flt(max(0.0, total_payable - actual_paid), 2)
 
     def _create_settlement_document(self):
         if self.settlement_method == "Additional Salary":
