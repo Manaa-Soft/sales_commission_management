@@ -745,16 +745,31 @@ def create_recovery_receivable_gl_entry(
             _("Commission Expense Account is not configured for {0}.").format(company)
         )
 
-    # Validate accounts belong to company.
-    for acct in (receivable_account, expense_account):
-        acct_company = frappe.db.get_value("Account", acct, "company")
-        if acct_company != company:
+    # Validate accounts belong to company, are enabled, non-group, correct type.
+    for acct, expected_root in ((receivable_account, "Asset"), (expense_account, "Expense")):
+        acct_info = frappe.db.get_value(
+            "Account", acct, ["company", "is_group", "disabled", "root_type", "account_currency"], as_dict=True
+        )
+        if not acct_info:
+            frappe.throw(_("Account {0} not found.").format(acct))
+        if acct_info.company != company:
             frappe.throw(
                 _("Account {0} does not belong to company {1}.").format(acct, company)
             )
-        is_group = frappe.db.get_value("Account", acct, "is_group")
-        if is_group:
+        if acct_info.is_group:
             frappe.throw(_("Account {0} must be a ledger account.").format(acct))
+        if acct_info.disabled:
+            frappe.throw(_("Account {0} is disabled.").format(acct))
+        if acct_info.root_type != expected_root:
+            frappe.throw(
+                _("Account {0} must be an {1} account.").format(acct, expected_root)
+            )
+        if acct_info.account_currency != currency:
+            frappe.throw(
+                _("Account {0} currency ({1}) does not match posting currency ({2}).").format(
+                    acct, acct_info.account_currency, currency
+                )
+            )
 
     cost_center = mapping.get("cost_center")
 
@@ -824,7 +839,7 @@ def create_recovery_collection_gl_entry(
         str: Name of the created Journal Entry, or None.
     """
     if not company or not commission_entry or not recovery_amount:
-        return None
+        frappe.throw(_("Company, commission entry, and recovery amount are required."))
 
     mapping = None
     try:
@@ -857,10 +872,62 @@ def create_recovery_collection_gl_entry(
 
     if not bank_account:
         bank_account = frappe.db.get_value(
-            "Account", {"account_type": "Bank", "company": company}, "name"
+            "Account", {"account_type": "Bank", "company": company, "is_group": 0}, "name"
         )
     if not bank_account:
-        return None
+        frappe.throw(
+            _("No active Bank account found for company {0}.").format(company)
+        )
+
+    # Validate bank account.
+    bank_info = frappe.db.get_value(
+        "Account", bank_account, ["company", "is_group", "disabled", "account_type", "account_currency"], as_dict=True
+    )
+    if not bank_info:
+        frappe.throw(_("Bank account {0} not found.").format(bank_account))
+    if bank_info.company != company:
+        frappe.throw(
+            _("Bank account {0} does not belong to company {1}.").format(
+                bank_account, company
+            )
+        )
+    if bank_info.is_group:
+        frappe.throw(_("Bank account {0} must be a ledger account.").format(bank_account))
+    if bank_info.disabled:
+        frappe.throw(_("Bank account {0} is disabled.").format(bank_account))
+    if bank_info.account_type != "Bank":
+        frappe.throw(_("Account {0} must be a Bank account.").format(bank_account))
+    if bank_info.account_currency != currency:
+        frappe.throw(
+            _("Bank account {0} currency ({1}) does not match posting currency ({2}).").format(
+                bank_account, bank_info.account_currency, currency
+            )
+        )
+
+    # Validate receivable account.
+    rec_info = frappe.db.get_value(
+        "Account", receivable_account, ["company", "is_group", "disabled", "root_type", "account_currency"], as_dict=True
+    )
+    if not rec_info:
+        frappe.throw(_("Receivable account {0} not found.").format(receivable_account))
+    if rec_info.company != company:
+        frappe.throw(
+            _("Receivable account {0} does not belong to company {1}.").format(
+                receivable_account, company
+            )
+        )
+    if rec_info.is_group:
+        frappe.throw(_("Receivable account {0} must be a ledger account.").format(receivable_account))
+    if rec_info.disabled:
+        frappe.throw(_("Receivable account {0} is disabled.").format(receivable_account))
+    if rec_info.root_type != "Asset":
+        frappe.throw(_("Receivable account {0} must be an Asset account.").format(receivable_account))
+    if rec_info.account_currency != currency:
+        frappe.throw(
+            _("Receivable account {0} currency ({1}) does not match posting currency ({2}).").format(
+                receivable_account, rec_info.account_currency, currency
+            )
+        )
 
     cost_center = mapping.get("cost_center")
 

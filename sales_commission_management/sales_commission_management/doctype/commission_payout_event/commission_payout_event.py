@@ -224,6 +224,25 @@ class CommissionPayoutEvent(Document):
             prec_comm = _currency_precision(self.commission_currency or "USD")
             if flt(self.commission_amount, prec_comm) <= 0:
                 frappe.throw(_("Payout and Recovery events must have a positive commission amount."))
+            # Company amount must be finite and positive for Recovery events.
+            if self.event_type == "Recovery":
+                prec_comp = _currency_precision(self.company_currency or "USD")
+                if not math.isfinite(flt(self.company_amount)) or flt(self.company_amount, prec_comp) <= 0:
+                    frappe.throw(_("Recovery events must have a finite positive company amount."))
+                # Validate recovery amount against outstanding recovery.
+                if self.commission_entry:
+                    from sales_commission_management.sales_commission_management.payout.recovery import (
+                        get_commission_recovery_position,
+                    )
+                    position = get_commission_recovery_position(self.commission_entry)
+                    outstanding = position.get("outstanding_recovery", 0)
+                    recovery_amount = flt(self.company_amount, prec_comp)
+                    if recovery_amount > outstanding + 0.005:
+                        frappe.throw(
+                            _("Recovery amount {0} exceeds outstanding recovery {1}.").format(
+                                recovery_amount, outstanding
+                            )
+                        )
         # Source row validation for Payment Entry events.
         if self.source_doctype == "Payment Entry":
             if not self.source_row:
@@ -289,13 +308,17 @@ class CommissionPayoutEvent(Document):
                 )
             # Fetch the Payment Entry for currency context.
             pe = frappe.get_doc("Payment Entry", self.source_name)
-            # Currency alignment: the Payment Entry Reference's allocated amount
-            # is labelled in the party (paid_to) account currency. The event's
-            # source currency must represent the same currency, otherwise the
-            # numeric comparison is meaningless in a multi-currency payment.
-            alloc_currency = getattr(pe, "paid_to_account_currency", None)
+            # Currency alignment: depends on payment direction.
+            # Receive: party account is paid_from (supplier refund).
+            # Pay: party account is paid_to (commission payout).
+            if pe.payment_type == "Receive":
+                alloc_currency = getattr(pe, "paid_from_account_currency", None)
+                party_account = pe.paid_from
+            else:
+                alloc_currency = getattr(pe, "paid_to_account_currency", None)
+                party_account = pe.paid_to
             if not alloc_currency:
-                alloc_currency = frappe.get_cached_value("Account", pe.paid_to, "account_currency")
+                alloc_currency = frappe.get_cached_value("Account", party_account, "account_currency")
             if not alloc_currency:
                 frappe.throw(_("Cannot resolve the Payment Entry Reference allocated currency."))
             if not self.source_currency:
