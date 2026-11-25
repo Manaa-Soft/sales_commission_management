@@ -325,7 +325,7 @@ def get_commission_recovery_position(commission_entry):
         max(0.0, net_paid - net_entitlement), precision
     )
     outstanding_recovery = flt(
-        max(0.0, recovery_due_before_recovery - net_recovered), precision
+        max(0.0, recovery_due_before_recovery - gross_net_recovered), precision
     )
 
     # Over-recovery check (on normalized values, no tolerance after normalization)
