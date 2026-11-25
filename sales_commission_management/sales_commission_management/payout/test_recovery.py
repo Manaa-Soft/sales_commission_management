@@ -404,7 +404,7 @@ class TestRecoveryPosition(IntegrationTestCase):
                 if et == "Recovery":
                     return [
                         {"name": "REC-1", "company_amount": 10.0,
-                         "company_currency": "USD", "recovery_of": "PE-2"},
+                         "company_currency": "USD", "recovery_of": "PE-1"},
                     ]
                 if et == "Recovery Reversal":
                     return []
@@ -422,12 +422,13 @@ class TestRecoveryPosition(IntegrationTestCase):
                     "sales_commission_management.sales_commission_management.payout.recovery.frappe.get_all",
                     side_effect=mock_get_all,
                 ):
-                    # With reconciliation enforcement, an aggregate recovery (10)
-                    # that cannot be allocated to payout-level balances (PE-2 has
-                    # 0 due) must raise a reconciliation error rather than
-                    # silently report inconsistent balances.
-                    self.assertRaises(
-                        frappe.ValidationError,
-                        get_commission_recovery_position,
-                        ce_name,
-                    )
+                    result = get_commission_recovery_position(ce_name)
+                    allocs = result["payout_allocations"]
+                    pe1 = [a for a in allocs if a["payout_event"] == "PE-1"][0]
+                    # Recovery referenced PE-1 (which has the 10 due), so it
+                    # must be fully recovered against PE-1.
+                    self.assertEqual(pe1["recovered"], 10.0)
+                    self.assertEqual(pe1["recoverable_balance"], 0.0)
+                    # Aggregate and payout-level recovered amounts reconcile.
+                    self.assertEqual(result["net_recovered"], 10.0)
+                    self.assertEqual(result["outstanding_recovery"], 0.0)
