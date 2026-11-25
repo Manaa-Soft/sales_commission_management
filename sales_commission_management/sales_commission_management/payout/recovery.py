@@ -55,14 +55,14 @@ def get_commission_recovery_position(commission_entry):
             _("Could not lock Commission Entry {0}.").format(commission_entry)
         )
 
-    orig = frappe._dict(locked[0])
-    if orig.docstatus != 1:
+    orig = locked[0]
+    if orig["docstatus"] != 1:
         frappe.throw(
             _("Commission Entry {0} must be submitted.").format(commission_entry)
         )
 
-    company = orig.company
-    company_currency = orig.company_currency
+    company = orig["company"]
+    company_currency = orig["company_currency"]
     if not company or not company_currency:
         frappe.throw(
             _("Commission Entry {0} is missing company or company currency.").format(
@@ -73,8 +73,8 @@ def get_commission_recovery_position(commission_entry):
     precision = _cp(company_currency)
 
     # --- Original commission (converted to company currency) ---
-    comm_currency = orig.commission_currency or company_currency
-    rate = flt(orig.commission_to_company_rate)
+    comm_currency = orig["commission_currency"] or company_currency
+    rate = flt(orig["commission_to_company_rate"])
     if comm_currency == company_currency:
         rate = 1.0
     elif rate <= 0:
@@ -84,7 +84,7 @@ def get_commission_recovery_position(commission_entry):
             )
         )
     original_commission = flt(
-        flt(orig.earned_commission) * rate, precision
+        flt(orig["earned_commission"]) * rate, precision
     )
 
     # --- Return adjustments ---
@@ -221,23 +221,23 @@ def get_commission_recovery_position(commission_entry):
 
     reversal_map = {}
     for pr in payout_reversals:
-        reversal_map.setdefault(pr.reversal_of, []).append(pr)
+        reversal_map.setdefault(pr["reversal_of"], []).append(pr)
 
     net_paid = 0.0
     payout_allocations = []
     for pe in payout_events:
-        pe_amount = flt(pe.company_amount, precision)
-        pe_reversals = reversal_map.get(pe.name, [])
+        pe_amount = flt(pe["company_amount"], precision)
+        pe_reversals = reversal_map.get(pe["name"], [])
         reversal_total = flt(
-            sum(flt(pr.company_amount, precision) for pr in pe_reversals),
+            sum(flt(pr["company_amount"], precision) for pr in pe_reversals),
             precision,
         )
         net_pe = flt(pe_amount - reversal_total, precision)
         net_paid = flt(net_paid + net_pe, precision)
 
         payout_allocations.append({
-            "payout_event": pe.name,
-            "posting_date": pe.posting_date,
+            "payout_event": pe["name"],
+            "posting_date": pe["posting_date"],
             "net_payout": net_pe,
             "recovered": 0.0,
             "recoverable_balance": 0.0,
@@ -265,17 +265,17 @@ def get_commission_recovery_position(commission_entry):
     )
 
     # Map recovery event name -> original payout event (recovery_of).
-    recovery_of_map = {re.name: re.recovery_of for re in recovery_events}
+    recovery_of_map = {re["name"]: re["recovery_of"] for re in recovery_events}
 
     # Map recovery reversal -> its recovery event's original payout.
     reversal_payout_map = {}
     for rr in recovery_reversals:
-        payout = recovery_of_map.get(rr.reversal_of)
-        reversal_payout_map[rr.name] = payout
+        payout = recovery_of_map.get(rr["reversal_of"])
+        reversal_payout_map[rr["name"]] = payout
 
     gross_net_recovered = flt(
-        sum(flt(r.company_amount, precision) for r in recovery_events)
-        - sum(flt(rr.company_amount, precision) for rr in recovery_reversals),
+        sum(flt(r["company_amount"], precision) for r in recovery_events)
+        - sum(flt(rr["company_amount"], precision) for rr in recovery_reversals),
         precision,
     )
 
@@ -285,12 +285,12 @@ def get_commission_recovery_position(commission_entry):
     # Recovery/Recovery Reversal whose recovery_of does not identify a
     # submitted Payout belonging to this Commission Entry.
     for re in recovery_events:
-        po = re.recovery_of
+        po = re["recovery_of"]
         if po and po not in payout_event_names:
             frappe.throw(
                 _("Recovery event {0} references payout {1}, which does not "
                   "belong to Commission Entry {2}.").format(
-                    re.name, po, commission_entry
+                    re["name"], po, commission_entry
                 )
             )
     for rr in recovery_reversals:
@@ -304,19 +304,19 @@ def get_commission_recovery_position(commission_entry):
 
     recovered_by_payout = {}
     for re in recovery_events:
-        po = re.recovery_of
+        po = re["recovery_of"]
         if not po:
             continue
         recovered_by_payout[po] = flt(
-            recovered_by_payout.get(po, 0.0) + flt(re.company_amount, precision),
+            recovered_by_payout.get(po, 0.0) + flt(re["company_amount"], precision),
             precision,
         )
     for rr in recovery_reversals:
-        po = reversal_payout_map.get(rr.name)
+        po = reversal_payout_map.get(rr["name"])
         if not po:
             continue
         recovered_by_payout[po] = flt(
-            recovered_by_payout.get(po, 0.0) - flt(rr.company_amount, precision),
+            recovered_by_payout.get(po, 0.0) - flt(rr["company_amount"], precision),
             precision,
         )
 
@@ -383,7 +383,7 @@ def get_commission_recovery_position(commission_entry):
         "recovery_due_before_recovery": recovery_due_before_recovery,
         "outstanding_recovery": outstanding_recovery,
         "payout_events": [pe.name for pe in payout_events],
-        "recovery_events": [re.name for re in recovery_events],
+        "recovery_events": [re["name"] for re in recovery_events],
         "return_adjustments": adjustment_names,
         "cancellation_reversals": (
             [cr.name for cr in cancel_of_returns]
