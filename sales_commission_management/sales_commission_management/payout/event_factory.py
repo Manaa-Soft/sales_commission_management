@@ -23,7 +23,7 @@ REQUIRED_PAYOUT_FIELDS = REQUIRED_BASE_FIELDS | {"source_row", "source_currency"
 REQUIRED_REVERSAL_FIELDS = REQUIRED_BASE_FIELDS | {"reversal_of", "source_row", "source_currency", "source_amount"}
 
 # Recovery events require source row.
-REQUIRED_RECOVERY_FIELDS = REQUIRED_BASE_FIELDS | {"source_row", "source_currency", "source_amount", "settlement_item"}
+REQUIRED_RECOVERY_FIELDS = REQUIRED_BASE_FIELDS | {"source_row", "source_currency", "source_amount", "settlement_item", "recovery_of"}
 
 # Recovery Reversal events require original event reference and source identity.
 REQUIRED_RECOVERY_REVERSAL_FIELDS = REQUIRED_BASE_FIELDS | {"reversal_of", "source_row", "source_currency", "source_amount"}
@@ -32,7 +32,7 @@ REQUIRED_RECOVERY_REVERSAL_FIELDS = REQUIRED_BASE_FIELDS | {"reversal_of", "sour
 REQUIRED_MANUAL_ADJUSTMENT_FIELDS = REQUIRED_BASE_FIELDS - {"source_doctype", "source_name", "source_row"}
 
 
-def generate_event_key(source_doctype, source_name, source_row, settlement, settlement_item, commission_entry, event_type, reversal_of=None):
+def generate_event_key(source_doctype, source_name, source_row, settlement, settlement_item, commission_entry, event_type, reversal_of=None, recovery_of=None):
     """Generate a deterministic, fixed-length event key for a payout event.
 
     Uses SHA-256 over a canonical JSON serialization of identity fields.
@@ -48,6 +48,7 @@ def generate_event_key(source_doctype, source_name, source_row, settlement, sett
         "commission_entry": commission_entry or "",
         "event_type": event_type or "",
         "reversal_of": reversal_of or "",
+        "recovery_of": recovery_of or "",
     }
     canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

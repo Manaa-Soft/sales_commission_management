@@ -72,9 +72,16 @@ def get_commission_recovery_position(commission_entry):
     precision = _cp(company_currency)
 
     # --- Original commission (converted to company currency) ---
+    comm_currency = orig.commission_currency or company_currency
     rate = flt(orig.commission_to_company_rate)
-    if rate <= 0:
+    if comm_currency == company_currency:
         rate = 1.0
+    elif rate <= 0:
+        frappe.throw(
+            _("Invalid commission-to-company rate for entry {0}.").format(
+                commission_entry
+            )
+        )
     original_commission = flt(
         flt(orig.earned_commission) * rate, precision
     )
@@ -136,30 +143,45 @@ def get_commission_recovery_position(commission_entry):
     # --- Calculate net entitlement (signed sum in company currency) ---
     net_entitlement_raw = original_commission
     for adj in adjustments:
-        adj_rate = flt(adj.commission_to_company_rate) or 1.0
+        adj_rate = flt(adj.commission_to_company_rate)
         adj_comm_curr = adj.commission_currency or company_currency
-        if adj_comm_curr != company_currency and adj_rate > 0:
-            adj_amount = flt(flt(adj.earned_commission) * adj_rate, precision)
-        else:
-            adj_amount = flt(adj.earned_commission, precision)
+        if adj_comm_curr == company_currency:
+            adj_rate = 1.0
+        elif adj_rate <= 0:
+            frappe.throw(
+                _("Invalid commission-to-company rate for adjustment {0}.").format(
+                    adj.name
+                )
+            )
+        adj_amount = flt(flt(adj.earned_commission) * adj_rate, precision)
         net_entitlement_raw += adj_amount
 
     for cr in cancel_of_returns:
-        cr_rate = flt(cr.commission_to_company_rate) or 1.0
+        cr_rate = flt(cr.commission_to_company_rate)
         cr_comm_curr = cr.commission_currency or company_currency
-        if cr_comm_curr != company_currency and cr_rate > 0:
-            cr_amount = flt(flt(cr.earned_commission) * cr_rate, precision)
-        else:
-            cr_amount = flt(cr.earned_commission, precision)
+        if cr_comm_curr == company_currency:
+            cr_rate = 1.0
+        elif cr_rate <= 0:
+            frappe.throw(
+                _("Invalid commission-to-company rate for cancellation {0}.").format(
+                    cr.name
+                )
+            )
+        cr_amount = flt(flt(cr.earned_commission) * cr_rate, precision)
         net_entitlement_raw += cr_amount
 
     for co in cancel_of_original:
-        co_rate = flt(co.commission_to_company_rate) or 1.0
+        co_rate = flt(co.commission_to_company_rate)
         co_comm_curr = co.commission_currency or company_currency
-        if co_comm_curr != company_currency and co_rate > 0:
-            co_amount = flt(flt(co.earned_commission) * co_rate, precision)
-        else:
-            co_amount = flt(co.earned_commission, precision)
+        if co_comm_curr == company_currency:
+            co_rate = 1.0
+        elif co_rate <= 0:
+            frappe.throw(
+                _("Invalid commission-to-company rate for cancellation {0}.").format(
+                    co.name
+                )
+            )
+        co_amount = flt(flt(co.earned_commission) * co_rate, precision)
         net_entitlement_raw += co_amount
 
     net_entitlement = flt(max(0.0, net_entitlement_raw), precision)
@@ -354,10 +376,16 @@ def validate_supplier_recovery_link(
             _("Payment Entry company must match settlement company.")
         )
 
-    # Must be a payment to supplier (refund direction for recovery).
-    if pe.payment_type not in ("Pay", None):
+    # Validate supplier matches settlement supplier.
+    if sett.supplier and pe.party != sett.supplier:
         frappe.throw(
-            _("Payment Entry must be a Pay type for supplier recovery.")
+            _("Payment Entry supplier must match settlement supplier.")
+        )
+
+    # For supplier recovery, the company receives a refund from the supplier.
+    if pe.payment_type not in ("Receive", None):
+        frappe.throw(
+            _("Payment Entry must be a Receive type for supplier recovery refund.")
         )
 
     if pe.party_type != "Supplier":
@@ -569,6 +597,10 @@ def create_recovery_event(event_data):
     if not event_data or not isinstance(event_data, dict):
         frappe.throw(_("Event data must be a non-empty dict."))
 
+    # Reject non-Recovery event types.
+    if event_data.get("event_type") and event_data["event_type"] != "Recovery":
+        frappe.throw(_("Only Recovery event type is allowed."))
+
     if not event_data.get("recovery_of"):
         frappe.throw(_("recovery_of is required for Recovery events."))
 
@@ -596,6 +628,19 @@ def create_recovery_event(event_data):
     if event_data.get("settlement") and event_data["settlement"] != orig_event.settlement:
         frappe.throw(_("Settlement must match original Payout Event."))
 
+    # Enforce recovery limits.
+    commission_entry = event_data.get("commission_entry") or orig_event.commission_entry
+    if commission_entry:
+        position = get_commission_recovery_position(commission_entry)
+        recovery_amount = flt(event_data.get("company_amount", 0))
+        outstanding = position.get("outstanding_recovery", 0)
+        if recovery_amount > outstanding + 0.005:
+            frappe.throw(
+                _("Recovery amount {0} exceeds outstanding recovery {1}.").format(
+                    recovery_amount, outstanding
+                )
+            )
+
     # Use event_factory to create the event.
     try:
         from sales_commission_management.sales_commission_management.payout.event_factory import (
@@ -604,7 +649,7 @@ def create_recovery_event(event_data):
     except Exception:
         frappe.throw(_("Event factory is not available."))
 
-    event_data.setdefault("event_type", "Recovery")
+    event_data["event_type"] = "Recovery"
     name = get_or_create_payout_event(event_data)
     return name
 
@@ -660,20 +705,39 @@ def create_recovery_receivable_gl_entry(
         if mappings:
             mapping = mappings[0]
     except Exception:
-        return None
+        frappe.throw(_("Failed to retrieve account mapping for {0}.").format(company))
 
     if not mapping:
-        return None
+        frappe.throw(
+            _("Commission Account Mapping is missing for company {0}.").format(company)
+        )
 
     receivable_account = mapping.get("commission_recovery_receivable_account")
     if not receivable_account:
-        return None
+        frappe.throw(
+            _("Commission Recovery Receivable Account is not configured for {0}.").format(
+                company
+            )
+        )
 
     expense_account = mapping.get("commission_expense_account")
     if not expense_account:
         expense_account = mapping.get("payroll_commission_expense_account")
     if not expense_account:
-        return None
+        frappe.throw(
+            _("Commission Expense Account is not configured for {0}.").format(company)
+        )
+
+    # Validate accounts belong to company.
+    for acct in (receivable_account, expense_account):
+        acct_company = frappe.db.get_value("Account", acct, "company")
+        if acct_company != company:
+            frappe.throw(
+                _("Account {0} does not belong to company {1}.").format(acct, company)
+            )
+        is_group = frappe.db.get_value("Account", acct, "is_group")
+        if is_group:
+            frappe.throw(_("Account {0} must be a ledger account.").format(acct))
 
     cost_center = mapping.get("cost_center")
 
@@ -712,7 +776,7 @@ def create_recovery_receivable_gl_entry(
                 commission_entry
             ),
         )
-        return None
+        raise
 
 
 def create_recovery_collection_gl_entry(
@@ -759,14 +823,20 @@ def create_recovery_collection_gl_entry(
         if mappings:
             mapping = mappings[0]
     except Exception:
-        return None
+        frappe.throw(_("Failed to retrieve account mapping for {0}.").format(company))
 
     if not mapping:
-        return None
+        frappe.throw(
+            _("Commission Account Mapping is missing for company {0}.").format(company)
+        )
 
     receivable_account = mapping.get("commission_recovery_receivable_account")
     if not receivable_account:
-        return None
+        frappe.throw(
+            _("Commission Recovery Receivable Account is not configured for {0}.").format(
+                company
+            )
+        )
 
     if not bank_account:
         bank_account = frappe.db.get_value(
@@ -812,4 +882,4 @@ def create_recovery_collection_gl_entry(
                 commission_entry
             ),
         )
-        return None
+        raise

@@ -71,6 +71,54 @@ class CommissionPayoutEvent(Document):
                 else:
                     # Require settlement_item for item-level payouts.
                     frappe.throw(_("Settlement item is required for payout events."))
+        # Recovery validation.
+        if self.event_type == "Recovery":
+            if not self.recovery_of:
+                frappe.throw(_("Recovery events must reference the original payout event."))
+            # Lock the original payout event row.
+            orig = frappe.db.sql(
+                """
+                SELECT *
+                FROM `tabCommission Payout Event`
+                WHERE name = %s
+                FOR UPDATE
+                """,
+                (self.recovery_of,),
+                as_dict=True,
+            )
+            if not orig:
+                frappe.throw(_("Original payout event not found."))
+            orig = orig[0]
+            if orig.docstatus != 1:
+                frappe.throw(_("Original payout event must be submitted."))
+            if orig.event_type != "Payout":
+                frappe.throw(_("Recovery must reference a Payout event."))
+            if orig.company != self.company:
+                frappe.throw(_("Company must match original payout event."))
+            if orig.beneficiary != self.beneficiary:
+                frappe.throw(_("Beneficiary must match original payout event."))
+            if orig.commission_entry != self.commission_entry:
+                frappe.throw(_("Commission entry must match original payout event."))
+            if orig.settlement != self.settlement:
+                frappe.throw(_("Settlement must match original payout event."))
+            if orig.settlement_item != self.settlement_item:
+                frappe.throw(_("Settlement item must match original payout event."))
+            if orig.source_doctype != self.source_doctype:
+                frappe.throw(_("Source DocType must match original payout event."))
+            if orig.source_name != self.source_name:
+                frappe.throw(_("Source document must match original payout event."))
+            if orig.source_row != self.source_row:
+                frappe.throw(_("Source row must match original payout event."))
+            if orig.commission_currency != self.commission_currency:
+                frappe.throw(_("Commission currency must match original payout event."))
+            if orig.settlement_currency != self.settlement_currency:
+                frappe.throw(_("Settlement currency must match original payout event."))
+            if orig.company_currency != self.company_currency:
+                frappe.throw(_("Company currency must match original payout event."))
+        else:
+            if self.recovery_of:
+                frappe.throw(_("Only Recovery events may reference a recovery_of event."))
+
         # Reversal validation.
         if self.event_type in ("Payout Reversal", "Recovery Reversal"):
             if not self.reversal_of:
@@ -291,7 +339,7 @@ class CommissionPayoutEvent(Document):
                 "settlement", "settlement_item", "commission_entry",
                 "company", "beneficiary_type", "beneficiary",
                 "source_doctype", "source_name", "source_row",
-                "reversal_of", "source_currency", "source_amount",
+                "reversal_of", "recovery_of", "source_currency", "source_amount",
                 "settlement_currency", "settlement_amount",
                 "commission_currency", "commission_amount",
                 "company_currency", "company_amount",
