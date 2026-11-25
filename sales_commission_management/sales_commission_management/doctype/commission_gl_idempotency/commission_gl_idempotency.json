@@ -11,7 +11,8 @@
     "journal_entry",
     "posting_purpose",
     "source_event",
-    "company"
+    "company",
+    "posting_fingerprint"
   ],
   "fields": [
     {
@@ -47,6 +48,12 @@
       "fieldtype": "Link",
       "label": "Company",
       "options": "Company",
+      "read_only": 1
+    },
+    {
+      "fieldname": "posting_fingerprint",
+      "fieldtype": "Data",
+      "label": "Posting Fingerprint",
       "read_only": 1
     }
   ],

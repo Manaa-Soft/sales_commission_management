@@ -275,6 +275,86 @@ class TestRecoveryPosition(IntegrationTestCase):
             },
         )
 
+    def test_supplied_event_key_mismatch_with_valid_payout(self):
+        from sales_commission_management.sales_commission_management.payout.recovery import (
+            create_recovery_event,
+        )
+        from types import SimpleNamespace
+
+        payout_name = "PE-VALID-001"
+
+        def mock_exists(dt, name):
+            if dt == "Commission Payout Event" and name == payout_name:
+                return True
+            return False
+
+        orig = SimpleNamespace(
+            docstatus=1,
+            event_type="Payout",
+            company="Test Company",
+            beneficiary="BEN-1",
+            commission_entry="CE-1",
+            settlement="SET-1",
+            settlement_item="SI-1",
+            source_doctype="Payment Entry",
+            source_name="PE-SRC-1",
+            source_row="ROW-1",
+            commission_currency="USD",
+            commission_amount=10.0,
+            company_currency="USD",
+            company_amount=10.0,
+            settlement_currency="USD",
+            settlement_amount=10.0,
+        )
+
+        def mock_get_doc(dt, name):
+            if dt == "Commission Payout Event" and name == payout_name:
+                return orig
+            raise Exception("not found")
+
+        with patch(
+            "sales_commission_management.sales_commission_management.payout.recovery.frappe.db.exists",
+            side_effect=mock_exists,
+        ):
+            with patch(
+                "sales_commission_management.sales_commission_management.payout.recovery.frappe.get_doc",
+                side_effect=mock_get_doc,
+            ):
+                # get_commission_recovery_position will be called for balance
+                # validation; mock it to allow (patch on recovery module).
+                with patch(
+                    "sales_commission_management.sales_commission_management.payout.recovery.get_commission_recovery_position",
+                    return_value={
+                        "payout_allocations": [
+                            {"payout_event": payout_name, "recoverable_balance": 10.0}
+                        ],
+                        "outstanding_recovery": 10.0,
+                    },
+                ):
+                    self.assertRaises(
+                        frappe.ValidationError,
+                        create_recovery_event,
+                        {
+                            "event_type": "Recovery",
+                            "recovery_of": payout_name,
+                            "company": "Test Company",
+                            "beneficiary": "BEN-1",
+                            "commission_entry": "CE-1",
+                            "settlement": "SET-1",
+                            "settlement_item": "SI-1",
+                            "source_doctype": "Payment Entry",
+                            "source_name": "PE-SRC-1",
+                            "source_row": "ROW-1",
+                            "commission_currency": "USD",
+                            "commission_amount": 10.0,
+                            "company_currency": "USD",
+                            "company_amount": 10.0,
+                            "settlement_currency": "USD",
+                            "settlement_amount": 10.0,
+                            "event_key": "totally-wrong-key",
+                        },
+                    )
+
     def test_recovery_position_two_payouts_second_referenced(self):
         """Recovery linked to the second payout must not be mis-attributed."""
         from sales_commission_management.sales_commission_management.payout.recovery import (
@@ -342,11 +422,12 @@ class TestRecoveryPosition(IntegrationTestCase):
                     "sales_commission_management.sales_commission_management.payout.recovery.frappe.get_all",
                     side_effect=mock_get_all,
                 ):
-                    result = get_commission_recovery_position(ce_name)
-                    allocs = result["payout_allocations"]
-                    # Find PE-2 recoverable balance; recovered should be capped
-                    # at its due (0, since oldest-first assigns due to PE-1).
-                    pe2 = [a for a in allocs if a["payout_event"] == "PE-2"][0]
-                    # PE-2 has 0 due, so recoverable balance must be 0 and the
-                    # recovery referencing it cannot be attributed to PE-2's due.
-                    self.assertEqual(pe2["recoverable_balance"], 0.0)
+                    # With reconciliation enforcement, an aggregate recovery (10)
+                    # that cannot be allocated to payout-level balances (PE-2 has
+                    # 0 due) must raise a reconciliation error rather than
+                    # silently report inconsistent balances.
+                    self.assertRaises(
+                        frappe.ValidationError,
+                        get_commission_recovery_position,
+                        ce_name,
+                    )
