@@ -133,9 +133,32 @@ This file records changes to the Sales Commission Management for ERPNext app so 
 - Fail-closed historical calculation: invalid exchange rates, missing invoices, or retrieval failures abort the transaction.
 - `is_reversal` flag set when payment is cancelled.
 
+## commission_payout_event (doctype/commission_payout_event/commission_payout_event.py)
+
+- Added immutable `Commission Payout Event` DocType (P3.1-P3.4): append-only audit record of actual beneficiary payout, payout reversal, recovery, and recovery reversal events. Enforces immutability (validate/before_save/on_trash), unique `event_key`, and full financial/source/currency validation in `_validate_relationships` and `_validate_financials`.
+- Recovery events reference the original payout via `recovery_of` and keep their own source identity (e.g. Receive Payment Entry refund); source identity is validated against settlement/supplier/company in `_validate_financials`.
+- `on_submit` refreshes the linked Commission Settlement's server-derived payout status/amounts.
+
+## commission_gl_idempotency (doctype/commission_gl_idempotency/commission_gl_idempotency.py)
+
+- Added DocType with unique `idempotency_key` (DB-level uniqueness) mapping source_event + posting purpose → Journal Entry name, plus `posting_fingerprint`, `posting_purpose`, `source_event`, `company`. Used by recovery GL functions for persistent, concurrency-safe idempotency.
+
+## payout (payout/recovery.py, payout/status.py, payout/supplier_payment.py, payout/employee_payment.py, payout/event_factory.py, payout/lifecycle.py)
+
+- P3.4.5: Recovery source validation for supplier (refund receipt) and employee (payroll deduction) against a submitted settlement.
+- P3.4.6: Recovery GL entry functions (`create_recovery_receivable_gl_entry`, `create_recovery_collection_gl_entry`) with persistent idempotency, posting-purpose tokens, concurrent-duplicate handling, and strict account validation.
+- P3.4.7: `get_commission_recovery_position()` engine computing net entitlement, net paid, net recovered, recovery due, outstanding recovery, and per-payout allocations from the payout-event ledger.
+- P3.4.8: Recovery creation uses `create_and_submit_payout_event` (atomic). Source identity no longer forced to equal original payout's.
+- P3.4.9-3.4.12: GL idempotency hardening (claim-before-create, FOR UPDATE reads, missing-fingerprint rejection, deterministic bank selection, payload fingerprint verification, source-event identity enforcement). Recovery reconciliation (aggregate vs payout-level, fail-closed on invalid references). Retry idempotency (event-key lookup before balance check, full payload comparison with normalization).
+- P3.5: `compute_payout_status()` derives `actual_paid_amount`, `outstanding_payout_amount`, `recoverable_amount`, `payout_status` from the payout-event ledger. `refresh_settlement_payout_status()` persists them on event submit. `CommissionSettlement._compute_totals()` now derives `outstanding` from the ledger. Added read-only `payout_status`/`actual_paid_amount`/`outstanding_payout_amount`/`recoverable_amount` fields to Commission Settlement.
+- P3.5.3-5: Whitelisted API (`get_payout_status_for_settlement`, batch helpers) with auth/beneficiary scoping. Reports: `settlement_vs_actual_payments`, `recoverable_commission`, `commission_payout_event_history`.
+- `currency_precision()` updated to use v16 `NumberFormat.from_string()` with validated fallback (returns integer precision).
+
 ## Notes for coders
 
 - Hook registration lives in `hooks.py` (`doc_events`, `scheduler_events`); run `bench migrate` + restart after changes.
 - Commission is stored in company currency; transaction currency and exchange rate are persisted for audit.
 - Reversal is append-only; never delete generated `Commission Entry` records.
 - `Commission Collection Event` records are immutable once created.
+- `Commission Payout Event` records are immutable once submitted; corrections use reversal/recovery events.
+- `Commission GL Idempotency` records enforce DB-level uniqueness on source_event + posting purpose.
