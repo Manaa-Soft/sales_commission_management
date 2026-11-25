@@ -197,7 +197,7 @@
    "fieldname": "payout_status",
    "fieldtype": "Select",
    "label": "Payout Status",
-   "options": "Not Paid\\nPayroll Accrued\\nDisbursement Recorded\\nPartially Paid\\nPaid\\nRecovery Due\\nRecovered\\nCancelled",
+   "options": "Not Paid\nPayroll Accrued\nDisbursement Recorded\nPartially Paid\nPaid\nRecovery Due\nRecovered\nCancelled",
    "default": "Not Paid",
    "read_only": 1
   },

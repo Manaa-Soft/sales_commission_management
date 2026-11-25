@@ -405,6 +405,25 @@ class CommissionPayoutEvent(Document):
                 return
             frappe.throw(_("Commission Payout Event records are immutable."))
 
+    def on_submit(self):
+        # Refresh the settlement's server-derived payout status/amounts so the
+        # form and reports reflect the new payout/recovery event.
+        if getattr(self, "settlement", None):
+            try:
+                from sales_commission_management.sales_commission_management.payout.status import (
+                    refresh_settlement_payout_status,
+                )
+
+                refresh_settlement_payout_status(self.settlement)
+            except Exception:
+                frappe.log_error(
+                    frappe.get_traceback(),
+                    "Commission Payout Event: status refresh failed for {0}".format(
+                        self.settlement
+                    ),
+                )
+                raise
+
     def on_trash(self):
         frappe.throw(_("Commission Payout Event records cannot be deleted."))
 

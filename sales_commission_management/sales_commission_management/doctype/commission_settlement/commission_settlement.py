@@ -512,34 +512,31 @@ class CommissionSettlement(Document):
         # the Commission Payout Event ledger (net of reversals) rather than
         # from a manually typed value. Falls back to 0 when no events exist
         # (e.g. a freshly submitted settlement), preserving prior behaviour.
-        actual_paid = 0.0
-        payout_status = None
-        outstanding_payout = None
-        recoverable = None
-        try:
-            from sales_commission_management.sales_commission_management.payout.status import (
-                compute_payout_status,
-            )
+        from sales_commission_management.sales_commission_management.payout.status import (
+            compute_payout_status,
+        )
 
-            if getattr(self, "name", None):
-                ps = compute_payout_status(self.name)
-                actual_paid = flt(ps.get("actual_paid_amount", 0))
-                payout_status = ps.get("payout_status")
-                outstanding_payout = flt(ps.get("outstanding_payout_amount", 0))
-                recoverable = flt(ps.get("recoverable_amount", 0))
-        except Exception:
+        currency = self.commission_currency or _company_currency(self.company)
+        precision = _cp(currency)
+
+        if getattr(self, "name", None):
+            ps = compute_payout_status(self)
+            actual_paid = flt(ps.get("actual_paid_amount", 0), precision)
+            payout_status = ps.get("payout_status") or "Not Paid"
+            outstanding_payout = flt(ps.get("outstanding_payout_amount", 0), precision)
+            recoverable = flt(ps.get("recoverable_amount", 0), precision)
+        else:
             actual_paid = 0.0
-        if payout_status is None:
             payout_status = "Not Paid"
-        if outstanding_payout is None:
-            outstanding_payout = max(0.0, total_payable - actual_paid)
-        if recoverable is None:
+            outstanding_payout = flt(total_payable, precision)
             recoverable = 0.0
-        self.actual_paid_amount = flt(actual_paid, 2)
-        self.outstanding_payout_amount = flt(outstanding_payout, 2)
-        self.recoverable_amount = flt(recoverable, 2)
+        self.actual_paid_amount = flt(actual_paid, precision)
+        self.outstanding_payout_amount = flt(outstanding_payout, precision)
+        self.recoverable_amount = flt(recoverable, precision)
         self.payout_status = payout_status
-        self.outstanding = flt(max(0.0, total_payable - actual_paid), 2)
+        if getattr(self, "name", None) and actual_paid > 0:
+            self.total_paid = flt(actual_paid, precision)
+        self.outstanding = self.outstanding_payout_amount
 
     def _create_settlement_document(self):
         if self.settlement_method == "Additional Salary":

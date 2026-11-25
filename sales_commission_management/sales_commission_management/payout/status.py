@@ -63,37 +63,11 @@ def _resolve_settlement(settlement):
         doc = settlement
     else:
         name = str(settlement)
-        exists = True
-        try:
-            exists = frappe.db.exists("Commission Settlement", name)
-        except Exception:
-            exists = True
-        if exists is False:
+        if not frappe.db.exists("Commission Settlement", name):
             frappe.throw(
                 _("Commission Settlement {0} does not exist.").format(name)
             )
-        try:
-            doc = frappe.get_doc("Commission Settlement", name)
-        except Exception:
-            # Fallback for mocked/partial environments: build a lightweight
-            # stand-in from db.get_value when get_doc is unavailable.
-            try:
-                vals = frappe.db.get_value(
-                    "Commission Settlement", name, "*", as_dict=True
-                )
-            except Exception:
-                vals = None
-            if vals:
-                try:
-                    doc = frappe._dict(vals)
-                except Exception:
-                    import types
-
-                    doc = types.SimpleNamespace(**(vals if isinstance(vals, dict) else {"name": name}))
-            else:
-                import types
-
-                doc = types.SimpleNamespace(name=name)
+        doc = frappe.get_doc("Commission Settlement", name)
 
     if not name:
         frappe.throw(_("Commission Settlement is required."))
@@ -102,26 +76,23 @@ def _resolve_settlement(settlement):
 
 def _fetch_events(settlement_name):
     """Return all submitted payout events allocated to a settlement."""
-    try:
-        rows = frappe.get_all(
-            "Commission Payout Event",
-            filters={"settlement": settlement_name, "docstatus": 1},
-            fields=[
-                "name",
-                "event_type",
-                "evidence_level",
-                "settlement_amount",
-                "commission_amount",
-                "company_amount",
-                "settlement_item",
-                "commission_entry",
-                "reversal_of",
-                "recovery_of",
-            ],
-            order_by="posting_date asc, name asc",
-        )
-    except Exception:
-        rows = []
+    rows = frappe.get_all(
+        "Commission Payout Event",
+        filters={"settlement": settlement_name, "docstatus": 1},
+        fields=[
+            "name",
+            "event_type",
+            "evidence_level",
+            "settlement_amount",
+            "commission_amount",
+            "company_amount",
+            "settlement_item",
+            "commission_entry",
+            "reversal_of",
+            "recovery_of",
+        ],
+        order_by="posting_date asc, name asc",
+    )
     return rows or []
 
 
@@ -181,11 +152,39 @@ def compute_payout_status(settlement):
     recovery_reversal_total = _sum_events(events, _RECOVERY_REVERSAL)
     net_recovery = flt(recovery_total - recovery_reversal_total, precision)
 
-    # Recoverable balance: excess of paid over payable, reduced by recoveries.
-    # Falls back to the simple excess-of-paid-over-payable definition when no
-    # entry-level entitlement data is available.
-    recoverable = flt(max(0.0, actual_paid - total_payable), precision)
-    recoverable = flt(max(0.0, recoverable - net_recovery), precision)
+    # Recoverable balance: aggregate the per-entry recovery positions from the
+    # authoritative recovery engine (recovery.py), which accounts for return
+    # adjustments, payout events, recoveries and reversals per Commission Entry.
+    recoverable = 0.0
+    entries = []
+    try:
+        entries = getattr(sett_doc, "entries", None) or []
+    except Exception:
+        entries = []
+    for row in entries:
+        entry_name = None
+        if isinstance(row, dict):
+            entry_name = row.get("commission_ledger_entry")
+        else:
+            entry_name = getattr(row, "commission_ledger_entry", None)
+        if not entry_name:
+            continue
+        try:
+            from sales_commission_management.sales_commission_management.payout.recovery import (
+                get_commission_recovery_position,
+            )
+
+            pos = get_commission_recovery_position(entry_name)
+            recoverable += flt(pos.get("outstanding_recovery", 0), precision)
+        except Exception:
+            # Fail closed: propagate so we never silently report zero recovery.
+            raise
+    recoverable = flt(recoverable, precision)
+    # Also account for any excess of paid over payable at settlement level that
+    # is not captured by entry-level positions.
+    excess_paid = flt(max(0.0, actual_paid - total_payable), precision)
+    if excess_paid > recoverable + _minor_unit(precision):
+        recoverable = flt(excess_paid, precision)
 
     outstanding = flt(max(0.0, total_payable - actual_paid), precision)
 
@@ -327,6 +326,35 @@ compute_status = compute_payout_status
 compute_payout_status_for_settlement = compute_payout_status
 get_commission_settlement_payout_status = compute_payout_status
 compute_settlement_status = compute_payout_status
+
+
+# ---------------------------------------------------------------------------
+# Centralized refresh: recompute and persist payout fields on the settlement
+# when a payout/recovery event is submitted. Called from event lifecycle hooks.
+# ---------------------------------------------------------------------------
+def refresh_settlement_payout_status(settlement):
+    """Recompute and persist payout status/amounts on a Commission Settlement.
+
+    Fail closed: a calculation failure propagates so the settlement is never
+    left with stale or misleading financial figures.
+    """
+    sett_name, sett_doc = _resolve_settlement(settlement)
+    ps = compute_payout_status(sett_doc)
+    currency = ps.get("currency")
+    precision = _cp(currency) if currency else 2
+    frappe.db.set_value(
+        "Commission Settlement",
+        sett_name,
+        {
+            "actual_paid_amount": flt(ps.get("actual_paid_amount", 0), precision),
+            "outstanding_payout_amount": flt(ps.get("outstanding_payout_amount", 0), precision),
+            "recoverable_amount": flt(ps.get("recoverable_amount", 0), precision),
+            "payout_status": ps.get("payout_status") or "Not Paid",
+            "outstanding": flt(ps.get("outstanding_payout_amount", 0), precision),
+        },
+        update_modified=False,
+    )
+    return ps
 
 
 # ---------------------------------------------------------------------------
