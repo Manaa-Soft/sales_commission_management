@@ -1,0 +1,94 @@
+{
+  "actions": [],
+  "allow_rename": 0,
+  "autoname": "hash",
+  "creation": "2026-01-01 00:00:00.000000",
+  "doctype": "DocType",
+  "editable_grid": 0,
+  "engine": "InnoDB",
+  "field_order": [
+    "idempotency_key",
+    "journal_entry",
+    "posting_purpose",
+    "source_event",
+    "company"
+  ],
+  "fields": [
+    {
+      "fieldname": "idempotency_key",
+      "fieldtype": "Data",
+      "label": "Idempotency Key",
+      "reqd": 1,
+      "unique": 1,
+      "read_only": 1
+    },
+    {
+      "fieldname": "journal_entry",
+      "fieldtype": "Link",
+      "label": "Journal Entry",
+      "options": "Journal Entry",
+      "reqd": 0,
+      "read_only": 1
+    },
+    {
+      "fieldname": "posting_purpose",
+      "fieldtype": "Data",
+      "label": "Posting Purpose",
+      "read_only": 1
+    },
+    {
+      "fieldname": "source_event",
+      "fieldtype": "Data",
+      "label": "Source Event",
+      "read_only": 1
+    },
+    {
+      "fieldname": "company",
+      "fieldtype": "Link",
+      "label": "Company",
+      "options": "Company",
+      "read_only": 1
+    }
+  ],
+  "index_web_pages_for_search": 0,
+  "is_submittable": 0,
+  "links": [],
+  "modified": "2026-01-01 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Sales Commission Management",
+  "name": "Commission GL Idempotency",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 0,
+      "delete": 0,
+      "email": 0,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "role": "System Manager",
+      "share": 0,
+      "submit": 0,
+      "write": 0
+    },
+    {
+      "create": 0,
+      "delete": 0,
+      "email": 0,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "role": "Accounts Manager",
+      "share": 0,
+      "submit": 0,
+      "write": 0
+    }
+  ],
+  "sort_field": "creation",
+  "sort_order": "DESC",
+  "states": [],
+  "track_changes": 1,
+  "title_field": "idempotency_key"
+}

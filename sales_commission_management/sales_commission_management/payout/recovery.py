@@ -279,10 +279,11 @@ def get_commission_recovery_position(commission_entry):
     )
 
     # Allocate recovered amounts per referenced payout event.
+    payout_event_names = {pe.name for pe in payout_events}
     recovered_by_payout = {}
     for re in recovery_events:
         po = re.recovery_of
-        if not po:
+        if not po or po not in payout_event_names:
             continue
         recovered_by_payout[po] = flt(
             recovered_by_payout.get(po, 0.0) + flt(re.company_amount, precision),
@@ -290,7 +291,7 @@ def get_commission_recovery_position(commission_entry):
         )
     for rr in recovery_reversals:
         po = reversal_payout_map.get(rr.name)
-        if not po:
+        if not po or po not in payout_event_names:
             continue
         recovered_by_payout[po] = flt(
             recovered_by_payout.get(po, 0.0) - flt(rr.company_amount, precision),
@@ -658,16 +659,30 @@ def create_recovery_event(event_data):
     if event_data.get("settlement") and event_data["settlement"] != orig_event.settlement:
         frappe.throw(_("Settlement must match original Payout Event."))
 
-    # Enforce recovery limits.
+    # Enforce recovery limits against the referenced payout's recoverable
+    # balance (payout-specific), not just the aggregate outstanding recovery.
     commission_entry = event_data.get("commission_entry") or orig_event.commission_entry
     if commission_entry:
         position = get_commission_recovery_position(commission_entry)
         recovery_amount = flt(event_data.get("company_amount", 0))
-        outstanding = position.get("outstanding_recovery", 0)
-        if recovery_amount > outstanding + 0.005:
+        recovery_of = event_data.get("recovery_of")
+        allocs = position.get("payout_allocations", []) or []
+        referenced_alloc = None
+        for a in allocs:
+            if a.get("payout_event") == recovery_of:
+                referenced_alloc = a
+                break
+        if referenced_alloc is None:
             frappe.throw(
-                _("Recovery amount {0} exceeds outstanding recovery {1}.").format(
-                    recovery_amount, outstanding
+                _("Recovery event must reference a payout belonging to "
+                  "Commission Entry {0}.").format(commission_entry)
+            )
+        payout_recoverable = flt(referenced_alloc.get("recoverable_balance", 0))
+        if recovery_amount > payout_recoverable + 0.005:
+            frappe.throw(
+                _("Recovery amount {0} exceeds the recoverable balance {1} "
+                  "of payout {2}.").format(
+                    recovery_amount, payout_recoverable, recovery_of
                 )
             )
 
@@ -684,18 +699,22 @@ def create_recovery_event(event_data):
 
     event_data["event_type"] = "Recovery"
 
-    # Generate event_key if not provided, including recovery_of for uniqueness.
-    if not event_data.get("event_key"):
-        event_data["event_key"] = generate_event_key(
-            event_data.get("source_doctype"),
-            event_data.get("source_name"),
-            event_data.get("source_row"),
-            event_data.get("settlement"),
-            event_data.get("settlement_item"),
-            event_data.get("commission_entry"),
-            "Recovery",
-            recovery_of=event_data.get("recovery_of"),
-        )
+    # Generate the authoritative event_key server-side. A caller-supplied key
+    # must match this identity; otherwise reject it.
+    expected_key = generate_event_key(
+        event_data.get("source_doctype"),
+        event_data.get("source_name"),
+        event_data.get("source_row"),
+        event_data.get("settlement"),
+        event_data.get("settlement_item"),
+        event_data.get("commission_entry"),
+        "Recovery",
+        recovery_of=event_data.get("recovery_of"),
+    )
+    supplied_key = event_data.get("event_key")
+    if supplied_key and supplied_key != expected_key:
+        frappe.throw(_("Supplied event_key does not match the expected identity."))
+    event_data["event_key"] = expected_key
 
     # Create and submit in one transaction-safe operation. Source validation,
     # recovery-limit validation, and submission occur atomically.
@@ -742,17 +761,26 @@ def create_recovery_receivable_gl_entry(
     if not math.isfinite(float(recovery_amount)) or float(recovery_amount) <= 0:
         frappe.throw(_("Recovery amount must be a finite positive number."))
 
-    # Idempotency check by durable source_event + posting purpose.
     PURPOSE_RECEIVABLE = "purpose:receivable"
-    if source_event:
-        rows = frappe.db.sql(
-            "SELECT name FROM `tabJournal Entry` "
-            "WHERE user_remark LIKE %s AND user_remark LIKE %s "
-            "AND docstatus != 2 LIMIT 1",
-            ("%{0}%".format(source_event), "%{0}%".format(PURPOSE_RECEIVABLE)),
+    # Require a valid source_event for idempotent GL postings.
+    if not source_event:
+        frappe.throw(_("source_event is required for recovery GL postings."))
+
+    idem_key = "{0}:{1}".format(source_event, PURPOSE_RECEIVABLE)
+
+    # Look up an existing idempotency record.
+    existing_je = frappe.db.get_value(
+        "Commission GL Idempotency", {"idempotency_key": idem_key}, "journal_entry"
+    )
+    if existing_je:
+        je_status = frappe.db.get_value("Journal Entry", existing_je, "docstatus")
+        if je_status == 1:
+            return existing_je
+        # Never treat a Draft/Cancelled JE as a successful posting.
+        frappe.throw(
+            _("Existing recovery receivable posting for {0} is not submitted "
+              "(docstatus={1}).").format(source_event, je_status)
         )
-        if rows and rows[0]:
-            return rows[0][0]
 
     mapping = None
     try:
@@ -821,6 +849,52 @@ def create_recovery_receivable_gl_entry(
 
     cost_center = mapping.get("cost_center")
 
+    # Claim the idempotency slot FIRST so concurrent workers cannot both
+    # create Journal Entries. The unique constraint on idempotency_key is the
+    # database-level guard.
+    claimed = False
+    for _ in range(3):
+        try:
+            frappe.get_doc({
+                "doctype": "Commission GL Idempotency",
+                "idempotency_key": idem_key,
+                "journal_entry": None,
+                "posting_purpose": PURPOSE_RECEIVABLE,
+                "source_event": source_event,
+                "company": company,
+            }).insert(ignore_permissions=True)
+            claimed = True
+            break
+        except frappe.DuplicateEntryError:
+            claimed = False
+            break
+        except Exception:
+            raise
+
+    if not claimed:
+        # Another worker owns the slot. Wait for it to finish posting.
+        winner = None
+        for _ in range(20):
+            winner = frappe.db.get_value(
+                "Commission GL Idempotency", {"idempotency_key": idem_key}, "journal_entry"
+            )
+            if winner:
+                break
+        if winner:
+            w_status = frappe.db.get_value("Journal Entry", winner, "docstatus")
+            if w_status == 1:
+                return winner
+            frappe.throw(
+                _("Concurrent recovery receivable posting for {0} is not "
+                  "submitted (docstatus={1}).").format(source_event, w_status)
+            )
+        frappe.throw(
+            _("Concurrent recovery receivable posting for {0} is still in "
+              "progress; retry.").format(source_event)
+        )
+
+    # Slot claimed: create and submit the Journal Entry. On failure the
+    # transaction rolls back, removing the claim and any Draft JE.
     try:
         je = frappe.get_doc({
             "doctype": "Journal Entry",
@@ -839,38 +913,33 @@ def create_recovery_receivable_gl_entry(
                     "credit_in_account_currency": flt(recovery_amount, _cp(currency)),
                 },
             ],
-            "user_remark": remarks or "Commission recovery receivable for {0} [source_event:{1}] [purpose:receivable]".format(
-                commission_entry, source_event or ""
+            "user_remark": "{0} [source_event:{1}] [purpose:receivable]".format(
+                remarks or "Commission recovery receivable for {0}".format(commission_entry),
+                source_event,
             ),
         })
         if cost_center:
             for a in je.accounts:
                 a.cost_center = cost_center
-        try:
-            je.insert(ignore_permissions=True)
-            je.submit()
-            return je.name
-        except Exception as e:
-            # Handle concurrent duplicate insertion safely: re-query for the
-            # existing Journal Entry instead of failing.
-            if source_event:
-                rows = frappe.db.sql(
-                    "SELECT name FROM `tabJournal Entry` "
-                    "WHERE user_remark LIKE %s AND user_remark LIKE %s "
-                    "AND docstatus != 2 LIMIT 1",
-                    ("%{0}%".format(source_event), "%purpose:receivable%"),
-                )
-                if rows and rows[0]:
-                    return rows[0][0]
-            frappe.log_error(
-                frappe.get_traceback(),
-                "create_recovery_receivable_gl_entry failed for {0}".format(
-                    commission_entry
-                ),
-            )
-            raise
+        je.insert(ignore_permissions=True)
+        je.submit()
     except Exception:
+        frappe.log_error(
+            frappe.get_traceback(),
+            "create_recovery_receivable_gl_entry failed for {0}".format(
+                commission_entry
+            ),
+        )
         raise
+
+    # Record the JE name against the claimed slot.
+    frappe.db.set_value(
+        "Commission GL Idempotency",
+        {"idempotency_key": idem_key},
+        "journal_entry",
+        je.name,
+    )
+    return je.name
 
 
 def create_recovery_collection_gl_entry(
@@ -909,15 +978,22 @@ def create_recovery_collection_gl_entry(
 
     # Idempotency check by durable source_event + posting purpose.
     PURPOSE_COLLECTION = "purpose:collection"
-    if source_event:
-        rows = frappe.db.sql(
-            "SELECT name FROM `tabJournal Entry` "
-            "WHERE user_remark LIKE %s AND user_remark LIKE %s "
-            "AND docstatus != 2 LIMIT 1",
-            ("%{0}%".format(source_event), "%{0}%".format(PURPOSE_COLLECTION)),
+    if not source_event:
+        frappe.throw(_("source_event is required for recovery GL postings."))
+
+    idem_key = "{0}:{1}".format(source_event, PURPOSE_COLLECTION)
+
+    existing_je = frappe.db.get_value(
+        "Commission GL Idempotency", {"idempotency_key": idem_key}, "journal_entry"
+    )
+    if existing_je:
+        je_status = frappe.db.get_value("Journal Entry", existing_je, "docstatus")
+        if je_status == 1:
+            return existing_je
+        frappe.throw(
+            _("Concurrent recovery collection posting for {0} is not submitted "
+              "(docstatus={1}).").format(source_event, je_status)
         )
-        if rows and rows[0]:
-            return rows[0][0]
 
     mapping = None
     try:
@@ -977,7 +1053,7 @@ def create_recovery_collection_gl_entry(
         frappe.throw(_("Bank account {0} is disabled.").format(bank_account))
     if bank_info.account_type != "Bank":
         frappe.throw(_("Account {0} must be a Bank account.").format(bank_account))
-    if getattr(bank_info, "root_type", None) and bank_info.root_type != "Asset":
+    if bank_info.root_type != "Asset":
         frappe.throw(_("Account {0} must be an Asset account.").format(bank_account))
     if bank_info.account_currency != currency:
         frappe.throw(
@@ -1013,6 +1089,47 @@ def create_recovery_collection_gl_entry(
 
     cost_center = mapping.get("cost_center")
 
+    # Claim the idempotency slot FIRST.
+    claimed = False
+    for _ in range(3):
+        try:
+            frappe.get_doc({
+                "doctype": "Commission GL Idempotency",
+                "idempotency_key": idem_key,
+                "journal_entry": None,
+                "posting_purpose": PURPOSE_COLLECTION,
+                "source_event": source_event,
+                "company": company,
+            }).insert(ignore_permissions=True)
+            claimed = True
+            break
+        except frappe.DuplicateEntryError:
+            claimed = False
+            break
+        except Exception:
+            raise
+
+    if not claimed:
+        winner = None
+        for _ in range(20):
+            winner = frappe.db.get_value(
+                "Commission GL Idempotency", {"idempotency_key": idem_key}, "journal_entry"
+            )
+            if winner:
+                break
+        if winner:
+            w_status = frappe.db.get_value("Journal Entry", winner, "docstatus")
+            if w_status == 1:
+                return winner
+            frappe.throw(
+                _("Concurrent recovery collection posting for {0} is not "
+                  "submitted (docstatus={1}).").format(source_event, w_status)
+            )
+        frappe.throw(
+            _("Concurrent recovery collection posting for {0} is still in "
+              "progress; retry.").format(source_event)
+        )
+
     try:
         je = frappe.get_doc({
             "doctype": "Journal Entry",
@@ -1031,33 +1148,29 @@ def create_recovery_collection_gl_entry(
                     "credit_in_account_currency": flt(recovery_amount, _cp(currency)),
                 },
             ],
-            "user_remark": remarks or "Commission recovery collection for {0} [source_event:{1}] [purpose:collection]".format(
-                commission_entry, source_event or ""
+            "user_remark": "{0} [source_event:{1}] [purpose:collection]".format(
+                remarks or "Commission recovery collection for {0}".format(commission_entry),
+                source_event,
             ),
         })
         if cost_center:
             for a in je.accounts:
                 a.cost_center = cost_center
-        try:
-            je.insert(ignore_permissions=True)
-            je.submit()
-            return je.name
-        except Exception:
-            if source_event:
-                rows = frappe.db.sql(
-                    "SELECT name FROM `tabJournal Entry` "
-                    "WHERE user_remark LIKE %s AND user_remark LIKE %s "
-                    "AND docstatus != 2 LIMIT 1",
-                    ("%{0}%".format(source_event), "%purpose:collection%"),
-                )
-                if rows and rows[0]:
-                    return rows[0][0]
-            frappe.log_error(
-                frappe.get_traceback(),
-                "create_recovery_collection_gl_entry failed for {0}".format(
-                    commission_entry
-                ),
-            )
-            raise
+        je.insert(ignore_permissions=True)
+        je.submit()
     except Exception:
+        frappe.log_error(
+            frappe.get_traceback(),
+            "create_recovery_collection_gl_entry failed for {0}".format(
+                commission_entry
+            ),
+        )
         raise
+
+    frappe.db.set_value(
+        "Commission GL Idempotency",
+        {"idempotency_key": idem_key},
+        "journal_entry",
+        je.name,
+    )
+    return je.name

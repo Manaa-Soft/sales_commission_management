@@ -233,12 +233,27 @@ class CommissionPayoutEvent(Document):
                         get_commission_recovery_position,
                     )
                     position = get_commission_recovery_position(self.commission_entry)
-                    outstanding = position.get("outstanding_recovery", 0)
                     recovery_amount = flt(self.company_amount, prec_comp)
-                    if recovery_amount > outstanding + 0.005:
+                    # Validate against the referenced payout's recoverable balance.
+                    allocs = position.get("payout_allocations", []) or []
+                    referenced_alloc = None
+                    for a in allocs:
+                        if a.get("payout_event") == self.recovery_of:
+                            referenced_alloc = a
+                            break
+                    if referenced_alloc is None:
                         frappe.throw(
-                            _("Recovery amount {0} exceeds outstanding recovery {1}.").format(
-                                recovery_amount, outstanding
+                            _("Recovery event must reference a payout belonging to "
+                              "Commission Entry {0}.").format(self.commission_entry)
+                        )
+                    payout_recoverable = flt(
+                        referenced_alloc.get("recoverable_balance", 0)
+                    )
+                    if recovery_amount > payout_recoverable + 0.005:
+                        frappe.throw(
+                            _("Recovery amount {0} exceeds the recoverable balance "
+                              "{1} of payout {2}.").format(
+                                recovery_amount, payout_recoverable, self.recovery_of
                             )
                         )
         # Source row validation for Payment Entry events.

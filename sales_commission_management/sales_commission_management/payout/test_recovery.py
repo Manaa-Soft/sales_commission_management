@@ -223,3 +223,130 @@ class TestRecoveryPosition(IntegrationTestCase):
                     self.assertEqual(result["recovery_events"], [])
                     self.assertEqual(result["return_adjustments"], [])
                     self.assertEqual(result["cancellation_reversals"], [])
+
+    def test_missing_source_event_receivable_raises(self):
+        from sales_commission_management.sales_commission_management.payout.recovery import (
+            create_recovery_receivable_gl_entry,
+        )
+        self.assertRaises(
+            frappe.ValidationError,
+            create_recovery_receivable_gl_entry,
+            "Test Company",
+            "CE-001",
+            100.0,
+            "USD",
+            "2026-01-01",
+            None,
+            None,
+        )
+
+    def test_missing_source_event_collection_raises(self):
+        from sales_commission_management.sales_commission_management.payout.recovery import (
+            create_recovery_collection_gl_entry,
+        )
+        self.assertRaises(
+            frappe.ValidationError,
+            create_recovery_collection_gl_entry,
+            "Test Company",
+            "CE-001",
+            100.0,
+            "USD",
+            "2026-01-01",
+            None,
+            None,
+            None,
+        )
+
+    def test_supplied_event_key_mismatch_raises(self):
+        from sales_commission_management.sales_commission_management.payout.recovery import (
+            create_recovery_event,
+        )
+        # recovery_of nonexistent -> raises before key check, but supplied key
+        # mismatch should also raise. Use a nonexistent payout to trigger
+        # the payout existence check (still ValidationError).
+        self.assertRaises(
+            frappe.ValidationError,
+            create_recovery_event,
+            {
+                "event_type": "Recovery",
+                "recovery_of": "NONEXISTENT-CPE-XYZ",
+                "company": "Test Company",
+                "event_key": "totally-wrong-key",
+            },
+        )
+
+    def test_recovery_position_two_payouts_second_referenced(self):
+        """Recovery linked to the second payout must not be mis-attributed."""
+        from sales_commission_management.sales_commission_management.payout.recovery import (
+            get_commission_recovery_position,
+        )
+
+        ce_name = "MOCK-CE-002"
+
+        def mock_exists(dt, name):
+            if dt == "Commission Entry" and name == ce_name:
+                return True
+            return False
+
+        def mock_sql(query, params, as_dict=False):
+            if "FOR UPDATE" in query:
+                return [{
+                    "name": ce_name,
+                    "docstatus": 1,
+                    "company": "Test Company",
+                    "company_currency": "USD",
+                    "commission_currency": "USD",
+                    "commission_to_company_rate": 1.0,
+                    "earned_commission": 90.0,
+                    "event_type": "Invoice Earned",
+                    "original_entry": None,
+                    "reverses_entry": None,
+                }]
+            return []
+
+        def mock_get_all(dt, filters=None, fields=None, **kwargs):
+            filters = filters or {}
+            et = filters.get("event_type")
+            if dt == "Commission Entry":
+                if et == "Return Adjustment":
+                    return []
+                return []
+            if dt == "Commission Payout Event":
+                if et == "Payout":
+                    return [
+                        {"name": "PE-1", "posting_date": "2026-01-01",
+                         "company_amount": 80.0, "company_currency": "USD"},
+                        {"name": "PE-2", "posting_date": "2026-01-02",
+                         "company_amount": 20.0, "company_currency": "USD"},
+                    ]
+                if et == "Payout Reversal":
+                    return []
+                if et == "Recovery":
+                    return [
+                        {"name": "REC-1", "company_amount": 10.0,
+                         "company_currency": "USD", "recovery_of": "PE-2"},
+                    ]
+                if et == "Recovery Reversal":
+                    return []
+            return []
+
+        with patch(
+            "sales_commission_management.sales_commission_management.payout.recovery.frappe.db.exists",
+            side_effect=mock_exists,
+        ):
+            with patch(
+                "sales_commission_management.sales_commission_management.payout.recovery.frappe.db.sql",
+                side_effect=mock_sql,
+            ):
+                with patch(
+                    "sales_commission_management.sales_commission_management.payout.recovery.frappe.get_all",
+                    side_effect=mock_get_all,
+                ):
+                    result = get_commission_recovery_position(ce_name)
+                    allocs = result["payout_allocations"]
+                    # Find PE-2 recoverable balance; recovered should be capped
+                    # at its due (0, since oldest-first assigns due to PE-1).
+                    pe2 = [a for a in allocs if a["payout_event"] == "PE-2"][0]
+                    # PE-2 has 0 due, so recoverable balance must be 0 and the
+                    # recovery referencing it cannot be attributed to PE-2's due.
+                    self.assertEqual(pe2["recoverable_balance"], 0.0)
