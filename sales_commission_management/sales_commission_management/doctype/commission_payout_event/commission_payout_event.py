@@ -103,12 +103,10 @@ class CommissionPayoutEvent(Document):
                 frappe.throw(_("Settlement must match original payout event."))
             if orig.settlement_item != self.settlement_item:
                 frappe.throw(_("Settlement item must match original payout event."))
-            if orig.source_doctype != self.source_doctype:
-                frappe.throw(_("Source DocType must match original payout event."))
-            if orig.source_name != self.source_name:
-                frappe.throw(_("Source document must match original payout event."))
-            if orig.source_row != self.source_row:
-                frappe.throw(_("Source row must match original payout event."))
+            # Recovery transactions use their own source identity (e.g. a Receive
+            # Payment Entry refund), which need not equal the original payout's
+            # source (e.g. a Pay Payment Entry). Source identity is validated
+            # against the settlement/supplier/company in _validate_financials.
             if orig.commission_currency != self.commission_currency:
                 frappe.throw(_("Commission currency must match original payout event."))
             if orig.settlement_currency != self.settlement_currency:

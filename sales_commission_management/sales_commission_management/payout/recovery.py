@@ -250,7 +250,7 @@ def get_commission_recovery_position(commission_entry):
             "event_type": "Recovery",
             "docstatus": 1,
         },
-        fields=["name", "company_amount", "company_currency"],
+        fields=["name", "company_amount", "company_currency", "recovery_of"],
     )
 
     recovery_reversals = frappe.get_all(
@@ -263,11 +263,39 @@ def get_commission_recovery_position(commission_entry):
         fields=["name", "reversal_of", "company_amount", "company_currency"],
     )
 
+    # Map recovery event name -> original payout event (recovery_of).
+    recovery_of_map = {re.name: re.recovery_of for re in recovery_events}
+
+    # Map recovery reversal -> its recovery event's original payout.
+    reversal_payout_map = {}
+    for rr in recovery_reversals:
+        payout = recovery_of_map.get(rr.reversal_of)
+        reversal_payout_map[rr.name] = payout
+
     net_recovered = flt(
         sum(flt(r.company_amount, precision) for r in recovery_events)
         - sum(flt(rr.company_amount, precision) for rr in recovery_reversals),
         precision,
     )
+
+    # Allocate recovered amounts per referenced payout event.
+    recovered_by_payout = {}
+    for re in recovery_events:
+        po = re.recovery_of
+        if not po:
+            continue
+        recovered_by_payout[po] = flt(
+            recovered_by_payout.get(po, 0.0) + flt(re.company_amount, precision),
+            precision,
+        )
+    for rr in recovery_reversals:
+        po = reversal_payout_map.get(rr.name)
+        if not po:
+            continue
+        recovered_by_payout[po] = flt(
+            recovered_by_payout.get(po, 0.0) - flt(rr.company_amount, precision),
+            precision,
+        )
 
     # --- Calculate recovery obligation ---
     recovery_due_before_recovery = flt(
@@ -291,17 +319,19 @@ def get_commission_recovery_position(commission_entry):
             )
         )
 
-    # --- Allocate against payouts (oldest first) ---
+    # --- Allocate against payouts (per recovery_of reference) ---
     remaining_recovery_due = recovery_due_before_recovery
-    remaining_net_recovered = net_recovered
 
     for alloc in payout_allocations:
         net_pe = alloc["net_payout"]
         due_i = flt(min(net_pe, remaining_recovery_due), precision)
         remaining_recovery_due = flt(remaining_recovery_due - due_i, precision)
 
-        recovered_i = flt(min(due_i, remaining_net_recovered), precision)
-        remaining_net_recovered = flt(remaining_net_recovered - recovered_i, precision)
+        # Recovered amount is allocated against the specific payout referenced
+        # by recovery_of, not distributed oldest-first across all payouts.
+        pe_name = alloc["payout_event"]
+        recovered_for_pe = flt(recovered_by_payout.get(pe_name, 0.0), precision)
+        recovered_i = flt(min(due_i, recovered_for_pe), precision)
 
         alloc["recovered"] = recovered_i
         alloc["recoverable_balance"] = flt(due_i - recovered_i, precision)
@@ -641,21 +671,21 @@ def create_recovery_event(event_data):
                 )
             )
 
-    # Use event_factory to create the event.
+    # Use event_factory + lifecycle to create AND submit the event.
     try:
         from sales_commission_management.sales_commission_management.payout.event_factory import (
-            get_or_create_payout_event,
+            generate_event_key,
+        )
+        from sales_commission_management.sales_commission_management.payout.lifecycle import (
+            create_and_submit_payout_event,
         )
     except Exception:
-        frappe.throw(_("Event factory is not available."))
+        frappe.throw(_("Event factory or lifecycle helper is not available."))
 
     event_data["event_type"] = "Recovery"
 
     # Generate event_key if not provided, including recovery_of for uniqueness.
     if not event_data.get("event_key"):
-        from sales_commission_management.sales_commission_management.payout.event_factory import (
-            generate_event_key,
-        )
         event_data["event_key"] = generate_event_key(
             event_data.get("source_doctype"),
             event_data.get("source_name"),
@@ -667,7 +697,9 @@ def create_recovery_event(event_data):
             recovery_of=event_data.get("recovery_of"),
         )
 
-    name = get_or_create_payout_event(event_data)
+    # Create and submit in one transaction-safe operation. Source validation,
+    # recovery-limit validation, and submission occur atomically.
+    name = create_and_submit_payout_event(event_data)
     return name
 
 # GL entry functions for recovery accounting (P3.4.6)
@@ -710,15 +742,17 @@ def create_recovery_receivable_gl_entry(
     if not math.isfinite(float(recovery_amount)) or float(recovery_amount) <= 0:
         frappe.throw(_("Recovery amount must be a finite positive number."))
 
-    # Idempotency check by source_event.
+    # Idempotency check by durable source_event + posting purpose.
+    PURPOSE_RECEIVABLE = "purpose:receivable"
     if source_event:
-        existing = frappe.db.get_value(
-            "Journal Entry",
-            {"user_remark": ["like", "%{0}%".format(source_event)], "docstatus": ["!=", 2]},
-            "name",
+        rows = frappe.db.sql(
+            "SELECT name FROM `tabJournal Entry` "
+            "WHERE user_remark LIKE %s AND user_remark LIKE %s "
+            "AND docstatus != 2 LIMIT 1",
+            ("%{0}%".format(source_event), "%{0}%".format(PURPOSE_RECEIVABLE)),
         )
-        if existing:
-            return existing
+        if rows and rows[0]:
+            return rows[0][0]
 
     mapping = None
     try:
@@ -805,23 +839,37 @@ def create_recovery_receivable_gl_entry(
                     "credit_in_account_currency": flt(recovery_amount, _cp(currency)),
                 },
             ],
-            "user_remark": remarks or "Commission recovery receivable for {0}".format(
-                commission_entry
+            "user_remark": remarks or "Commission recovery receivable for {0} [source_event:{1}] [purpose:receivable]".format(
+                commission_entry, source_event or ""
             ),
         })
         if cost_center:
             for a in je.accounts:
                 a.cost_center = cost_center
-        je.insert(ignore_permissions=True)
-        je.submit()
-        return je.name
+        try:
+            je.insert(ignore_permissions=True)
+            je.submit()
+            return je.name
+        except Exception as e:
+            # Handle concurrent duplicate insertion safely: re-query for the
+            # existing Journal Entry instead of failing.
+            if source_event:
+                rows = frappe.db.sql(
+                    "SELECT name FROM `tabJournal Entry` "
+                    "WHERE user_remark LIKE %s AND user_remark LIKE %s "
+                    "AND docstatus != 2 LIMIT 1",
+                    ("%{0}%".format(source_event), "%purpose:receivable%"),
+                )
+                if rows and rows[0]:
+                    return rows[0][0]
+            frappe.log_error(
+                frappe.get_traceback(),
+                "create_recovery_receivable_gl_entry failed for {0}".format(
+                    commission_entry
+                ),
+            )
+            raise
     except Exception:
-        frappe.log_error(
-            frappe.get_traceback(),
-            "create_recovery_receivable_gl_entry failed for {0}".format(
-                commission_entry
-            ),
-        )
         raise
 
 
@@ -859,15 +907,17 @@ def create_recovery_collection_gl_entry(
     if not math.isfinite(float(recovery_amount)) or float(recovery_amount) <= 0:
         frappe.throw(_("Recovery amount must be a finite positive number."))
 
-    # Idempotency check by source_event.
+    # Idempotency check by durable source_event + posting purpose.
+    PURPOSE_COLLECTION = "purpose:collection"
     if source_event:
-        existing = frappe.db.get_value(
-            "Journal Entry",
-            {"user_remark": ["like", "%{0}%".format(source_event)], "docstatus": ["!=", 2]},
-            "name",
+        rows = frappe.db.sql(
+            "SELECT name FROM `tabJournal Entry` "
+            "WHERE user_remark LIKE %s AND user_remark LIKE %s "
+            "AND docstatus != 2 LIMIT 1",
+            ("%{0}%".format(source_event), "%{0}%".format(PURPOSE_COLLECTION)),
         )
-        if existing:
-            return existing
+        if rows and rows[0]:
+            return rows[0][0]
 
     mapping = None
     try:
@@ -900,7 +950,9 @@ def create_recovery_collection_gl_entry(
 
     if not bank_account:
         bank_account = frappe.db.get_value(
-            "Account", {"account_type": "Bank", "company": company, "is_group": 0}, "name"
+            "Account",
+            {"account_type": "Bank", "company": company, "is_group": 0, "disabled": 0},
+            "name",
         )
     if not bank_account:
         frappe.throw(
@@ -909,7 +961,7 @@ def create_recovery_collection_gl_entry(
 
     # Validate bank account.
     bank_info = frappe.db.get_value(
-        "Account", bank_account, ["company", "is_group", "disabled", "account_type", "account_currency"], as_dict=True
+        "Account", bank_account, ["company", "is_group", "disabled", "account_type", "root_type", "account_currency"], as_dict=True
     )
     if not bank_info:
         frappe.throw(_("Bank account {0} not found.").format(bank_account))
@@ -925,6 +977,8 @@ def create_recovery_collection_gl_entry(
         frappe.throw(_("Bank account {0} is disabled.").format(bank_account))
     if bank_info.account_type != "Bank":
         frappe.throw(_("Account {0} must be a Bank account.").format(bank_account))
+    if getattr(bank_info, "root_type", None) and bank_info.root_type != "Asset":
+        frappe.throw(_("Account {0} must be an Asset account.").format(bank_account))
     if bank_info.account_currency != currency:
         frappe.throw(
             _("Bank account {0} currency ({1}) does not match posting currency ({2}).").format(
@@ -977,21 +1031,33 @@ def create_recovery_collection_gl_entry(
                     "credit_in_account_currency": flt(recovery_amount, _cp(currency)),
                 },
             ],
-            "user_remark": remarks or "Commission recovery collection for {0}".format(
-                commission_entry
+            "user_remark": remarks or "Commission recovery collection for {0} [source_event:{1}] [purpose:collection]".format(
+                commission_entry, source_event or ""
             ),
         })
         if cost_center:
             for a in je.accounts:
                 a.cost_center = cost_center
-        je.insert(ignore_permissions=True)
-        je.submit()
-        return je.name
+        try:
+            je.insert(ignore_permissions=True)
+            je.submit()
+            return je.name
+        except Exception:
+            if source_event:
+                rows = frappe.db.sql(
+                    "SELECT name FROM `tabJournal Entry` "
+                    "WHERE user_remark LIKE %s AND user_remark LIKE %s "
+                    "AND docstatus != 2 LIMIT 1",
+                    ("%{0}%".format(source_event), "%purpose:collection%"),
+                )
+                if rows and rows[0]:
+                    return rows[0][0]
+            frappe.log_error(
+                frappe.get_traceback(),
+                "create_recovery_collection_gl_entry failed for {0}".format(
+                    commission_entry
+                ),
+            )
+            raise
     except Exception:
-        frappe.log_error(
-            frappe.get_traceback(),
-            "create_recovery_collection_gl_entry failed for {0}".format(
-                commission_entry
-            ),
-        )
         raise
