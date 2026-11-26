@@ -17,7 +17,7 @@ from sales_commission_management.sales_commission_management.utils import (
 )
 
 
-def get_commission_recovery_position(commission_entry):
+def get_commission_recovery_position(commission_entry, for_update=True):
     """Calculate the recoverable balance for a commission entry.
 
     Locks the original Commission Entry, reads all submitted ledger events,
@@ -41,15 +41,24 @@ def get_commission_recovery_position(commission_entry):
             _("Commission Entry {0} does not exist.").format(commission_entry)
         )
 
-    # Lock the original entry to serialize concurrent access.
-    locked = frappe.db.sql(
-        "SELECT name, docstatus, company, company_currency, "
-        "commission_currency, commission_to_company_rate, earned_commission, "
-        "event_type, original_entry, reverses_entry "
-        "FROM `tabCommission Entry` WHERE name = %s FOR UPDATE",
-        (commission_entry,),
-        as_dict=True,
-    )
+    # Read the original entry. Lock only when for_update=True (default, for
+    # transactional callers); audit/read-only paths pass for_update=False to
+    # avoid acquiring row locks.
+    if for_update:
+        sql = (
+            "SELECT name, docstatus, company, company_currency, "
+            "commission_currency, commission_to_company_rate, earned_commission, "
+            "event_type, original_entry, reverses_entry "
+            "FROM `tabCommission Entry` WHERE name = %s FOR UPDATE"
+        )
+    else:
+        sql = (
+            "SELECT name, docstatus, company, company_currency, "
+            "commission_currency, commission_to_company_rate, earned_commission, "
+            "event_type, original_entry, reverses_entry "
+            "FROM `tabCommission Entry` WHERE name = %s"
+        )
+    locked = frappe.db.sql(sql, (commission_entry,), as_dict=True)
     if not locked:
         frappe.throw(
             _("Could not lock Commission Entry {0}.").format(commission_entry)

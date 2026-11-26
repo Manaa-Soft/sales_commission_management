@@ -135,7 +135,7 @@ def _sum_events(events, event_type):
     return total
 
 
-def compute_payout_status(settlement):
+def compute_payout_status(settlement, for_update=True):
     """Compute server-derived payout status and totals for a settlement.
 
     Returns a dict with (at minimum):
@@ -192,7 +192,7 @@ def compute_payout_status(settlement):
             get_commission_recovery_position,
         )
 
-        pos = get_commission_recovery_position(entry_name)
+        pos = get_commission_recovery_position(entry_name, for_update=for_update)
         allocs = pos.get("payout_allocations") or []
         entry_recovery_company = 0.0
         for alloc in allocs:
@@ -340,10 +340,11 @@ def compute_payout_status_kw(settlement=None, **kwargs):
 
 
 # Rebind primary name to support both positional and keyword.
-def compute_payout_status(settlement=None, **kwargs):  # noqa: F811
+def compute_payout_status(settlement=None, for_update=True, **kwargs):  # noqa: F811
     if settlement is None and kwargs:
         settlement = kwargs.get("settlement") or kwargs.get("settlement_name") or kwargs.get("name")
-    return _original(settlement)
+    # Propagate for_update to recovery-position calls when possible.
+    return _original(settlement, for_update=for_update)
 
 
 # Re-define aliases to the new (kw-friendly) primary.

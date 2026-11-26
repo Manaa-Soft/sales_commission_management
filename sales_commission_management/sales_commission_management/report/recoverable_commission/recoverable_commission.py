@@ -66,7 +66,7 @@ def get_data(filters):
         # a recovery position.
         if r.event_type in ("Return Adjustment", "Cancellation Reversal"):
             continue
-        pos = get_commission_recovery_position(r.name)
+        pos = get_commission_recovery_position(r.name, for_update=False)
         outstanding = flt(pos.get("outstanding_recovery", 0))
         # Only show entries with a recovery due.
         if outstanding <= 0:

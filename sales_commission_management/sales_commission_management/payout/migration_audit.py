@@ -6,10 +6,13 @@ produces a structured report.  It never modifies the database.
 Usage (bench):
     bench --site <site> execute \\
         sales_commission_management.sales_commission_management.payout.migration_audit.run_audit
+
+Usage (API, authorized roles only):
+    frappe.call('sales_commission_management...payout.migration_audit.run_audit_api')
 """
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import flt, cint
 
 
 def _safe(fn, *a, **kw):
@@ -17,6 +20,29 @@ def _safe(fn, *a, **kw):
         return fn(*a, **kw), None
     except Exception as e:
         return None, str(e)
+
+
+_AUTHORIZED_ROLES = {"System Manager", "Accounts Manager"}
+
+
+def _check_api_authorization():
+    if frappe.session.user == "Guest":
+        frappe.throw(_("Authentication required."), frappe.PermissionError)
+    roles = set(frappe.get_roles(frappe.session.user))
+    if not (_AUTHORIZED_ROLES & roles):
+        frappe.throw(
+            _("Insufficient permissions to run the migration audit."),
+            frappe.PermissionError,
+        )
+
+
+def _is_finite_positive(val):
+    import math
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(v) and v > 0
 
 
 def run_audit():
@@ -38,7 +64,7 @@ def run_audit():
             "outstanding", "payout_status", "actual_paid_amount",
             "outstanding_payout_amount", "recoverable_amount",
             "commission_currency", "beneficiary_type", "sales_person",
-            "sales_partner", "employee", "supplier",
+            "sales_partner", "employee", "supplier", "settlement",
         ],
     )
     report["inspected"]["settlements"] = len(settlements)
@@ -55,10 +81,13 @@ def run_audit():
             "company_currency", "company_amount",
             "settlement_currency", "settlement_amount",
             "fx_from_currency", "fx_to_currency", "fx_rate",
-            "evidence_level", "posting_date",
+            "evidence_level", "posting_date", "beneficiary",
         ],
     )
     report["inspected"]["payout_events"] = len(events)
+
+    event_names = {e.name for e in events}
+    event_by_name = {e.name: e for e in events}
 
     # 3. Duplicate event keys
     key_counts = {}
@@ -74,28 +103,43 @@ def run_audit():
                 "action": "Investigate and reconcile duplicate payout events.",
             })
 
-    # 4. Missing/invalid source references
+    # 4. Missing/invalid source references (required fields)
     for e in events:
-        if e.source_doctype and e.source_name:
-            try:
-                if not frappe.db.exists(e.source_doctype, e.source_name):
-                    report["issues"].append({
-                        "type": "missing_source_reference",
-                        "severity": "P1",
-                        "event": e.name,
-                        "source": "{0}:{1}".format(e.source_doctype, e.source_name),
-                        "action": "Verify source document exists; mark for manual review.",
-                    })
-            except Exception as ex:
+        if not e.source_doctype or not e.source_name:
+            report["issues"].append({
+                "type": "missing_source_reference",
+                "severity": "P1",
+                "event": e.name,
+                "source": "{0}:{1}".format(e.source_doctype, e.source_name),
+                "action": "Populate source DocType and source name; verify against linked document.",
+            })
+            continue
+        # Source-row ownership check
+        if e.source_doctype == "Payment Entry" and not e.source_row:
+            report["issues"].append({
+                "type": "missing_source_row",
+                "severity": "P2",
+                "event": e.name,
+                "action": "Populate the exact Payment Entry Reference row.",
+            })
+        try:
+            if not frappe.db.exists(e.source_doctype, e.source_name):
                 report["issues"].append({
-                    "type": "source_reference_check_error",
-                    "severity": "P2",
+                    "type": "missing_source_document",
+                    "severity": "P1",
                     "event": e.name,
-                    "error": str(ex),
+                    "source": "{0}:{1}".format(e.source_doctype, e.source_name),
+                    "action": "Verify source document exists; mark for manual review.",
                 })
+        except Exception as ex:
+            report["issues"].append({
+                "type": "source_reference_check_error",
+                "severity": "P2",
+                "event": e.name,
+                "error": str(ex),
+            })
 
-    # 5. Payout reversals without valid original
-    event_names = {e.name for e in events}
+    # 5. Payout reversals without valid original event
     for e in events:
         if e.event_type in ("Payout Reversal", "Recovery Reversal"):
             if not e.reversal_of or e.reversal_of not in event_names:
@@ -106,6 +150,48 @@ def run_audit():
                     "reversal_of": e.reversal_of,
                     "action": "Link to valid original event or mark for manual review.",
                 })
+                continue
+            orig = event_by_name.get(e.reversal_of)
+            if orig:
+                # Validate correct event type mapping
+                if e.event_type == "Payout Reversal" and orig.event_type != "Payout":
+                    report["issues"].append({
+                        "type": "invalid_reversal_type",
+                        "severity": "P1",
+                        "event": e.name,
+                        "original": e.reversal_of,
+                        "action": "Reversal must reference a Payout event.",
+                    })
+                if e.event_type == "Recovery Reversal" and orig.event_type != "Recovery":
+                    report["issues"].append({
+                        "type": "invalid_reversal_type",
+                        "severity": "P1",
+                        "event": e.name,
+                        "original": e.reversal_of,
+                        "action": "Reversal must reference a Recovery event.",
+                    })
+                # Same settlement, company, commission entry
+                if e.settlement != orig.settlement:
+                    report["issues"].append({
+                        "type": "reversal_settlement_mismatch",
+                        "severity": "P1",
+                        "event": e.name,
+                        "action": "Reversal settlement must match original event.",
+                    })
+                if e.company != orig.company:
+                    report["issues"].append({
+                        "type": "reversal_company_mismatch",
+                        "severity": "P1",
+                        "event": e.name,
+                        "action": "Reversal company must match original event.",
+                    })
+                if e.commission_entry != orig.commission_entry:
+                    report["issues"].append({
+                        "type": "reversal_entry_mismatch",
+                        "severity": "P1",
+                        "event": e.name,
+                        "action": "Reversal commission entry must match original event.",
+                    })
 
     # 6. Recovery events without valid payout reference
     for e in events:
@@ -118,9 +204,49 @@ def run_audit():
                     "recovery_of": e.recovery_of,
                     "action": "Link to valid payout event or mark for manual review.",
                 })
+                continue
+            orig = event_by_name.get(e.recovery_of)
+            if orig and orig.event_type != "Payout":
+                report["issues"].append({
+                    "type": "invalid_recovery_reference",
+                    "severity": "P1",
+                    "event": e.name,
+                    "recovery_of": e.recovery_of,
+                    "action": "Recovery must reference a Payout event.",
+                })
+            if orig and e.company != orig.company:
+                report["issues"].append({
+                    "type": "recovery_company_mismatch",
+                    "severity": "P1",
+                    "event": e.name,
+                    "action": "Recovery company must match original payout.",
+                })
+            if orig and e.commission_entry != orig.commission_entry:
+                report["issues"].append({
+                    "type": "recovery_entry_mismatch",
+                    "severity": "P1",
+                    "event": e.name,
+                    "action": "Recovery commission entry must match original payout.",
+                })
+            if orig and e.settlement != orig.settlement:
+                report["issues"].append({
+                    "type": "recovery_settlement_mismatch",
+                    "severity": "P1",
+                    "event": e.name,
+                    "action": "Recovery settlement must match original payout.",
+                })
 
-    # 7. Missing FX snapshots
+    # 7. FX and currency validation
     for e in events:
+        currencies = [e.commission_currency, e.company_currency, e.settlement_currency]
+        if any(c is None for c in currencies):
+            report["issues"].append({
+                "type": "missing_currency",
+                "severity": "P2",
+                "event": e.name,
+                "action": "Populate all currency fields.",
+            })
+        # FX snapshot completeness + finite positive rate
         if e.fx_from_currency or e.fx_to_currency or e.fx_rate:
             if not (e.fx_from_currency and e.fx_to_currency and e.fx_rate):
                 report["issues"].append({
@@ -129,15 +255,32 @@ def run_audit():
                     "event": e.name,
                     "action": "Backfill FX snapshot from source document if available.",
                 })
+            else:
+                if e.fx_from_currency == e.fx_to_currency:
+                    if flt(e.fx_rate) != 1.0:
+                        report["issues"].append({
+                            "type": "inconsistent_same_currency_rate",
+                            "severity": "P2",
+                            "event": e.name,
+                            "action": "Same-currency FX rate must be 1.0.",
+                        })
+                if not _is_finite_positive(e.fx_rate):
+                    report["issues"].append({
+                        "type": "invalid_fx_rate",
+                        "severity": "P2",
+                        "event": e.name,
+                        "action": "FX rate must be finite and positive.",
+                    })
 
-    # 8. GL idempotency records with missing fingerprints
+    # 8. GL idempotency records
     try:
         idem_rows = frappe.get_all(
             "Commission GL Idempotency",
             fields=["name", "idempotency_key", "journal_entry", "posting_fingerprint",
-                    "posting_purpose", "source_event", "company"],
+                    "posting_purpose", "source_event", "company", "posting_fingerprint"],
         )
         report["inspected"]["gl_idempotency"] = len(idem_rows)
+        seen_keys = {}
         for r in idem_rows:
             if not r.posting_fingerprint:
                 report["issues"].append({
@@ -147,18 +290,47 @@ def run_audit():
                     "idempotency_key": r.idempotency_key,
                     "action": "Backfill fingerprint from linked Journal Entry or validate manually.",
                 })
-            # Verify linked JE is submitted
             if r.journal_entry:
-                je_status = frappe.db.get_value("Journal Entry", r.journal_entry, "docstatus")
-                if je_status != 1:
+                je = frappe.db.get_value(
+                    "Journal Entry", r.journal_entry,
+                    ["docstatus", "company", "user_remark"], as_dict=True
+                )
+                if not je:
                     report["issues"].append({
-                        "type": "unsubmitted_gl_entry",
+                        "type": "missing_linked_je",
                         "severity": "P1",
                         "record": r.name,
                         "journal_entry": r.journal_entry,
-                        "docstatus": je_status,
-                        "action": "Investigate and resubmit or cancel the Journal Entry.",
+                        "action": "Linked Journal Entry does not exist.",
                     })
+                else:
+                    if je.docstatus != 1:
+                        report["issues"].append({
+                            "type": "unsubmitted_gl_entry",
+                            "severity": "P1",
+                            "record": r.name,
+                            "journal_entry": r.journal_entry,
+                            "docstatus": je.docstatus,
+                            "action": "Investigate and resubmit or cancel the Journal Entry.",
+                        })
+                    if r.company and je.company and r.company != je.company:
+                        report["issues"].append({
+                            "type": "gl_company_mismatch",
+                            "severity": "P1",
+                            "record": r.name,
+                            "action": "GL entry company must match idempotency record.",
+                        })
+            # Duplicate idempotency keys
+            seen_keys.setdefault(r.idempotency_key, []).append(r.name)
+        for key, names in seen_keys.items():
+            if len(names) > 1:
+                report["issues"].append({
+                    "type": "duplicate_idempotency_key",
+                    "severity": "P1",
+                    "idempotency_key": key,
+                    "records": names,
+                    "action": "Remove duplicate idempotency records; verify Journal Entries.",
+                })
     except Exception as e:
         report["issues"].append({
             "type": "gl_idempotency_audit_error",
@@ -166,22 +338,39 @@ def run_audit():
             "error": str(e),
         })
 
-    # 9. Differences between stored settlement fields and event-derived balances
+    # 9. Settlement reconciliation (all derived fields)
     for sett in settlements:
         try:
             from sales_commission_management.sales_commission_management.payout.status import (
                 compute_payout_status,
             )
 
-            ps = compute_payout_status(sett.name)
+            ps = compute_payout_status(sett.name, for_update=False)
+            precision = _cp(sett.commission_currency) if sett.commission_currency else 2
             diffs = []
-            if abs(flt(sett.total_paid or 0) - flt(ps.get("actual_paid_amount", 0))) > 0.005:
+            if abs(flt(sett.total_paid or 0, precision) - flt(ps.get("actual_paid_amount", 0), precision)) > 0.005:
                 diffs.append("total_paid: stored={0} derived={1}".format(
                     sett.total_paid, ps.get("actual_paid_amount")
                 ))
-            if abs(flt(sett.outstanding or 0) - flt(ps.get("outstanding_payout_amount", 0))) > 0.005:
+            if abs(flt(sett.outstanding or 0, precision) - flt(ps.get("outstanding_payout_amount", 0), precision)) > 0.005:
                 diffs.append("outstanding: stored={0} derived={1}".format(
                     sett.outstanding, ps.get("outstanding_payout_amount")
+                ))
+            if abs(flt(sett.actual_paid_amount or 0, precision) - flt(ps.get("actual_paid_amount", 0), precision)) > 0.005:
+                diffs.append("actual_paid_amount: stored={0} derived={1}".format(
+                    sett.actual_paid_amount, ps.get("actual_paid_amount")
+                ))
+            if abs(flt(sett.outstanding_payout_amount or 0, precision) - flt(ps.get("outstanding_payout_amount", 0), precision)) > 0.005:
+                diffs.append("outstanding_payout_amount: stored={0} derived={1}".format(
+                    sett.outstanding_payout_amount, ps.get("outstanding_payout_amount")
+                ))
+            if abs(flt(sett.recoverable_amount or 0, precision) - flt(ps.get("recoverable_amount", 0), precision)) > 0.005:
+                diffs.append("recoverable_amount: stored={0} derived={1}".format(
+                    sett.recoverable_amount, ps.get("recoverable_amount")
+                ))
+            if sett.payout_status and sett.payout_status != ps.get("payout_status"):
+                diffs.append("payout_status: stored={0} derived={1}".format(
+                    sett.payout_status, ps.get("payout_status")
                 ))
             if diffs:
                 report["issues"].append({
@@ -199,10 +388,9 @@ def run_audit():
                 "error": str(e),
             })
 
-    # 10. Inconsistent currencies
+    # 10. Inconsistent currencies / settlement currency missing
     for sett in settlements:
-        curr = sett.commission_currency
-        if not curr:
+        if not sett.commission_currency:
             report["issues"].append({
                 "type": "missing_settlement_currency",
                 "severity": "P2",
@@ -210,15 +398,53 @@ def run_audit():
                 "action": "Set commission currency on the settlement.",
             })
 
-    # 11. Financial impact summary by company and currency
+    # 11. Financial impact by company and currency (actual monetary differences)
     impact = {}
     for issue in report["issues"]:
         if issue.get("type") == "settlement_balance_mismatch":
             sett = frappe.get_doc("Commission Settlement", issue["settlement"])
             key = "{0}:{1}".format(sett.company, sett.commission_currency)
-            impact.setdefault(key, {"count": 0, "settlements": []})
-            impact[key]["count"] += 1
+            impact.setdefault(key, {
+                "company": sett.company,
+                "currency": sett.commission_currency,
+                "settlements_affected": 0,
+                "total_payable_diff": 0.0,
+                "actual_paid_diff": 0.0,
+                "recovery_diff": 0.0,
+                "settlements": [],
+            })
+            impact[key]["settlements_affected"] += 1
             impact[key]["settlements"].append(issue["settlement"])
+    # Compute actual monetary diffs per company/currency
+    for sett in settlements:
+        try:
+            from sales_commission_management.sales_commission_management.payout.status import (
+                compute_payout_status,
+            )
+
+            ps = compute_payout_status(sett.name, for_update=False)
+            precision = _cp(sett.commission_currency) if sett.commission_currency else 2
+            key = "{0}:{1}".format(sett.company, sett.commission_currency)
+            if key not in impact:
+                continue
+            # Add diffs
+            impact[key]["total_payable_diff"] = flt(
+                impact[key]["total_payable_diff"]
+                + abs(flt(sett.total_payable or 0, precision) - flt(ps.get("total_payable", 0), precision)),
+                precision,
+            )
+            impact[key]["actual_paid_diff"] = flt(
+                impact[key]["actual_paid_diff"]
+                + abs(flt(sett.actual_paid_amount or 0, precision) - flt(ps.get("actual_paid_amount", 0), precision)),
+                precision,
+            )
+            impact[key]["recovery_diff"] = flt(
+                impact[key]["recovery_diff"]
+                + abs(flt(sett.recoverable_amount or 0, precision) - flt(ps.get("recoverable_amount", 0), precision)),
+                precision,
+            )
+        except Exception:
+            pass
     report["financial_impact"] = impact
 
     # 12. Records requiring manual Finance review
@@ -259,5 +485,6 @@ def run_audit():
 
 @frappe.whitelist()
 def run_audit_api():
-    """Whitelisted entry point for UI/CLI invocation."""
+    """Whitelisted entry point for UI/CLI invocation (authorized roles only)."""
+    _check_api_authorization()
     return run_audit()
