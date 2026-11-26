@@ -60,7 +60,12 @@ def _resolve_settlement(settlement):
         return name, doc
     if hasattr(settlement, "name") and hasattr(settlement, "doctype"):
         name = settlement.name
-        if not frappe.db.exists("Commission Settlement", name):
+        # Handle new/unsaved documents: no DB record yet.
+        try:
+            is_new = settlement.is_new() if hasattr(settlement, "is_new") else False
+        except Exception:
+            is_new = False
+        if not is_new and not frappe.db.exists("Commission Settlement", name):
             frappe.throw(
                 _("Commission Settlement {0} does not exist.").format(name)
             )
