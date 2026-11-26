@@ -115,20 +115,11 @@ function _do_fetch_eligible_entries(frm) {
 }
 
 function _filter_settlement_methods(frm) {
-    frappe.call({
-        method: "sales_commission_management.sales_commission_management.doctype.commission_settlement.commission_settlement.hrms_available",
-        async: false,
-        callback: function (r) {
-            var df = frm.get_field("settlement_method");
-            if (!df) return;
-            var base = ["Supplier Purchase Invoice", "Manual Approved Route"];
-            if (r && r.message) {
-                base.unshift("Additional Salary");
-            }
-            df.df.options = base.join("\n");
-            frm.refresh_field("settlement_method");
-        },
-    });
+    var df = frm.get_field("settlement_method");
+    if (!df) return;
+    var base = ["Additional Salary", "Supplier Purchase Invoice", "Manual Approved Route"];
+    df.df.options = base.join("\n");
+    frm.refresh_field("settlement_method");
 }
 
 function _recompute_settlement_totals(frm) {

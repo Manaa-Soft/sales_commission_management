@@ -253,14 +253,15 @@ def compute_payout_status(settlement, for_update=True):
         # settlement is at least payroll-accrued/scheduled, but not Paid.
         payroll_accrued = False
         if getattr(sett_doc, "employee", None) or getattr(sett_doc, "settlement_method", None) == "Additional Salary":
-            as_rows = frappe.get_all(
-                "Additional Salary",
-                filters={"ref_doctype": "Commission Settlement", "ref_docname": sett_name, "docstatus": 1},
-                fields=["name"],
-                limit=1,
-            )
-            if as_rows:
-                payroll_accrued = True
+            if frappe.db.exists("DocType", "Additional Salary"):
+                as_rows = frappe.get_all(
+                    "Additional Salary",
+                    filters={"ref_doctype": "Commission Settlement", "ref_docname": sett_name, "docstatus": 1},
+                    fields=["name"],
+                    limit=1,
+                )
+                if as_rows:
+                    payroll_accrued = True
         payout_status = "Payroll Accrued" if payroll_accrued else "Not Paid"
     elif actual_paid < total_payable:
         payout_status = "Partially Paid"

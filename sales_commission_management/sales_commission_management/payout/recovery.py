@@ -531,6 +531,8 @@ def validate_employee_recovery_link(
     if sett.beneficiary_type != "Sales Person":
         frappe.throw(_("Settlement must be for a Sales Person."))
 
+    if not frappe.db.exists("DocType", "Additional Salary"):
+        frappe.throw(_("HRMS is not installed or 'Additional Salary' DocType is not available."))
     if not frappe.db.exists("Additional Salary", additional_salary):
         frappe.throw(
             _("Additional Salary {0} does not exist.").format(additional_salary)

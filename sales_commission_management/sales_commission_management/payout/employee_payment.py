@@ -14,6 +14,8 @@ def get_employee_settlement_for_additional_salary(additional_salary_name):
     if not additional_salary_name:
         return None
 
+    if not frappe.db.exists("DocType", "Additional Salary"):
+        return None
     if not frappe.db.exists("Additional Salary", additional_salary_name):
         return None
 
@@ -77,6 +79,8 @@ def resolve_employee_payroll_currencies(settlement, additional_salary):
         commission_to_company_rate, commission_to_company_date
     """
     sett = frappe.get_doc("Commission Settlement", settlement)
+    if not frappe.db.exists("DocType", "Additional Salary"):
+        frappe.throw(_("HRMS is not installed or 'Additional Salary' DocType is not available."))
     as_doc = frappe.get_doc("Additional Salary", additional_salary)
 
     if sett.docstatus != 1:
@@ -354,6 +358,8 @@ def validate_employee_payroll_link(settlement, additional_salary, salary_slip=No
             _("Salary Slip is required when validating Payroll Entry, Bank Entry, or Bank Transaction.")
         )
 
+    if not frappe.db.exists("DocType", "Additional Salary"):
+        frappe.throw(_("HRMS is not installed or 'Additional Salary' DocType is not available."))
     if not frappe.db.exists("Additional Salary", additional_salary):
         frappe.throw(_("Additional Salary {0} does not exist.").format(additional_salary))
     as_doc = frappe.get_doc("Additional Salary", additional_salary)
