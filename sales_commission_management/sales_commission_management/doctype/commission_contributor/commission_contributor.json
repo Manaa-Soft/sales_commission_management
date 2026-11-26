@@ -7,12 +7,16 @@
   "field_order": [
     "pool_code",
     "contributor_type",
+    "column_break_1",
     "sales_person",
     "sales_partner",
+    "section_role",
     "role_type",
     "split_percentage",
+    "column_break_2",
     "commission_rate",
     "commission_multiplier",
+    "section_flags",
     "require_employee",
     "require_supplier"
   ],
@@ -33,6 +37,11 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "column_break_1",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
       "fieldname": "sales_person",
       "fieldtype": "Link",
       "label": "Sales Person",
@@ -49,6 +58,11 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "section_role",
+      "fieldtype": "Section Break",
+      "label": "Role & Split"
+    },
+    {
       "fieldname": "role_type",
       "fieldtype": "Select",
       "label": "Role Type",
@@ -63,6 +77,11 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "column_break_2",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
       "fieldname": "commission_rate",
       "fieldtype": "Percent",
       "label": "Commission Rate (Override)",
@@ -75,6 +94,11 @@
       "label": "Commission Multiplier",
       "default": "1.0",
       "in_list_view": 1
+    },
+    {
+      "fieldname": "section_flags",
+      "fieldtype": "Section Break",
+      "label": "Flags"
     },
     {
       "fieldname": "require_employee",
@@ -100,5 +124,6 @@
   "sort_field": "creation",
   "sort_order": "ASC",
   "states": [],
-  "track_changes": 1
+  "track_changes": 1,
+  "icon": "users"
 }

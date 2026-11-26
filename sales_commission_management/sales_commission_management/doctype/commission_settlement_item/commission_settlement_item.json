@@ -7,15 +7,19 @@
   "field_order": [
     "commission_ledger_entry",
     "original_source_invoice",
+    "column_break_1",
     "beneficiary",
     "earned_balance",
     "eligible_balance",
+    "section_amounts",
     "reserved_amount",
     "already_settled_amount",
     "amount_included",
+    "column_break_2",
     "reclassified_amount",
     "source_currency",
     "source_currency_amount",
+    "section_company",
     "company_currency",
     "base_currency_amount",
     "commission_to_company_rate"
@@ -35,6 +39,11 @@
       "label": "Original Source Invoice",
       "options": "Sales Invoice",
       "in_list_view": 1
+    },
+    {
+      "fieldname": "column_break_1",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "beneficiary",
@@ -57,6 +66,11 @@
       "read_only": 1,
       "options": "commission_currency",
       "in_list_view": 1
+    },
+    {
+      "fieldname": "section_amounts",
+      "fieldtype": "Section Break",
+      "label": "Amounts"
     },
     {
       "fieldname": "reserved_amount",
@@ -83,6 +97,11 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "column_break_2",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
       "fieldname": "reclassified_amount",
       "fieldtype": "Currency",
       "label": "Reclassified Amount",
@@ -104,6 +123,11 @@
       "label": "Source Currency Amount",
       "options": "source_currency",
       "in_list_view": 1
+    },
+    {
+      "fieldname": "section_company",
+      "fieldtype": "Section Break",
+      "label": "Company & Currency"
     },
     {
       "fieldname": "company_currency",
@@ -140,5 +164,6 @@
   "sort_field": "creation",
   "sort_order": "ASC",
   "states": [],
-  "track_changes": 1
+  "track_changes": 1,
+  "icon": "list"
 }

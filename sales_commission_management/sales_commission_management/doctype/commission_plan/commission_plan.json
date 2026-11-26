@@ -8,31 +8,39 @@
   "field_order": [
     "plan_name",
     "enabled",
+    "column_break_1",
     "company",
+    "priority",
+    "section_validity",
     "valid_from",
     "valid_to",
-    "priority",
+    "column_break_2",
     "applies_to",
     "customer",
     "customer_group",
     "territory",
+    "section_beneficiary",
     "beneficiary_type",
     "commission_period",
+    "column_break_3",
     "slab_calculation_method",
     "earning_event",
+    "section_payout",
     "payout_basis",
     "hold_days",
+    "column_break_4",
     "target_metric",
     "stacking_policy",
     "commission_currency_policy",
-    "rules_section",
+    "section_rules",
     "rules",
-    "slabs_section",
+    "section_slabs",
     "slabs",
-    "contributors_section",
+    "section_contributors",
     "contributors",
-    "targets_section",
+    "section_targets",
     "targets",
+    "section_remarks",
     "remarks"
   ],
   "fields": [
@@ -49,11 +57,27 @@
       "default": "1"
     },
     {
+      "fieldname": "column_break_1",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
       "fieldname": "company",
       "fieldtype": "Link",
       "label": "Company",
       "options": "Company",
       "reqd": 1
+    },
+    {
+      "fieldname": "priority",
+      "fieldtype": "Int",
+      "label": "Priority",
+      "default": "10"
+    },
+    {
+      "fieldname": "section_validity",
+      "fieldtype": "Section Break",
+      "label": "Validity"
     },
     {
       "fieldname": "valid_from",
@@ -66,10 +90,9 @@
       "label": "Valid To"
     },
     {
-      "fieldname": "priority",
-      "fieldtype": "Int",
-      "label": "Priority",
-      "default": "10"
+      "fieldname": "column_break_2",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "applies_to",
@@ -101,6 +124,11 @@
       "depends_on": "eval:doc.applies_to=='Territory'"
     },
     {
+      "fieldname": "section_beneficiary",
+      "fieldtype": "Section Break",
+      "label": "Beneficiary"
+    },
+    {
       "fieldname": "beneficiary_type",
       "fieldtype": "Select",
       "label": "Beneficiary Type",
@@ -113,6 +141,11 @@
       "label": "Commission Period",
       "options": "Per Invoice\nMonthly\nQuarterly\nYearly",
       "default": "Per Invoice"
+    },
+    {
+      "fieldname": "column_break_3",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "slab_calculation_method",
@@ -129,6 +162,11 @@
       "default": "On Invoice Submit"
     },
     {
+      "fieldname": "section_payout",
+      "fieldtype": "Section Break",
+      "label": "Payout"
+    },
+    {
       "fieldname": "payout_basis",
       "fieldtype": "Select",
       "label": "Payout Basis",
@@ -140,6 +178,11 @@
       "fieldtype": "Int",
       "label": "Hold Days",
       "depends_on": "eval:doc.payout_basis=='Accrued'"
+    },
+    {
+      "fieldname": "column_break_4",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "target_metric",
@@ -162,9 +205,9 @@
       "default": "Company Currency"
     },
     {
-      "fieldname": "rules_section",
+      "fieldname": "section_rules",
       "fieldtype": "Section Break",
-      "label": "Commission Rules"
+      "label": "Rules"
     },
     {
       "fieldname": "rules",
@@ -173,9 +216,9 @@
       "options": "Commission Rule"
     },
     {
-      "fieldname": "slabs_section",
+      "fieldname": "section_slabs",
       "fieldtype": "Section Break",
-      "label": "Commission Slabs"
+      "label": "Slabs"
     },
     {
       "fieldname": "slabs",
@@ -184,9 +227,9 @@
       "options": "Commission Slab"
     },
     {
-      "fieldname": "contributors_section",
+      "fieldname": "section_contributors",
       "fieldtype": "Section Break",
-      "label": "Plan Contributors"
+      "label": "Contributors"
     },
     {
       "fieldname": "contributors",
@@ -195,15 +238,20 @@
       "options": "Commission Contributor"
     },
     {
-      "fieldname": "targets_section",
+      "fieldname": "section_targets",
       "fieldtype": "Section Break",
-      "label": "Commission Targets"
+      "label": "Targets"
     },
     {
       "fieldname": "targets",
       "fieldtype": "Table",
       "label": "Targets",
       "options": "Commission Target"
+    },
+    {
+      "fieldname": "section_remarks",
+      "fieldtype": "Section Break",
+      "label": "Remarks"
     },
     {
       "fieldname": "remarks",
@@ -315,5 +363,9 @@
   "states": [],
   "title_field": "plan_name",
   "track_changes": 1,
-  "autoname": "field:plan_name"
+  "autoname": "field:plan_name",
+  "icon": "target",
+  "search_fields": "company, enabled, applies_to",
+  "quick_entry": 1,
+  "allow_copy": 1
 }

@@ -7,15 +7,20 @@
   "field_order": [
     "naming_series",
     "beneficiary_type",
+    "column_break_1",
     "sales_person",
     "sales_partner",
+    "section_target",
     "item_group",
     "target_metric",
+    "column_break_2",
     "target_value",
     "target_currency",
     "target_uom",
+    "section_period",
     "period_type",
     "monthly_distribution",
+    "column_break_3",
     "attainment_percentage"
   ],
   "fields": [
@@ -38,6 +43,11 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "column_break_1",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
       "fieldname": "sales_person",
       "fieldtype": "Link",
       "label": "Sales Person",
@@ -54,6 +64,11 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "section_target",
+      "fieldtype": "Section Break",
+      "label": "Target"
+    },
+    {
       "fieldname": "item_group",
       "fieldtype": "Link",
       "label": "Item Group",
@@ -67,6 +82,11 @@
       "options": "Net Sales\nGross Profit\nQuantity\nCollected Net Sales",
       "reqd": 1,
       "in_list_view": 1
+    },
+    {
+      "fieldname": "column_break_2",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "target_value",
@@ -92,6 +112,11 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "section_period",
+      "fieldtype": "Section Break",
+      "label": "Period"
+    },
+    {
       "fieldname": "period_type",
       "fieldtype": "Select",
       "label": "Period Type",
@@ -106,6 +131,11 @@
       "label": "Monthly Distribution",
       "options": "Monthly Distribution",
       "in_list_view": 1
+    },
+    {
+      "fieldname": "column_break_3",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "attainment_percentage",
@@ -127,5 +157,6 @@
   "sort_order": "ASC",
   "states": [],
   "track_changes": 1,
-  "autoname": "naming_series:"
+  "autoname": "naming_series:",
+  "icon": "target"
 }

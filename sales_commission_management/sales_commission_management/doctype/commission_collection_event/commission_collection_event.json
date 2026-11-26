@@ -7,16 +7,23 @@
   "field_order": [
     "event_key",
     "payment_entry",
+    "column_break_1",
     "payment_reference",
     "posting_date",
+    "section_currencies",
     "party_account_currency",
     "invoice_currency",
+    "column_break_2",
     "commission_currency",
+    "company_currency",
+    "section_amounts",
     "allocated_amount",
     "invoice_currency_allocated",
+    "column_break_3",
     "company_currency_allocated",
     "collection_ratio",
     "eligibility_delta",
+    "section_flags",
     "is_reversal"
   ],
   "fields": [
@@ -37,6 +44,11 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "column_break_1",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
       "fieldname": "payment_reference",
       "fieldtype": "Data",
       "label": "Payment Reference Row",
@@ -49,6 +61,11 @@
       "label": "Posting Date",
       "read_only": 1,
       "in_list_view": 1
+    },
+    {
+      "fieldname": "section_currencies",
+      "fieldtype": "Section Break",
+      "label": "Currencies"
     },
     {
       "fieldname": "party_account_currency",
@@ -67,6 +84,11 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "column_break_2",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
       "fieldname": "commission_currency",
       "fieldtype": "Link",
       "label": "Commission Currency",
@@ -83,6 +105,11 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "section_amounts",
+      "fieldtype": "Section Break",
+      "label": "Amounts"
+    },
+    {
       "fieldname": "allocated_amount",
       "fieldtype": "Currency",
       "label": "Allocated Amount (Party Currency)",
@@ -97,6 +124,11 @@
       "read_only": 1,
       "options": "invoice_currency",
       "in_list_view": 1
+    },
+    {
+      "fieldname": "column_break_3",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "company_currency_allocated",
@@ -122,6 +154,11 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "section_flags",
+      "fieldtype": "Section Break",
+      "label": "Flags"
+    },
+    {
       "fieldname": "is_reversal",
       "fieldtype": "Check",
       "label": "Is Reversal",
@@ -141,5 +178,6 @@
   "sort_field": "creation",
   "sort_order": "ASC",
   "states": [],
-  "track_changes": 1
+  "track_changes": 1,
+  "icon": "list"
 }

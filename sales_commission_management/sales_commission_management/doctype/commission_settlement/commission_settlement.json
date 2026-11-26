@@ -8,39 +8,55 @@
   "field_order": [
     "naming_series",
     "company",
+    "column_break_1",
     "beneficiary_type",
     "beneficiary",
+    "section_beneficiary",
     "sales_person",
     "sales_partner",
+    "column_break_2",
     "employee",
     "supplier",
+    "section_period",
     "period_from",
     "period_to",
+    "column_break_3",
     "commission_currency",
     "settlement_currency",
-    "settlement_fx_rate",
-    "settlement_fx_date",
+    "section_fx",
     "settlement_fx_from_currency",
     "settlement_fx_to_currency",
+    "column_break_4",
+    "settlement_fx_rate",
+    "settlement_fx_date",
     "settlement_fx_source",
     "settlement_fx_override_reason",
+    "section_method",
     "settlement_method",
+    "column_break_5",
     "total_earned",
     "total_payable",
     "total_reserved",
     "total_paid",
     "outstanding",
+    "section_payout",
     "actual_paid_amount",
     "outstanding_payout_amount",
     "recoverable_amount",
-    "payout_status",
+    "column_break_6",
     "status",
+    "payout_status",
+    "section_document",
     "settlement_document_type",
     "settlement_document",
+    "column_break_7",
     "settlement_journal_entry",
+    "section_entries",
     "entries",
+    "section_approval",
     "approval_user",
     "approval_date",
+    "column_break_8",
     "remarks"
   ],
   "fields": [
@@ -61,6 +77,11 @@
       "reqd": 1
     },
     {
+      "fieldname": "column_break_1",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
       "fieldname": "beneficiary_type",
       "fieldtype": "Select",
       "label": "Beneficiary Type",
@@ -72,6 +93,11 @@
       "fieldtype": "Data",
       "label": "Beneficiary",
       "read_only": 1
+    },
+    {
+      "fieldname": "section_beneficiary",
+      "fieldtype": "Section Break",
+      "label": "Beneficiary"
     },
     {
       "fieldname": "sales_person",
@@ -88,6 +114,11 @@
       "depends_on": "eval:doc.beneficiary_type=='Sales Partner'"
     },
     {
+      "fieldname": "column_break_2",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
       "fieldname": "employee",
       "fieldtype": "Link",
       "label": "Employee",
@@ -100,6 +131,11 @@
       "options": "Supplier"
     },
     {
+      "fieldname": "section_period",
+      "fieldtype": "Section Break",
+      "label": "Period"
+    },
+    {
       "fieldname": "period_from",
       "fieldtype": "Date",
       "label": "Period From"
@@ -108,6 +144,11 @@
       "fieldname": "period_to",
       "fieldtype": "Date",
       "label": "Period To"
+    },
+    {
+      "fieldname": "column_break_3",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "commission_currency",
@@ -121,6 +162,11 @@
       "label": "Settlement Currency",
       "options": "Currency",
       "reqd": 0
+    },
+    {
+      "fieldname": "section_fx",
+      "fieldtype": "Section Break",
+      "label": "FX Snapshot"
     },
     {
       "fieldname": "settlement_fx_from_currency",
@@ -137,15 +183,9 @@
       "read_only": 1
     },
     {
-      "fieldname": "settlement_fx_source",
-      "fieldtype": "Data",
-      "label": "Settlement FX Source",
-      "read_only": 1
-    },
-    {
-      "fieldname": "settlement_fx_override_reason",
-      "fieldtype": "Small Text",
-      "label": "Settlement FX Override Reason"
+      "fieldname": "column_break_4",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "settlement_fx_rate",
@@ -161,10 +201,31 @@
       "read_only": 1
     },
     {
+      "fieldname": "settlement_fx_source",
+      "fieldtype": "Data",
+      "label": "Settlement FX Source",
+      "read_only": 1
+    },
+    {
+      "fieldname": "settlement_fx_override_reason",
+      "fieldtype": "Small Text",
+      "label": "Settlement FX Override Reason"
+    },
+    {
+      "fieldname": "section_method",
+      "fieldtype": "Section Break",
+      "label": "Settlement Method"
+    },
+    {
       "fieldname": "settlement_method",
       "fieldtype": "Select",
       "label": "Settlement Method",
       "options": "Additional Salary\nSupplier Purchase Invoice\nManual Approved Route"
+    },
+    {
+      "fieldname": "column_break_5",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "total_earned",
@@ -202,6 +263,11 @@
       "options": "commission_currency"
     },
     {
+      "fieldname": "section_payout",
+      "fieldtype": "Section Break",
+      "label": "Payout"
+    },
+    {
       "fieldname": "actual_paid_amount",
       "fieldtype": "Currency",
       "label": "Actual Paid Amount",
@@ -223,6 +289,11 @@
       "options": "commission_currency"
     },
     {
+      "fieldname": "column_break_6",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
       "fieldname": "status",
       "fieldtype": "Select",
       "label": "Status",
@@ -239,6 +310,11 @@
       "read_only": 1
     },
     {
+      "fieldname": "section_document",
+      "fieldtype": "Section Break",
+      "label": "Documents"
+    },
+    {
       "fieldname": "settlement_document_type",
       "fieldtype": "Link",
       "label": "Settlement Document Type",
@@ -251,6 +327,11 @@
       "options": "settlement_document_type"
     },
     {
+      "fieldname": "column_break_7",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
       "fieldname": "settlement_journal_entry",
       "fieldtype": "Link",
       "label": "Settlement Journal Entry",
@@ -258,10 +339,20 @@
       "read_only": 1
     },
     {
+      "fieldname": "section_entries",
+      "fieldtype": "Section Break",
+      "label": "Entries"
+    },
+    {
       "fieldname": "entries",
       "fieldtype": "Table",
       "label": "Entries",
       "options": "Commission Settlement Item"
+    },
+    {
+      "fieldname": "section_approval",
+      "fieldtype": "Section Break",
+      "label": "Approval"
     },
     {
       "fieldname": "approval_user",
@@ -275,6 +366,11 @@
       "fieldtype": "Datetime",
       "label": "Approval Date",
       "read_only": 1
+    },
+    {
+      "fieldname": "column_break_8",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "remarks",
@@ -386,5 +482,9 @@
   "sort_order": "DESC",
   "states": [],
   "track_changes": 1,
-  "autoname": "naming_series:"
+  "autoname": "naming_series:",
+  "icon": "wallet",
+  "title_field": "naming_series",
+  "search_fields": "company, beneficiary_type, status, payout_status",
+  "quick_entry": 1
 }

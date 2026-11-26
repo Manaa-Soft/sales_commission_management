@@ -7,10 +7,13 @@
   "field_order": [
     "sequence",
     "slab_name",
+    "column_break_1",
     "min_attainment",
     "max_attainment",
+    "section_rate",
     "rate_percentage",
     "fixed_bonus",
+    "column_break_2",
     "enabled"
   ],
   "fields": [
@@ -28,6 +31,11 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "column_break_1",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
       "fieldname": "min_attainment",
       "fieldtype": "Float",
       "label": "Min Attainment",
@@ -41,6 +49,11 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "section_rate",
+      "fieldtype": "Section Break",
+      "label": "Rate"
+    },
+    {
       "fieldname": "rate_percentage",
       "fieldtype": "Percent",
       "label": "Rate Percentage",
@@ -52,6 +65,11 @@
       "label": "Fixed Bonus",
       "options": "Company:company:default_currency",
       "in_list_view": 1
+    },
+    {
+      "fieldname": "column_break_2",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "enabled",
@@ -72,5 +90,6 @@
   "sort_field": "sequence",
   "sort_order": "ASC",
   "states": [],
-  "track_changes": 1
+  "track_changes": 1,
+  "icon": "layers"
 }

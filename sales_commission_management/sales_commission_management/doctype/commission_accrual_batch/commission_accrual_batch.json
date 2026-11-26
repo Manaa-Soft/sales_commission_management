@@ -8,17 +8,23 @@
   "field_order": [
     "naming_series",
     "company",
-    "accounting_currency",
+    "column_break_1",
     "period_from",
     "period_to",
     "accrual_date",
+    "section_accounts",
+    "accounting_currency",
     "commission_currency",
+    "column_break_2",
     "expense_account",
     "accrued_liability_account",
     "cost_center",
+    "section_totals",
     "total_amount",
     "status",
+    "column_break_3",
     "journal_entry",
+    "section_items",
     "items"
   ],
   "fields": [
@@ -39,11 +45,9 @@
       "reqd": 1
     },
     {
-      "fieldname": "accounting_currency",
-      "fieldtype": "Link",
-      "label": "Accounting Currency",
-      "options": "Currency",
-      "read_only": 1
+      "fieldname": "column_break_1",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "period_from",
@@ -64,11 +68,28 @@
       "reqd": 1
     },
     {
+      "fieldname": "section_accounts",
+      "fieldtype": "Section Break",
+      "label": "Accounting"
+    },
+    {
+      "fieldname": "accounting_currency",
+      "fieldtype": "Link",
+      "label": "Accounting Currency",
+      "options": "Currency",
+      "read_only": 1
+    },
+    {
       "fieldname": "commission_currency",
       "fieldtype": "Link",
       "label": "Commission Currency",
       "options": "Currency",
       "read_only": 1
+    },
+    {
+      "fieldname": "column_break_2",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "expense_account",
@@ -89,6 +110,11 @@
       "options": "Cost Center"
     },
     {
+      "fieldname": "section_totals",
+      "fieldtype": "Section Break",
+      "label": "Totals & Status"
+    },
+    {
       "fieldname": "total_amount",
       "fieldtype": "Currency",
       "label": "Total Amount",
@@ -104,11 +130,21 @@
       "read_only": 1
     },
     {
+      "fieldname": "column_break_3",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
       "fieldname": "journal_entry",
       "fieldtype": "Link",
       "label": "Journal Entry",
       "options": "Journal Entry",
       "read_only": 1
+    },
+    {
+      "fieldname": "section_items",
+      "fieldtype": "Section Break",
+      "label": "Items"
     },
     {
       "fieldname": "items",
@@ -221,5 +257,9 @@
   "sort_order": "DESC",
   "states": [],
   "track_changes": 1,
-  "autoname": "naming_series:"
+  "autoname": "naming_series:",
+  "icon": "receipt",
+  "title_field": "naming_series",
+  "search_fields": "company, period_from, period_to, status",
+  "quick_entry": 1
 }

@@ -8,16 +8,21 @@
   "field_order": [
     "naming_series",
     "company",
+    "column_break_1",
     "period_type",
     "period_from",
     "period_to",
+    "section_refs",
     "fiscal_year",
     "status",
+    "column_break_2",
+    "reopen_reason",
+    "section_audit",
     "closed_by",
     "closed_on",
+    "column_break_3",
     "reopened_by",
-    "reopened_on",
-    "reopen_reason"
+    "reopened_on"
   ],
   "fields": [
     {
@@ -35,6 +40,11 @@
       "label": "Company",
       "options": "Company",
       "reqd": 1
+    },
+    {
+      "fieldname": "column_break_1",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "period_type",
@@ -57,6 +67,11 @@
       "reqd": 1
     },
     {
+      "fieldname": "section_refs",
+      "fieldtype": "Section Break",
+      "label": "References"
+    },
+    {
       "fieldname": "fiscal_year",
       "fieldtype": "Link",
       "label": "Fiscal Year",
@@ -69,6 +84,21 @@
       "options": "Open\nClosing\nClosed\nReopened",
       "default": "Open",
       "read_only": 1
+    },
+    {
+      "fieldname": "column_break_2",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
+      "fieldname": "reopen_reason",
+      "fieldtype": "Small Text",
+      "label": "Reopen Reason"
+    },
+    {
+      "fieldname": "section_audit",
+      "fieldtype": "Section Break",
+      "label": "Audit"
     },
     {
       "fieldname": "closed_by",
@@ -84,6 +114,11 @@
       "read_only": 1
     },
     {
+      "fieldname": "column_break_3",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
       "fieldname": "reopened_by",
       "fieldtype": "Link",
       "label": "Reopened By",
@@ -95,11 +130,6 @@
       "fieldtype": "Datetime",
       "label": "Reopened On",
       "read_only": 1
-    },
-    {
-      "fieldname": "reopen_reason",
-      "fieldtype": "Small Text",
-      "label": "Reopen Reason"
     }
   ],
   "index_web_pages_for_search": 1,
@@ -205,5 +235,9 @@
   "sort_order": "DESC",
   "states": [],
   "track_changes": 1,
-  "autoname": "naming_series:"
+  "autoname": "naming_series:",
+  "icon": "calendar",
+  "title_field": "naming_series",
+  "search_fields": "company, period_type, status",
+  "quick_entry": 1
 }

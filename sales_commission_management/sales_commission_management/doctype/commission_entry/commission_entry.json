@@ -9,65 +9,85 @@
     "naming_series",
     "event_key",
     "event_type",
+    "column_break_1",
     "company",
     "posting_date",
     "commission_period",
+    "section_source",
     "source_doctype",
     "source_name",
     "source_row",
+    "column_break_2",
     "source_payment_entry",
     "source_payment_reference",
+    "section_invoice",
     "original_invoice",
     "return_invoice",
     "plan",
     "rule",
+    "column_break_3",
     "pool_code",
     "beneficiary_type",
     "sales_person",
     "sales_partner",
+    "section_beneficiary_map",
     "employee",
     "supplier",
+    "section_item",
     "item_code",
     "item_name",
     "item_group",
+    "column_break_4",
     "source_qty",
     "source_uom",
     "commission_qty",
     "commission_uom",
+    "section_currency_basis",
     "transaction_currency",
     "transaction_basis_amount",
     "company_currency",
     "company_basis_amount",
+    "column_break_5",
     "conversion_rate_snapshot",
     "commission_to_company_rate",
+    "section_commission",
     "commission_currency",
     "commission_rate",
     "fixed_amount_snapshot",
+    "column_break_6",
     "earned_delta",
     "payable_eligible_delta",
     "reserved_delta",
     "paid_delta",
+    "section_settlement",
     "reverses_entry",
     "settlement",
     "accrual_batch",
     "accrued_amount",
-    "calculation_snapshot",
+    "column_break_7",
     "sales_invoice",
     "commission_basis",
     "commission_basis_amount",
     "exchange_rate",
+    "section_final",
     "earned_commission",
     "payable_amount",
     "collection_eligible_amount",
+    "column_break_8",
     "paid_amount",
     "settled_amount",
     "outstanding_amount",
-    "collection_events",
+    "section_status",
     "status",
     "accrual_status",
     "collection_status",
     "settlement_status",
+    "column_break_9",
     "original_entry",
+    "section_audit",
+    "calculation_snapshot",
+    "collection_events",
+    "section_remarks",
     "remarks"
   ],
   "fields": [
@@ -96,6 +116,11 @@
       "reqd": 1
     },
     {
+      "fieldname": "column_break_1",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
       "fieldname": "company",
       "fieldtype": "Link",
       "label": "Company",
@@ -115,6 +140,11 @@
       "label": "Commission Period",
       "options": "Commission Period",
       "read_only": 1
+    },
+    {
+      "fieldname": "section_source",
+      "fieldtype": "Section Break",
+      "label": "Source Reference"
     },
     {
       "fieldname": "source_doctype",
@@ -137,6 +167,11 @@
       "read_only": 1
     },
     {
+      "fieldname": "column_break_2",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
       "fieldname": "source_payment_entry",
       "fieldtype": "Link",
       "label": "Source Payment Entry",
@@ -148,6 +183,11 @@
       "fieldtype": "Data",
       "label": "Source Payment Reference",
       "read_only": 1
+    },
+    {
+      "fieldname": "section_invoice",
+      "fieldtype": "Section Break",
+      "label": "Invoice Reference"
     },
     {
       "fieldname": "original_invoice",
@@ -178,6 +218,11 @@
       "read_only": 1
     },
     {
+      "fieldname": "column_break_3",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
       "fieldname": "pool_code",
       "fieldtype": "Data",
       "label": "Pool Code",
@@ -205,6 +250,11 @@
       "read_only": 1
     },
     {
+      "fieldname": "section_beneficiary_map",
+      "fieldtype": "Section Break",
+      "label": "Beneficiary Mapping"
+    },
+    {
       "fieldname": "employee",
       "fieldtype": "Link",
       "label": "Employee",
@@ -217,6 +267,11 @@
       "label": "Supplier",
       "options": "Supplier",
       "read_only": 1
+    },
+    {
+      "fieldname": "section_item",
+      "fieldtype": "Section Break",
+      "label": "Item Details"
     },
     {
       "fieldname": "item_code",
@@ -237,6 +292,11 @@
       "label": "Item Group",
       "options": "Item Group",
       "read_only": 1
+    },
+    {
+      "fieldname": "column_break_4",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "source_qty",
@@ -263,6 +323,11 @@
       "label": "Commission UOM",
       "options": "UOM",
       "read_only": 1
+    },
+    {
+      "fieldname": "section_currency_basis",
+      "fieldtype": "Section Break",
+      "label": "Currency & Basis"
     },
     {
       "fieldname": "transaction_currency",
@@ -293,6 +358,11 @@
       "options": "company_currency"
     },
     {
+      "fieldname": "column_break_5",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
       "fieldname": "conversion_rate_snapshot",
       "fieldtype": "Float",
       "label": "Conversion Rate Snapshot",
@@ -304,6 +374,11 @@
       "label": "Commission to Company Rate",
       "read_only": 1,
       "default": 1
+    },
+    {
+      "fieldname": "section_commission",
+      "fieldtype": "Section Break",
+      "label": "Commission"
     },
     {
       "fieldname": "commission_currency",
@@ -324,6 +399,11 @@
       "label": "Fixed Amount Snapshot",
       "read_only": 1,
       "options": "commission_currency"
+    },
+    {
+      "fieldname": "column_break_6",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "earned_delta",
@@ -354,6 +434,11 @@
       "options": "commission_currency"
     },
     {
+      "fieldname": "section_settlement",
+      "fieldtype": "Section Break",
+      "label": "Settlement"
+    },
+    {
       "fieldname": "reverses_entry",
       "fieldtype": "Link",
       "label": "Reverses Entry",
@@ -382,10 +467,9 @@
       "options": "commission_currency"
     },
     {
-      "fieldname": "calculation_snapshot",
-      "fieldtype": "Long Text",
-      "label": "Calculation Snapshot",
-      "read_only": 1
+      "fieldname": "column_break_7",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "sales_invoice",
@@ -415,6 +499,11 @@
       "read_only": 1
     },
     {
+      "fieldname": "section_final",
+      "fieldtype": "Section Break",
+      "label": "Final Amounts"
+    },
+    {
       "fieldname": "earned_commission",
       "fieldtype": "Currency",
       "label": "Earned Commission",
@@ -434,6 +523,11 @@
       "label": "Collection Eligible Amount",
       "read_only": 1,
       "options": "commission_currency"
+    },
+    {
+      "fieldname": "column_break_8",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "paid_amount",
@@ -457,11 +551,9 @@
       "options": "commission_currency"
     },
     {
-      "fieldname": "collection_events",
-      "fieldtype": "Table",
-      "label": "Collection Events",
-      "options": "Commission Collection Event",
-      "read_only": 1
+      "fieldname": "section_status",
+      "fieldtype": "Section Break",
+      "label": "Status"
     },
     {
       "fieldname": "status",
@@ -495,11 +587,39 @@
       "read_only": 1
     },
     {
+      "fieldname": "column_break_9",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
       "fieldname": "original_entry",
       "fieldtype": "Link",
       "label": "Original Entry",
       "options": "Commission Entry",
       "read_only": 1
+    },
+    {
+      "fieldname": "section_audit",
+      "fieldtype": "Section Break",
+      "label": "Audit"
+    },
+    {
+      "fieldname": "calculation_snapshot",
+      "fieldtype": "Long Text",
+      "label": "Calculation Snapshot",
+      "read_only": 1
+    },
+    {
+      "fieldname": "collection_events",
+      "fieldtype": "Table",
+      "label": "Collection Events",
+      "options": "Commission Collection Event",
+      "read_only": 1
+    },
+    {
+      "fieldname": "section_remarks",
+      "fieldtype": "Section Break",
+      "label": "Remarks"
     },
     {
       "fieldname": "remarks",
@@ -613,5 +733,8 @@
   "states": [],
   "title_field": "sales_invoice",
   "track_changes": 1,
-  "autoname": "naming_series:"
+  "autoname": "naming_series:",
+  "icon": "file-text",
+  "search_fields": "company, event_type, status, sales_person, sales_partner",
+  "track_seen": 1
 }

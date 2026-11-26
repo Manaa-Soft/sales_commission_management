@@ -9,6 +9,7 @@
   "field_order": [
     "idempotency_key",
     "journal_entry",
+    "column_break_1",
     "posting_purpose",
     "source_event",
     "company",
@@ -30,6 +31,11 @@
       "options": "Journal Entry",
       "reqd": 0,
       "read_only": 1
+    },
+    {
+      "fieldname": "column_break_1",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "posting_purpose",
@@ -161,5 +167,7 @@
   "sort_order": "DESC",
   "states": [],
   "track_changes": 1,
-  "title_field": "idempotency_key"
+  "title_field": "idempotency_key",
+  "icon": "shield-check",
+  "search_fields": "company, posting_purpose"
 }

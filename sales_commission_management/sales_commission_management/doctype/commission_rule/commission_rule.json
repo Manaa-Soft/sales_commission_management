@@ -7,24 +7,34 @@
   "field_order": [
     "rule_code",
     "match_type",
+    "column_break_1",
     "item_code",
     "item_group",
+    "section_calc",
     "priority",
     "basis",
+    "column_break_2",
     "calculation_method",
     "calculation_basis",
+    "section_rate",
     "rate_percentage",
     "fixed_amount",
+    "column_break_3",
     "fixed_currency",
     "commission_uom",
-    "use_slabs",
+    "section_limits",
     "min_commission",
     "max_commission",
+    "column_break_4",
     "include_freight",
     "include_free_items",
+    "section_flags",
     "exclude_if_grant_commission_zero",
     "allow_negative_basis",
+    "column_break_5",
+    "use_slabs",
     "stack_group",
+    "section_active",
     "enabled",
     "grant_commission"
   ],
@@ -44,6 +54,11 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "column_break_1",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
       "fieldname": "item_code",
       "fieldtype": "Link",
       "label": "Item",
@@ -60,6 +75,11 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "section_calc",
+      "fieldtype": "Section Break",
+      "label": "Calculation"
+    },
+    {
       "fieldname": "priority",
       "fieldtype": "Int",
       "label": "Priority",
@@ -73,6 +93,11 @@
       "options": "Net Total\nGross Profit\nFixed Amount",
       "reqd": 1,
       "in_list_view": 1
+    },
+    {
+      "fieldname": "column_break_2",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "calculation_method",
@@ -91,6 +116,11 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "section_rate",
+      "fieldtype": "Section Break",
+      "label": "Rate"
+    },
+    {
       "fieldname": "rate_percentage",
       "fieldtype": "Percent",
       "label": "Rate Percentage",
@@ -102,6 +132,11 @@
       "label": "Fixed Amount",
       "options": "Company:company:default_currency",
       "in_list_view": 1
+    },
+    {
+      "fieldname": "column_break_3",
+      "fieldtype": "Column Break",
+      "label": null
     },
     {
       "fieldname": "fixed_currency",
@@ -118,11 +153,9 @@
       "in_list_view": 1
     },
     {
-      "fieldname": "use_slabs",
-      "fieldtype": "Check",
-      "label": "Use Plan Slabs",
-      "default": "0",
-      "in_list_view": 1
+      "fieldname": "section_limits",
+      "fieldtype": "Section Break",
+      "label": "Limits"
     },
     {
       "fieldname": "min_commission",
@@ -139,6 +172,11 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "column_break_4",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
       "fieldname": "include_freight",
       "fieldtype": "Check",
       "label": "Include Freight",
@@ -149,6 +187,11 @@
       "fieldtype": "Check",
       "label": "Include Free Items",
       "in_list_view": 1
+    },
+    {
+      "fieldname": "section_flags",
+      "fieldtype": "Section Break",
+      "label": "Flags"
     },
     {
       "fieldname": "exclude_if_grant_commission_zero",
@@ -164,10 +207,27 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "column_break_5",
+      "fieldtype": "Column Break",
+      "label": null
+    },
+    {
+      "fieldname": "use_slabs",
+      "fieldtype": "Check",
+      "label": "Use Plan Slabs",
+      "default": "0",
+      "in_list_view": 1
+    },
+    {
       "fieldname": "stack_group",
       "fieldtype": "Data",
       "label": "Stack Group",
       "in_list_view": 1
+    },
+    {
+      "fieldname": "section_active",
+      "fieldtype": "Section Break",
+      "label": "Activation"
     },
     {
       "fieldname": "enabled",
@@ -195,5 +255,6 @@
   "sort_field": "creation",
   "sort_order": "ASC",
   "states": [],
-  "track_changes": 1
+  "track_changes": 1,
+  "icon": "list"
 }
