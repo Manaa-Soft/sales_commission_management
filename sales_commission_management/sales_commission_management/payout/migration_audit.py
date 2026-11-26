@@ -6,6 +6,9 @@ produces a structured report.  It never modifies the database.
 import frappe
 from frappe import _
 from frappe.utils import flt, cint
+from sales_commission_management.sales_commission_management.utils import (
+    currency_precision as _cp,
+)
 
 
 def _safe(fn, *a, **kw):
@@ -88,24 +91,40 @@ def run_audit(companies=None):
 
     # Payout events: include events whose company is authorized OR whose
     # settlement is an authorized settlement (detects wrong company values).
-    all_events = frappe.get_all(
-        "Commission Payout Event",
-        filters={"docstatus": 1},
-        fields=[
-            "name", "event_type", "settlement", "commission_entry",
-            "company", "source_doctype", "source_name", "source_row",
-            "reversal_of", "recovery_of", "event_key",
-            "commission_currency", "commission_amount",
-            "company_currency", "company_amount",
-            "settlement_currency", "settlement_amount",
-            "fx_from_currency", "fx_to_currency", "fx_rate",
-            "evidence_level", "posting_date", "beneficiary",
-        ],
-    )
-    events = []
-    for e in all_events:
-        if companies is None or e.company in (companies or []) or e.settlement in authorized_settlement_names:
-            events.append(e)
+    if companies is None:
+        events = frappe.get_all(
+            "Commission Payout Event",
+            filters={"docstatus": 1},
+            fields=[
+                "name", "event_type", "settlement", "commission_entry",
+                "company", "source_doctype", "source_name", "source_row",
+                "reversal_of", "recovery_of", "event_key",
+                "commission_currency", "commission_amount",
+                "company_currency", "company_amount",
+                "settlement_currency", "settlement_amount",
+                "fx_from_currency", "fx_to_currency", "fx_rate",
+                "evidence_level", "posting_date", "beneficiary",
+            ],
+        )
+    else:
+        events = frappe.get_all(
+            "Commission Payout Event",
+            filters={"docstatus": 1},
+            or_filters=[
+                {"company": ["in", companies]},
+                {"settlement": ["in", list(authorized_settlement_names)]},
+            ],
+            fields=[
+                "name", "event_type", "settlement", "commission_entry",
+                "company", "source_doctype", "source_name", "source_row",
+                "reversal_of", "recovery_of", "event_key",
+                "commission_currency", "commission_amount",
+                "company_currency", "company_amount",
+                "settlement_currency", "settlement_amount",
+                "fx_from_currency", "fx_to_currency", "fx_rate",
+                "evidence_level", "posting_date", "beneficiary",
+            ],
+        )
     report["inspected"]["payout_events"] = len(events)
 
     event_names = {e.name for e in events}
@@ -270,15 +289,40 @@ def run_audit(companies=None):
                         "action": "Source row validation failed.",
                     })
 
-        # General event-to-settlement company validation (ALL event types)
-        if e.settlement:
-            sett_company = frappe.db.get_value("Commission Settlement", e.settlement, "company")
-            if sett_company and e.company and sett_company != e.company:
+        # General event-to-settlement validation (ALL event types)
+        if not e.settlement:
+            report["issues"].append({
+                "type": "missing_settlement_reference",
+                "severity": "P1",
+                "event": e.name,
+                "action": "Payout event must reference a Commission Settlement.",
+            })
+        else:
+            try:
+                sett_company = frappe.db.get_value("Commission Settlement", e.settlement, "company")
+                if sett_company is None:
+                    report["issues"].append({
+                        "type": "missing_linked_settlement",
+                        "severity": "P1",
+                        "event": e.name,
+                        "settlement": e.settlement,
+                        "action": "Linked Commission Settlement does not exist.",
+                    })
+                elif sett_company and e.company and sett_company != e.company:
+                    report["issues"].append({
+                        "type": "event_settlement_company_mismatch",
+                        "severity": "P1",
+                        "event": e.name,
+                        "action": "Payout event company must match settlement company.",
+                    })
+            except Exception as ex:
+                audit_incomplete = True
                 report["issues"].append({
-                    "type": "event_settlement_company_mismatch",
-                    "severity": "P1",
+                    "type": "settlement_lookup_error",
+                    "severity": "P2",
                     "event": e.name,
-                    "action": "Payout event company must match settlement company.",
+                    "error": str(ex),
+                    "action": "Settlement lookup failed.",
                 })
 
     # Payout reversals validation
@@ -437,34 +481,54 @@ def run_audit(companies=None):
                         "event": e.name,
                         "action": "FX rate must be finite and positive.",
                     })
-                # FX direction: validate from/to against actual currencies
+                # FX direction: validate from/to matches the actual conversion
+                # convention (commission -> company), not either direction.
                 if e.fx_from_currency and e.fx_to_currency:
                     valid_pairs = {
                         (e.commission_currency, e.company_currency),
-                        (e.company_currency, e.commission_currency),
                         (e.settlement_currency, e.company_currency),
-                        (e.company_currency, e.settlement_currency),
                     }
                     if (e.fx_from_currency, e.fx_to_currency) not in valid_pairs:
                         report["issues"].append({
                             "type": "fx_direction_mismatch",
                             "severity": "P2",
                             "event": e.name,
-                            "action": "FX from/to currencies must match a valid conversion basis.",
+                            "action": "FX from/to currencies must match the commission->company (or settlement->company) conversion convention.",
                         })
 
     # 8. GL idempotency records (company-scoped)
     try:
-        all_idem = frappe.get_all(
-            "Commission GL Idempotency",
-            fields=["name", "idempotency_key", "journal_entry", "posting_fingerprint",
-                    "posting_purpose", "source_event", "company"],
-        )
+        # Database-level company filtering: authorized companies OR records linked
+        # to authorized payout events.
         authorized_event_names = {e.name for e in events}
-        idem_rows = []
-        for r in all_idem:
-            if companies is None or r.company in (companies or []) or r.source_event in authorized_event_names:
-                idem_rows.append(r)
+        if companies is None:
+            idem_rows = frappe.get_all(
+                "Commission GL Idempotency",
+                fields=["name", "idempotency_key", "journal_entry", "posting_fingerprint",
+                        "posting_purpose", "source_event", "company"],
+            )
+        else:
+            # Use or_filters for database-level scoping.
+            idem_rows = frappe.get_all(
+                "Commission GL Idempotency",
+                filters={"company": ["in", companies]},
+                or_filters={"source_event": ["in", list(authorized_event_names)]} if authorized_event_names else None,
+                fields=["name", "idempotency_key", "journal_entry", "posting_fingerprint",
+                        "posting_purpose", "source_event", "company"],
+            )
+            # Also include records with missing company that link to authorized events.
+            if authorized_event_names:
+                extra = frappe.get_all(
+                    "Commission GL Idempotency",
+                    filters={"company": ["in", ["", None]]},
+                    or_filters={"source_event": ["in", list(authorized_event_names)]},
+                    fields=["name", "idempotency_key", "journal_entry", "posting_fingerprint",
+                            "posting_purpose", "source_event", "company"],
+                )
+                existing_names = {r.name for r in idem_rows}
+                for r in extra:
+                    if r.name not in existing_names:
+                        idem_rows.append(r)
         report["inspected"]["gl_idempotency"] = len(idem_rows)
         seen_keys = {}
         for r in idem_rows:
