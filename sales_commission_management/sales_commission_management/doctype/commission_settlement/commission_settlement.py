@@ -714,7 +714,7 @@ class CommissionSettlement(Document):
         self.settlement_currency = settlement_currency
         self.settlement_fx_rate = pi_fx_rate
         self.settlement_fx_date = pi_date
-        self.settlement_fx_from_currency = self.commission_currency
+        self.settlement_fx_from_currency = frappe.db.get_value("Company", self.company, "default_currency")
         self.settlement_fx_to_currency = settlement_currency
         self.settlement_fx_source = "ERPNext get_exchange_rate"
 
@@ -732,12 +732,32 @@ class CommissionSettlement(Document):
         item_row["expense_account"] = debit_account
         if _cc:
             item_row["cost_center"] = _cc
+        # ERPNext convention: conversion_rate = company currency per settlement
+        # currency. Set it explicitly so ERPNext does not choose its own rate.
+        pi_conversion_rate = 1.0
+        if settlement_currency and self.company:
+            company_currency = frappe.db.get_value("Company", self.company, "default_currency")
+            if company_currency and settlement_currency != company_currency:
+                from frappe.utils import get_exchange_rate
+                r = get_exchange_rate(settlement_currency, company_currency, pi_date)
+                import math
+                if r and (not math.isfinite(r) or r <= 0):
+                    frappe.throw(_("Invalid exchange rate."))
+                if not r or r <= 0:
+                    frappe.throw(
+                        _("Missing exchange rate from {0} to {1}.").format(
+                            settlement_currency, company_currency
+                        )
+                    )
+                pi_conversion_rate = r
+
         doc = frappe.get_doc(
             {
                 "doctype": "Purchase Invoice",
                 "supplier": self.supplier,
                 "company": self.company,
                 "currency": settlement_currency,
+                "conversion_rate": pi_conversion_rate,
                 "posting_date": frappe.utils.nowdate(),
                 "items": [item_row],
                 "remarks": f"Commission settlement {self.name}",
