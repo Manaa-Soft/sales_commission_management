@@ -46,6 +46,11 @@
     "fx_rate",
     "fx_date",
     "fx_source",
+    "payment_fx_from_currency",
+    "payment_fx_to_currency",
+    "payment_fx_rate",
+    "payment_fx_date",
+    "payment_fx_source",
     "section_audit",
     "remarks",
     "evidence_attachment"
@@ -302,6 +307,39 @@
       "fieldname": "fx_source",
       "fieldtype": "Data",
       "label": "FX Source",
+      "read_only": 1
+    },
+    {
+      "fieldname": "payment_fx_from_currency",
+      "fieldtype": "Link",
+      "label": "Payment FX From Currency",
+      "options": "Currency",
+      "read_only": 1
+    },
+    {
+      "fieldname": "payment_fx_to_currency",
+      "fieldtype": "Link",
+      "label": "Payment FX To Currency",
+      "options": "Currency",
+      "read_only": 1
+    },
+    {
+      "fieldname": "payment_fx_rate",
+      "fieldtype": "Float",
+      "label": "Payment FX Rate",
+      "read_only": 1,
+      "precision": "6"
+    },
+    {
+      "fieldname": "payment_fx_date",
+      "fieldtype": "Date",
+      "label": "Payment FX Date",
+      "read_only": 1
+    },
+    {
+      "fieldname": "payment_fx_source",
+      "fieldtype": "Data",
+      "label": "Payment FX Source",
       "read_only": 1
     },
     {

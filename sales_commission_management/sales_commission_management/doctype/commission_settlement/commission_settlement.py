@@ -621,8 +621,12 @@ class CommissionSettlement(Document):
             amount = flt(amount * rate, _cp(salary_currency))
 
         # Persist FX snapshot on the settlement for audit.
+        self.settlement_currency = salary_currency
         self.settlement_fx_rate = fx_rate
         self.settlement_fx_date = fx_date
+        self.settlement_fx_from_currency = self.commission_currency
+        self.settlement_fx_to_currency = salary_currency
+        self.settlement_fx_source = "HRMS Salary Structure Assignment"
 
         doc = frappe.get_doc(
             {
@@ -676,35 +680,43 @@ class CommissionSettlement(Document):
         else:
             debit_account = expense_account
 
-        # Resolve supplier currency for the Purchase Invoice.
-        supplier_currency = frappe.db.get_value("Supplier", self.supplier, "default_currency")
-        if not supplier_currency:
-            supplier_currency = frappe.db.get_value("Company", self.company, "default_currency")
+        # Resolve settlement (payout) currency: prefer explicitly selected
+        # settlement_currency, else supplier default, else company currency.
+        settlement_currency = getattr(self, "settlement_currency", None)
+        if not settlement_currency:
+            settlement_currency = frappe.db.get_value("Supplier", self.supplier, "default_currency")
+        if not settlement_currency:
+            settlement_currency = frappe.db.get_value("Company", self.company, "default_currency")
 
         pi_date = frappe.utils.nowdate()
 
-        # Convert settlement amount to supplier currency if needed.
+        # Convert settlement amount to settlement currency if needed.
         pi_amount = flt(self.total_payable)
         pi_fx_rate = 1.0
-        if supplier_currency and self.commission_currency and supplier_currency != self.commission_currency:
+        pi_fx_from = self.commission_currency
+        pi_fx_to = settlement_currency
+        if settlement_currency and self.commission_currency and settlement_currency != self.commission_currency:
             from frappe.utils import get_exchange_rate
-            rate = get_exchange_rate(self.commission_currency, supplier_currency, pi_date)
+            rate = get_exchange_rate(self.commission_currency, settlement_currency, pi_date)
             import math
             if rate and (not math.isfinite(rate) or rate <= 0):
                 frappe.throw(_("Invalid exchange rate."))
             if not rate or rate <= 0:
                 frappe.throw(
                     _("Missing exchange rate from {0} to {1}.").format(
-                        self.commission_currency, supplier_currency
+                        self.commission_currency, settlement_currency
                     )
                 )
             pi_fx_rate = rate
             from sales_commission_management.sales_commission_management.utils import currency_precision as _cp
-            pi_amount = flt(pi_amount * rate, _cp(supplier_currency))
+            pi_amount = flt(pi_amount * rate, _cp(settlement_currency))
 
-        # Persist FX snapshot on the settlement for audit.
+        self.settlement_currency = settlement_currency
         self.settlement_fx_rate = pi_fx_rate
         self.settlement_fx_date = pi_date
+        self.settlement_fx_from_currency = self.commission_currency
+        self.settlement_fx_to_currency = settlement_currency
+        self.settlement_fx_source = "ERPNext get_exchange_rate"
 
         item_row = {
             "item_code": item_code,
@@ -725,7 +737,7 @@ class CommissionSettlement(Document):
                 "doctype": "Purchase Invoice",
                 "supplier": self.supplier,
                 "company": self.company,
-                "currency": supplier_currency,
+                "currency": settlement_currency,
                 "posting_date": frappe.utils.nowdate(),
                 "items": [item_row],
                 "remarks": f"Commission settlement {self.name}",

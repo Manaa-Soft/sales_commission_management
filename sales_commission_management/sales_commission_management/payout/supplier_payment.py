@@ -1211,6 +1211,12 @@ def process_supplier_payment_entry(payment_entry):
                 or _get_attr(pe, "posting_date", None)
                 or frappe.utils.nowdate(),
                 "fx_source": "Commission Settlement",
+                "payment_fx_from_currency": resolved["source_currency"],
+                "payment_fx_to_currency": resolved["company_currency"],
+                "payment_fx_rate": resolved["target_exchange_rate"],
+                "payment_fx_date": _get_attr(pe, "posting_date", None)
+                or frappe.utils.nowdate(),
+                "payment_fx_source": "Payment Entry target_exchange_rate",
             }
             # Remove None-valued optional? keep; factory validates required.
             name = create_and_submit_payout_event(payload)

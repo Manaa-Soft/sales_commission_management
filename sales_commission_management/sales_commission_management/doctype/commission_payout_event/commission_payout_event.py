@@ -369,6 +369,17 @@ class CommissionPayoutEvent(Document):
         if self.fx_from_currency and self.fx_to_currency and self.fx_from_currency == self.fx_to_currency:
             if self.fx_rate and self.fx_rate != 1.0:
                 frappe.throw(_("FX rate must be 1.0 when from and to currencies are the same."))
+        # Payment FX snapshot consistency.
+        if self.payment_fx_from_currency or self.payment_fx_to_currency or self.payment_fx_rate:
+            if not self.payment_fx_from_currency or not self.payment_fx_to_currency:
+                frappe.throw(_("Both payment FX from and to currencies are required."))
+            if not self.payment_fx_rate:
+                frappe.throw(_("Payment FX rate is required when payment FX currencies are set."))
+            if not math.isfinite(self.payment_fx_rate) or self.payment_fx_rate <= 0:
+                frappe.throw(_("Payment FX rate must be a finite positive number."))
+            if self.payment_fx_from_currency == self.payment_fx_to_currency:
+                if self.payment_fx_rate and self.payment_fx_rate != 1.0:
+                    frappe.throw(_("Payment FX rate must be 1.0 when from and to currencies are the same."))
 
     def _verify_no_field_changes(self):
         """Verify that no fields changed during submission."""
