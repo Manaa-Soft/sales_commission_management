@@ -574,6 +574,10 @@ class CommissionSettlement(Document):
             self.total_paid = flt(actual_paid, precision)
         self.outstanding = self.outstanding_payout_amount
 
+    def record_manual_payout(self, *args, **kwargs):
+        kwargs.setdefault("settlement", self.name)
+        return record_manual_payout(*args, **kwargs)
+
     def _create_settlement_document(self):
         if self.settlement_method == "Additional Salary":
             self._create_additional_salary()
@@ -1188,3 +1192,71 @@ def get_eligible_commission_entries(
             }
         )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Manual payout (delegated to payout/manual_payment)
+# ---------------------------------------------------------------------------
+
+
+@frappe.whitelist()
+def record_manual_payout(*args, **kwargs):
+    from sales_commission_management.sales_commission_management.payout.manual_payment import (
+        record_manual_payout as _impl,
+    )
+
+    return _impl(*args, **kwargs)
+
+
+@frappe.whitelist()
+def record_manual_payout_event(*args, **kwargs):
+    from sales_commission_management.sales_commission_management.payout.manual_payment import (
+        record_manual_payout_event as _impl,
+    )
+
+    return _impl(*args, **kwargs)
+
+
+@frappe.whitelist()
+def manual_payout(*args, **kwargs):
+    from sales_commission_management.sales_commission_management.payout.manual_payment import (
+        manual_payout as _impl,
+    )
+
+    return _impl(*args, **kwargs)
+
+
+@frappe.whitelist()
+def create_manual_payout(*args, **kwargs):
+    from sales_commission_management.sales_commission_management.payout.manual_payment import (
+        create_manual_payout as _impl,
+    )
+
+    return _impl(*args, **kwargs)
+
+
+@frappe.whitelist()
+def record_manual_payment(*args, **kwargs):
+    from sales_commission_management.sales_commission_management.payout.manual_payment import (
+        record_manual_payment as _impl,
+    )
+
+    return _impl(*args, **kwargs)
+
+
+@frappe.whitelist()
+def process_manual_payout(*args, **kwargs):
+    from sales_commission_management.sales_commission_management.payout.manual_payment import (
+        process_manual_payout as _impl,
+    )
+
+    return _impl(*args, **kwargs)
+
+
+@frappe.whitelist()
+def manual_payment(*args, **kwargs):
+    from sales_commission_management.sales_commission_management.payout.manual_payment import (
+        manual_payment as _impl,
+    )
+
+    return _impl(*args, **kwargs)

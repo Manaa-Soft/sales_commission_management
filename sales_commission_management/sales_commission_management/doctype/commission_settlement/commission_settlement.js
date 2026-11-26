@@ -5,6 +5,11 @@ frappe.ui.form.on("Commission Settlement", {
                 fetch_eligible_entries(frm);
             });
         }
+        if (frm.doc.docstatus === 1 && frm.doc.settlement_method === "Manual Approved Route") {
+            frm.add_custom_button(__("Record Manual Payout"), function () {
+                record_manual_payout_dialog(frm);
+            });
+        }
         _filter_settlement_methods(frm);
         _recompute_settlement_totals(frm);
     },
@@ -143,4 +148,41 @@ function _recompute_settlement_totals(frm) {
     frm.set_value("total_reserved", flt(total_reserved, 2));
     frm.set_value("total_paid", flt(total_paid, 2));
     frm.set_value("outstanding", flt(total_payable - total_paid, 2));
+}
+
+function record_manual_payout_dialog(frm) {
+    var d = new frappe.ui.Dialog({
+        title: __("Record Manual Payout"),
+        fields: [
+            { fieldname: "payment_date", fieldtype: "Date", label: __("Payment Date"), reqd: 1, default: frappe.datetime.get_today() },
+            { fieldname: "amount", fieldtype: "Currency", label: __("Amount Paid"), reqd: 1, default: frm.doc.outstanding_payout_amount || frm.doc.outstanding },
+            { fieldname: "source_doctype", fieldtype: "Link", label: __("Evidence DocType"), options: "DocType" },
+            { fieldname: "source_name", fieldtype: "Dynamic Link", label: __("Evidence Document"), options: "source_doctype" },
+            { fieldname: "remarks", fieldtype: "Small Text", label: __("Remarks") },
+        ],
+        primary_action_label: __("Record"),
+        primary_action: function () {
+            var v = d.get_values();
+            if (!v) return;
+            frappe.call({
+                method: "sales_commission_management.sales_commission_management.doctype.commission_settlement.commission_settlement.record_manual_payout",
+                args: {
+                    settlement: frm.doc.name,
+                    payment_date: v.payment_date,
+                    amount: v.amount,
+                    source_doctype: v.source_doctype,
+                    source_name: v.source_name,
+                    remarks: v.remarks,
+                },
+                freeze: true,
+                freeze_message: __("Recording manual payout..."),
+                callback: function () {
+                    d.hide();
+                    frm.reload_doc();
+                    frappe.show_alert({ message: __("Manual payout recorded."), indicator: "green" });
+                },
+            });
+        },
+    });
+    d.show();
 }
