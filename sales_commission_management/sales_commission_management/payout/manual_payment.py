@@ -118,11 +118,22 @@ def _is_finite(value):
 
 
 def _validate_evidence(source_doctype, source_name, sett, amount, payment_date, commission_currency):
-    """Validate payment evidence. Fails closed."""
+    """Validate payment evidence. Fails closed.
+
+    Only explicitly supported payment document types are accepted:
+    - Journal Entry
+    - Payment Entry (Manual Approved Route path; no Supplier Purchase Invoice required)
+    """
     if not source_doctype or not source_name:
         frappe.throw(_("Payment evidence (Evidence DocType and Evidence Document) is required."))
     if source_doctype == "Commission Settlement":
         frappe.throw(_("Commission Settlement cannot be used as payment evidence."))
+    if source_doctype not in ("Journal Entry", "Payment Entry"):
+        frappe.throw(
+            _("Unsupported evidence document type {0}. Supported types: Journal Entry, Payment Entry.").format(
+                source_doctype
+            )
+        )
     if not frappe.db.exists("DocType", source_doctype):
         frappe.throw(_("Evidence DocType {0} does not exist.").format(source_doctype))
     if not frappe.db.exists(source_doctype, source_name):
@@ -135,34 +146,14 @@ def _validate_evidence(source_doctype, source_name, sett, amount, payment_date, 
     if getattr(ev, "docstatus", 0) != 1:
         frappe.throw(_("Evidence document {0} {1} must be submitted.").format(source_doctype, source_name))
 
+    company = getattr(sett, "company", None)
+
     # Company check.
     ev_company = getattr(ev, "company", None)
-    if ev_company and ev_company != getattr(sett, "company", None):
+    if ev_company and company and ev_company != company:
         frappe.throw(_("Evidence document company does not match settlement company."))
 
-    # Currency check (if present).
-    ev_currency = None
-    for f in ("currency", "paid_from_account_currency", "account_currency"):
-        v = getattr(ev, f, None)
-        if v:
-            ev_currency = v
-            break
-    if ev_currency and commission_currency and ev_currency != commission_currency:
-        frappe.throw(_("Evidence document currency does not match commission currency."))
-
-    # Amount check (if present and currency matches).
-    ev_amount = None
-    for f in ("amount", "paid_amount", "total_amount", "base_total", "grand_total"):
-        v = getattr(ev, f, None)
-        if v is not None:
-            ev_amount = v
-            break
-    if ev_amount is not None and ev_currency == commission_currency:
-        prec = _cp(commission_currency)
-        if abs(flt(ev_amount, prec) - flt(amount, prec)) > (10 ** (-prec) if prec > 0 else 0.005):
-            frappe.throw(_("Evidence document amount does not match payment amount."))
-
-    # Date check (if present).
+    # Date check.
     ev_date = None
     for f in ("posting_date", "payment_date", "date", "transaction_date"):
         v = getattr(ev, f, None)
@@ -172,6 +163,116 @@ def _validate_evidence(source_doctype, source_name, sett, amount, payment_date, 
     if ev_date:
         if str(getdate(ev_date)) != str(payment_date):
             frappe.throw(_("Evidence document date does not match payment date."))
+
+    if source_doctype == "Journal Entry":
+        _validate_journal_entry_evidence(ev, sett, amount, commission_currency, company)
+    elif source_doctype == "Payment Entry":
+        _validate_payment_entry_evidence(ev, sett, amount, commission_currency, company)
+
+
+def _resolve_payable_account(company):
+    try:
+        accrued, payable, expense, _cc, _pe = None, None, None, None, None
+        from sales_commission_management.sales_commission_management.doctype.commission_settlement.commission_settlement import (
+            _resolve_settlement_accounts,
+        )
+
+        res = _resolve_settlement_accounts(company)
+        if isinstance(res, (tuple, list)):
+            if len(res) >= 2:
+                payable = res[1]
+        elif isinstance(res, dict):
+            payable = res.get("payable") or res.get("commission_payable_account")
+    except Exception:
+        payable = None
+    return payable
+
+
+def _validate_journal_entry_evidence(ev, sett, amount, commission_currency, company):
+    """Validate a submitted Journal Entry as commission payment evidence."""
+    # Debit/credit equality and amount.
+    total_debit = flt(getattr(ev, "total_debit", 0) or 0)
+    total_credit = flt(getattr(ev, "total_credit", 0) or 0)
+    if total_debit <= 0 or total_credit <= 0:
+        frappe.throw(_("Journal Entry must contain debit and credit lines."))
+    if abs(total_debit - total_credit) > 0.005:
+        frappe.throw(_("Journal Entry debits and credits do not balance."))
+    prec = _cp(commission_currency)
+    tolerance = (10 ** (-prec)) if prec and prec > 0 else 0.005
+    if abs(total_debit - flt(amount, prec)) > tolerance and abs(total_credit - flt(amount, prec)) > tolerance:
+        frappe.throw(_("Journal Entry amount does not match payment amount."))
+
+    # Currency: if a transaction currency is present, it must match.
+    ev_currency = getattr(ev, "currency", None)
+    if ev_currency and commission_currency and ev_currency != commission_currency:
+        frappe.throw(_("Journal Entry currency does not match commission currency."))
+
+    # Accounts: the commission payable account must be among the rows, and at
+    # least one cash/bank (asset) account must be present.
+    accounts = getattr(ev, "accounts", None) or []
+    account_names = []
+    for row in accounts or []:
+        acct = getattr(row, "account", None) if not isinstance(row, dict) else row.get("account")
+        if acct:
+            account_names.append(acct)
+    if not account_names:
+        frappe.throw(_("Journal Entry has no account lines."))
+
+    payable = _resolve_payable_account(company)
+    if payable and payable not in account_names:
+        frappe.throw(_("Journal Entry does not include the commission payable account."))
+
+    has_asset = False
+    for acct in account_names:
+        try:
+            root_type = frappe.get_cached_value("Account", acct, "root_type")
+        except Exception:
+            root_type = None
+        if root_type == "Asset":
+            has_asset = True
+            break
+    if not has_asset:
+        frappe.throw(_("Journal Entry must include a cash or bank (asset) account."))
+
+    # Beneficiary / party reference where applicable: if the settlement has a
+    # beneficiary and the JE rows carry a party, it must match.
+    beneficiary = _get_attr(sett, "sales_person", None) or _get_attr(sett, "sales_partner", None)
+    party_found = False
+    for row in accounts or []:
+        party = getattr(row, "party", None) if not isinstance(row, dict) else row.get("party")
+        if party:
+            party_found = True
+            if beneficiary and party != beneficiary:
+                frappe.throw(_("Journal Entry party does not match settlement beneficiary."))
+    # Party is optional; not all JEs carry a party. Only enforce when present.
+
+
+def _validate_payment_entry_evidence(ev, sett, amount, commission_currency, company):
+    """Validate a Payment Entry as evidence for the Manual Approved Route."""
+    if getattr(ev, "payment_type", None) not in (None, "Pay", "Receive"):
+        frappe.throw(_("Payment Entry must be a Pay or Receive entry."))
+
+    # Amount: paid_amount / received_amount.
+    ev_amount = None
+    for f in ("paid_amount", "received_amount", "amount"):
+        v = getattr(ev, f, None)
+        if v is not None:
+            ev_amount = v
+            break
+    if ev_amount is None:
+        frappe.throw(_("Payment Entry amount is missing."))
+    prec = _cp(commission_currency)
+    tolerance = (10 ** (-prec)) if prec and prec > 0 else 0.005
+    if abs(flt(ev_amount, prec) - flt(amount, prec)) > tolerance:
+        frappe.throw(_("Payment Entry amount does not match payment amount."))
+
+    # Currency check.
+    ev_currency = getattr(ev, "currency", None) or getattr(ev, "paid_from_account_currency", None)
+    if ev_currency and commission_currency and ev_currency != commission_currency:
+        # Allow company currency? keep strict match to commission currency.
+        frappe.throw(_("Payment Entry currency does not match commission currency."))
+
+    # Posting date already checked by caller. Company checked by caller.
 
 
 def record_manual_payout(settlement=None, **kwargs):
@@ -231,19 +332,23 @@ def record_manual_payout(settlement=None, **kwargs):
     settlement_currency = getattr(sett, "settlement_currency", None) or commission_currency
     company_currency = _company_currency(sett.company) or commission_currency
 
+    # Settlement FX rate = company currency per settlement currency (existing convention).
     settlement_fx_rate = getattr(sett, "settlement_fx_rate", None)
     if not settlement_fx_rate or not _is_finite(settlement_fx_rate) or float(settlement_fx_rate) <= 0:
         settlement_fx_rate = None
-        if settlement_currency != commission_currency:
+        if settlement_currency != company_currency:
             try:
                 from frappe.utils import get_exchange_rate
-                r = get_exchange_rate(commission_currency, settlement_currency, payment_date)
+                r = get_exchange_rate(settlement_currency, company_currency, payment_date)
                 if r and _is_finite(r) and float(r) > 0:
                     settlement_fx_rate = r
             except Exception:
                 pass
         if not settlement_fx_rate:
-            settlement_fx_rate = 1.0 if settlement_currency == commission_currency else None
+            if settlement_currency == company_currency:
+                settlement_fx_rate = 1.0
+            else:
+                settlement_fx_rate = None
         if not settlement_fx_rate or not _is_finite(settlement_fx_rate) or float(settlement_fx_rate) <= 0:
             frappe.throw(_("Invalid or missing settlement FX rate."))
     settlement_fx_rate = flt(settlement_fx_rate)
@@ -269,14 +374,16 @@ def record_manual_payout(settlement=None, **kwargs):
 
     # Amounts: input amount is commission currency.
     commission_amount_total = flt(amount, _cp(commission_currency))
-    if settlement_currency != commission_currency:
-        settlement_amount_total = flt(amount * settlement_fx_rate, _cp(settlement_currency))
-    else:
-        settlement_amount_total = flt(amount, _cp(settlement_currency))
     if company_currency != commission_currency:
-        company_amount_total = flt(amount * target_exchange_rate, _cp(company_currency))
+        company_amount_total = flt(commission_amount_total * target_exchange_rate, _cp(company_currency))
     else:
         company_amount_total = commission_amount_total
+    if settlement_currency == company_currency:
+        settlement_amount_total = company_amount_total
+    elif settlement_currency == commission_currency:
+        settlement_amount_total = commission_amount_total
+    else:
+        settlement_amount_total = flt(company_amount_total / settlement_fx_rate, _cp(settlement_currency))
 
     # Build settlement items.
     sett_items = _get_settlement_items(sett) if _get_settlement_items else []
@@ -307,6 +414,46 @@ def record_manual_payout(settlement=None, **kwargs):
 
     if not items:
         frappe.throw(_("Commission Settlement {0} has no eligible items.").format(sett_name))
+
+    # Idempotency: check for existing payout events from this exact payment
+    # BEFORE outstanding-balance validation, so retries return the already
+    # created events instead of being rejected with "no outstanding".
+    try:
+        _raw_existing = frappe.db.sql(
+            "SELECT name, event_type, commission_amount "
+            "FROM `tabCommission Payout Event` "
+            "WHERE source_doctype = %s AND source_name = %s "
+            "  AND settlement = %s AND docstatus = 1 "
+            "FOR UPDATE",
+            (source_doctype, source_name, sett_name),
+            as_dict=True,
+        )
+    except Exception:
+        _raw_existing = []
+    existing_event_names = []
+    existing_net_comm = 0.0
+    for _r in (_raw_existing or []):
+        _et = _get_attr(_r, "event_type", None)
+        _amt = flt(_get_attr(_r, "commission_amount", 0))
+        if _et == "Payout":
+            existing_event_names.append(_get_attr(_r, "name", None))
+            existing_net_comm += _amt
+        elif _et == "Payout Reversal":
+            existing_net_comm -= _amt
+    if existing_event_names:
+        prec_id = _cp(commission_currency)
+        tol_id = (10 ** (-prec_id)) if prec_id and prec_id > 0 else 0.005
+        if abs(existing_net_comm - flt(amount, prec_id)) <= tol_id:
+            # Exact retry: return existing events without reallocating.
+            if refresh_settlement_payout_status is not None:
+                try:
+                    refresh_settlement_payout_status(sett_name)
+                except Exception:
+                    pass
+            return existing_event_names
+        frappe.throw(
+            _("Existing payout events for this evidence do not match the requested amount; refusing to reprocess.")
+        )
 
     # Outstanding check (fail closed).
     if compute_payout_status is None:
@@ -374,9 +521,9 @@ def record_manual_payout(settlement=None, **kwargs):
             "commission_amount": alloc.get("commission_amount", amount),
             "company_currency": company_currency,
             "company_amount": alloc.get("company_amount", amount),
-            "fx_from_currency": commission_currency,
-            "fx_to_currency": settlement_currency,
-            "fx_rate": settlement_fx_rate if settlement_currency != commission_currency else 1.0,
+            "fx_from_currency": settlement_currency,
+            "fx_to_currency": company_currency,
+            "fx_rate": settlement_fx_rate,
             "fx_date": payment_date,
             "fx_source": "Manual Payout",
             "remarks": remarks,
