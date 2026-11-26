@@ -216,6 +216,19 @@ class CommissionSettlement(Document):
                 row.already_settled_amount = flt(
                     getattr(entry, "settled_amount", 0) or 0
                 )
+                # Snapshot the commission-to-company rate and company-currency
+                # amount from the linked Commission Entry (per-item, so entries
+                # with different historical rates are handled correctly).
+                rate = flt(getattr(entry, "commission_to_company_rate", 0))
+                if not rate or rate <= 0:
+                    comm_curr = getattr(entry, "commission_currency", None)
+                    comp_curr = getattr(entry, "company_currency", None)
+                    if comm_curr and comp_curr and comm_curr == comp_curr:
+                        rate = 1.0
+                row.commission_to_company_rate = rate
+                row.base_currency_amount = flt(
+                    flt(row.amount_included) * (rate if rate else 1.0), 6
+                )
                 if not row.original_source_invoice:
                     row.original_source_invoice = getattr(entry, "sales_invoice", None)
 
@@ -690,26 +703,38 @@ class CommissionSettlement(Document):
 
         pi_date = frappe.utils.nowdate()
 
-        # Convert settlement amount to settlement currency if needed.
+        # Per-item company-currency amounts (already snapshotted during
+        # validation). Sum them to get the authoritative company-currency total.
+        total_company_amount = 0.0
+        for row in (self.entries or []):
+            total_company_amount += flt(getattr(row, "base_currency_amount", 0) or 0)
+        if total_company_amount <= 0:
+            total_company_amount = flt(self.total_payable)
+
+        # ERPNext convention: conversion_rate = company / settlement.
+        # settlement_amount = total_company_amount / conversion_rate
         pi_amount = flt(self.total_payable)
         pi_fx_rate = 1.0
-        pi_fx_from = self.commission_currency
-        pi_fx_to = settlement_currency
-        if settlement_currency and self.commission_currency and settlement_currency != self.commission_currency:
-            from frappe.utils import get_exchange_rate
-            rate = get_exchange_rate(self.commission_currency, settlement_currency, pi_date)
-            import math
-            if rate and (not math.isfinite(rate) or rate <= 0):
-                frappe.throw(_("Invalid exchange rate."))
-            if not rate or rate <= 0:
-                frappe.throw(
-                    _("Missing exchange rate from {0} to {1}.").format(
-                        self.commission_currency, settlement_currency
+        if settlement_currency and self.company:
+            company_currency = frappe.db.get_value("Company", self.company, "default_currency")
+            if company_currency and settlement_currency != company_currency:
+                from frappe.utils import get_exchange_rate
+                rate = get_exchange_rate(settlement_currency, company_currency, pi_date)
+                import math
+                if rate and (not math.isfinite(rate) or rate <= 0):
+                    frappe.throw(_("Invalid exchange rate."))
+                if not rate or rate <= 0:
+                    frappe.throw(
+                        _("Missing exchange rate from {0} to {1}.").format(
+                            settlement_currency, company_currency
+                        )
                     )
-                )
-            pi_fx_rate = rate
-            from sales_commission_management.sales_commission_management.utils import currency_precision as _cp
-            pi_amount = flt(pi_amount * rate, _cp(settlement_currency))
+                pi_fx_rate = rate
+                from sales_commission_management.sales_commission_management.utils import currency_precision as _cp
+                pi_amount = flt(total_company_amount / rate, _cp(settlement_currency))
+            else:
+                # Same currency: no conversion needed.
+                pi_amount = flt(total_company_amount, _cp(settlement_currency))
 
         self.settlement_currency = settlement_currency
         self.settlement_fx_rate = pi_fx_rate

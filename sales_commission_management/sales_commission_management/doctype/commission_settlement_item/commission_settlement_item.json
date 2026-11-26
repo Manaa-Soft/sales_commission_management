@@ -17,7 +17,8 @@
     "source_currency",
     "source_currency_amount",
     "company_currency",
-    "base_currency_amount"
+    "base_currency_amount",
+    "commission_to_company_rate"
   ],
   "fields": [
     {
@@ -105,6 +106,13 @@
       "fieldtype": "Currency",
       "label": "Base Currency Amount",
       "options": "company_currency"
+    },
+    {
+      "fieldname": "commission_to_company_rate",
+      "fieldtype": "Float",
+      "label": "Commission to Company Rate",
+      "precision": "6",
+      "read_only": 1
     }
   ],
   "istable": 1,
