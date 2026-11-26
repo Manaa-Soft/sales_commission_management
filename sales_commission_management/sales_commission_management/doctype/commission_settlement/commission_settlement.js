@@ -156,8 +156,8 @@ function record_manual_payout_dialog(frm) {
         fields: [
             { fieldname: "payment_date", fieldtype: "Date", label: __("Payment Date"), reqd: 1, default: frappe.datetime.get_today() },
             { fieldname: "amount", fieldtype: "Currency", label: __("Amount Paid"), reqd: 1, default: frm.doc.outstanding_payout_amount || frm.doc.outstanding },
-            { fieldname: "source_doctype", fieldtype: "Link", label: __("Evidence DocType"), options: "DocType" },
-            { fieldname: "source_name", fieldtype: "Dynamic Link", label: __("Evidence Document"), options: "source_doctype" },
+            { fieldname: "source_doctype", fieldtype: "Link", label: __("Evidence DocType"), options: "DocType", reqd: 1 },
+            { fieldname: "source_name", fieldtype: "Dynamic Link", label: __("Evidence Document"), options: "source_doctype", reqd: 1 },
             { fieldname: "remarks", fieldtype: "Small Text", label: __("Remarks") },
         ],
         primary_action_label: __("Record"),

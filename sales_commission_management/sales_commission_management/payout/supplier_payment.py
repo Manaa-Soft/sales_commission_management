@@ -909,6 +909,8 @@ def _get_settlement_items(settlement):
             "commission_ledger_entry",
             "amount_included",
             "already_settled_amount",
+            "base_currency_amount",
+            "commission_to_company_rate",
         ],
     ) or []
 

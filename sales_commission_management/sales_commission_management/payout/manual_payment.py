@@ -47,9 +47,11 @@ except Exception:  # pragma: no cover
 
 try:
     from sales_commission_management.sales_commission_management.payout.status import (
+        compute_payout_status,
         refresh_settlement_payout_status,
     )
 except Exception:  # pragma: no cover
+    compute_payout_status = None
     refresh_settlement_payout_status = None
 
 
@@ -106,30 +108,83 @@ def _first_kw(kwargs, *names):
     return None
 
 
-def record_manual_payout(settlement=None, **kwargs):
-    """Record a manual (evidence-based) payout against a settlement.
+def _is_finite(value):
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return False
+    import math
+    return math.isfinite(f)
 
-    Keyword arguments (flexible aliases):
-      payment_date / posting_date / date / payout_date
-      amount / paid_amount / amount_paid / payment_amount
-      source_doctype / evidence_doctype / document_type
-      source_name / evidence_reference / evidence / reference / voucher
-      remarks / note / notes
-      evidence_attachment / attachment
-      beneficiary (optional, validated against settlement)
-    """
-    # Permission gate.
+
+def _validate_evidence(source_doctype, source_name, sett, amount, payment_date, commission_currency):
+    """Validate payment evidence. Fails closed."""
+    if not source_doctype or not source_name:
+        frappe.throw(_("Payment evidence (Evidence DocType and Evidence Document) is required."))
+    if source_doctype == "Commission Settlement":
+        frappe.throw(_("Commission Settlement cannot be used as payment evidence."))
+    if not frappe.db.exists("DocType", source_doctype):
+        frappe.throw(_("Evidence DocType {0} does not exist.").format(source_doctype))
+    if not frappe.db.exists(source_doctype, source_name):
+        frappe.throw(_("Evidence document {0} {1} does not exist.").format(source_doctype, source_name))
+    try:
+        ev = frappe.get_doc(source_doctype, source_name)
+    except Exception:
+        frappe.throw(_("Evidence document {0} {1} does not exist.").format(source_doctype, source_name))
+
+    if getattr(ev, "docstatus", 0) != 1:
+        frappe.throw(_("Evidence document {0} {1} must be submitted.").format(source_doctype, source_name))
+
+    # Company check.
+    ev_company = getattr(ev, "company", None)
+    if ev_company and ev_company != getattr(sett, "company", None):
+        frappe.throw(_("Evidence document company does not match settlement company."))
+
+    # Currency check (if present).
+    ev_currency = None
+    for f in ("currency", "paid_from_account_currency", "account_currency"):
+        v = getattr(ev, f, None)
+        if v:
+            ev_currency = v
+            break
+    if ev_currency and commission_currency and ev_currency != commission_currency:
+        frappe.throw(_("Evidence document currency does not match commission currency."))
+
+    # Amount check (if present and currency matches).
+    ev_amount = None
+    for f in ("amount", "paid_amount", "total_amount", "base_total", "grand_total"):
+        v = getattr(ev, f, None)
+        if v is not None:
+            ev_amount = v
+            break
+    if ev_amount is not None and ev_currency == commission_currency:
+        prec = _cp(commission_currency)
+        if abs(flt(ev_amount, prec) - flt(amount, prec)) > (10 ** (-prec) if prec > 0 else 0.005):
+            frappe.throw(_("Evidence document amount does not match payment amount."))
+
+    # Date check (if present).
+    ev_date = None
+    for f in ("posting_date", "payment_date", "date", "transaction_date"):
+        v = getattr(ev, f, None)
+        if v:
+            ev_date = v
+            break
+    if ev_date:
+        if str(getdate(ev_date)) != str(payment_date):
+            frappe.throw(_("Evidence document date does not match payment date."))
+
+
+def record_manual_payout(settlement=None, **kwargs):
+    """Record a manual (evidence-based) payout against a settlement."""
     if frappe.session.user == "Guest":
         frappe.throw(_("Authentication required."), frappe.PermissionError)
     if not _privileged():
         frappe.throw(_("Insufficient permissions to record a manual payout."), frappe.PermissionError)
 
-    # Resolve settlement from kwargs if not passed positionally.
     if settlement is None:
         settlement = _first_kw(kwargs, "settlement", "settlement_name", "name", "commission_settlement")
     sett_name, sett = _resolve_settlement(settlement)
 
-    # Settlement must be submitted and use Manual Approved Route.
     if sett.docstatus != 1:
         frappe.throw(_("Commission Settlement {0} is not submitted.").format(sett_name))
     if getattr(sett, "settlement_method", None) != "Manual Approved Route":
@@ -151,32 +206,22 @@ def record_manual_payout(settlement=None, **kwargs):
     if amount <= 0:
         frappe.throw(_("Payment amount must be positive."))
 
-    # Evidence source.
+    # Evidence source (mandatory).
     source_doctype = _first_kw(kwargs, "source_doctype", "evidence_doctype", "document_type", "doctype")
-    if not source_doctype:
-        source_doctype = "Commission Settlement"
     source_name = _first_kw(
         kwargs, "source_name", "evidence_reference", "evidence", "reference", "voucher", "voucher_no"
     )
-    if not source_name:
-        source_name = sett_name
-    # Validate evidence document if it is a real doctype.
-    if source_doctype != "Commission Settlement" and frappe.db.exists("DocType", source_doctype):
-        if not frappe.db.exists(source_doctype, source_name):
-            frappe.throw(_("Evidence document {0} {1} does not exist.").format(source_doctype, source_name))
-        try:
-            ev_doc = frappe.get_doc(source_doctype, source_name)
-            if getattr(ev_doc, "docstatus", 0) != 1:
-                frappe.throw(_("Evidence document {0} {1} must be submitted.").format(source_doctype, source_name))
-        except frappe.DoesNotExistError:
-            frappe.throw(_("Evidence document {0} {1} does not exist.").format(source_doctype, source_name))
-
-    remarks = _first_kw(kwargs, "remarks", "note", "notes", "reason")
     evidence_attachment = _first_kw(kwargs, "evidence_attachment", "attachment")
+    remarks = _first_kw(kwargs, "remarks", "note", "notes", "reason")
 
-    # Lock the settlement.
-    if lock_commission_settlement is not None:
-        lock_commission_settlement(sett_name)
+    # Require evidence. Attachments alone are not accepted as auditable evidence.
+    if not source_doctype or not source_name:
+        frappe.throw(_("Payment evidence (Evidence DocType and Evidence Document) is required."))
+
+    # Lock the settlement (required).
+    if lock_commission_settlement is None:
+        frappe.throw(_("Settlement locking is unavailable."))
+    lock_commission_settlement(sett_name)
 
     if generate_event_key is None or create_and_submit_payout_event is None:
         frappe.throw(_("Payout event factory is unavailable."))
@@ -186,36 +231,54 @@ def record_manual_payout(settlement=None, **kwargs):
     settlement_currency = getattr(sett, "settlement_currency", None) or commission_currency
     company_currency = _company_currency(sett.company) or commission_currency
 
-    # Conversion (best-effort, fail closed only on non-finite).
     settlement_fx_rate = getattr(sett, "settlement_fx_rate", None)
-    if not settlement_fx_rate or not _is_finite(settlement_fx_rate):
-        settlement_fx_rate = 1.0
-    # If currencies differ, try to resolve a rate.
-    if settlement_currency != commission_currency:
+    if not settlement_fx_rate or not _is_finite(settlement_fx_rate) or float(settlement_fx_rate) <= 0:
+        settlement_fx_rate = None
+        if settlement_currency != commission_currency:
+            try:
+                from frappe.utils import get_exchange_rate
+                r = get_exchange_rate(commission_currency, settlement_currency, payment_date)
+                if r and _is_finite(r) and float(r) > 0:
+                    settlement_fx_rate = r
+            except Exception:
+                pass
+        if not settlement_fx_rate:
+            settlement_fx_rate = 1.0 if settlement_currency == commission_currency else None
+        if not settlement_fx_rate or not _is_finite(settlement_fx_rate) or float(settlement_fx_rate) <= 0:
+            frappe.throw(_("Invalid or missing settlement FX rate."))
+    settlement_fx_rate = flt(settlement_fx_rate)
+
+    # Target (commission -> company) rate.
+    if company_currency == commission_currency:
+        target_exchange_rate = 1.0
+    else:
+        target_exchange_rate = None
         try:
             from frappe.utils import get_exchange_rate
-            r = get_exchange_rate(commission_currency, settlement_currency, payment_date)
-            if r and _is_finite(r) and r > 0:
-                settlement_fx_rate = r
+            r = get_exchange_rate(commission_currency, company_currency, payment_date)
+            if r and _is_finite(r) and float(r) > 0:
+                target_exchange_rate = r
         except Exception:
             pass
+        if not target_exchange_rate or not _is_finite(target_exchange_rate) or float(target_exchange_rate) <= 0:
+            frappe.throw(_("Invalid or missing company exchange rate."))
+    target_exchange_rate = flt(target_exchange_rate)
 
-    # Amounts: treat input amount as commission currency; convert.
+    # Validate evidence (company, currency, amount, date).
+    _validate_evidence(source_doctype, source_name, sett, amount, payment_date, commission_currency)
+
+    # Amounts: input amount is commission currency.
     commission_amount_total = flt(amount, _cp(commission_currency))
-    if settlement_currency != commission_currency and settlement_fx_rate:
+    if settlement_currency != commission_currency:
         settlement_amount_total = flt(amount * settlement_fx_rate, _cp(settlement_currency))
     else:
         settlement_amount_total = flt(amount, _cp(settlement_currency))
     if company_currency != commission_currency:
-        # company amount: use company currency. If same as settlement, use settlement rate? Keep simple.
-        if company_currency == settlement_currency:
-            company_amount_total = settlement_amount_total
-        else:
-            company_amount_total = flt(amount, _cp(company_currency))
+        company_amount_total = flt(amount * target_exchange_rate, _cp(company_currency))
     else:
         company_amount_total = commission_amount_total
 
-    # Build settlement items with derived previous payments.
+    # Build settlement items.
     sett_items = _get_settlement_items(sett) if _get_settlement_items else []
     if not sett_items:
         frappe.throw(_("Commission Settlement {0} has no items.").format(sett_name))
@@ -245,24 +308,28 @@ def record_manual_payout(settlement=None, **kwargs):
     if not items:
         frappe.throw(_("Commission Settlement {0} has no eligible items.").format(sett_name))
 
-    # Outstanding check.
+    # Outstanding check (fail closed).
+    if compute_payout_status is None:
+        frappe.throw(_("Payout status calculation is unavailable."))
     try:
-        from sales_commission_management.sales_commission_management.payout.status import compute_payout_status
-
         ps = compute_payout_status(sett)
         outstanding = flt(ps.get("outstanding_payout_amount", 0))
     except Exception:
-        outstanding = flt(getattr(sett, "outstanding_payout_amount", 0))
-    if amount > outstanding + 0.005 and outstanding > 0:
+        frappe.throw(_("Unable to compute authoritative payout status; refusing to record payment."))
+    if outstanding <= 0:
+        frappe.throw(_("No outstanding payout amount remaining."))
+    prec = _cp(commission_currency)
+    tolerance = (10 ** (-prec)) if prec and prec > 0 else 0.005
+    if amount > outstanding + tolerance:
         frappe.throw(
             _("Payment amount {0} exceeds outstanding payout {1}.").format(amount, outstanding)
         )
 
     allocations = allocate_supplier_payment_across_items(
-        payment_allocation=commission_amount_total,
+        payment_allocation=settlement_amount_total,
         source_allocation=commission_amount_total,
-        target_exchange_rate=1.0,
-        settlement_fx_rate=1.0,
+        target_exchange_rate=target_exchange_rate,
+        settlement_fx_rate=settlement_fx_rate,
         items=items,
     )
 
@@ -300,7 +367,7 @@ def record_manual_payout(settlement=None, **kwargs):
             "source_name": source_name,
             "source_row": item_name,
             "source_currency": commission_currency,
-            "source_amount": alloc.get("commission_amount", amount),
+            "source_amount": alloc.get("source_amount", amount),
             "settlement_currency": settlement_currency,
             "settlement_amount": alloc.get("settlement_amount", amount),
             "commission_currency": commission_currency,
@@ -318,7 +385,6 @@ def record_manual_payout(settlement=None, **kwargs):
         name = create_and_submit_payout_event(payload)
         created_events.append(name)
 
-    # Refresh payout status.
     if refresh_settlement_payout_status is not None:
         try:
             refresh_settlement_payout_status(sett_name)
@@ -340,13 +406,10 @@ def _is_finite(value):
     return math.isfinite(f)
 
 
-# ---------------------------------------------------------------------------
 # Aliases
-# ---------------------------------------------------------------------------
 def record_manual_payout_event(*a, **k):
     return record_manual_payout(*a, **k)
 
-# Additional alias names that callers/tests may use.
 def record_manual_payment(*a, **k):
     return record_manual_payout(*a, **k)
 
@@ -362,23 +425,16 @@ def create_manual_payment(*a, **k):
 def record_manual_payout_for(*a, **k):
     return record_manual_payout(*a, **k)
 
-
 def manual_payout(*a, **k):
     return record_manual_payout(*a, **k)
 
-
 def create_manual_payout(*a, **k):
     return record_manual_payout(*a, **k)
-
 
 def record_manual_payout_for_settlement(*a, **k):
     return record_manual_payout(*a, **k)
 
 
-# Whitelisted entry point
-record_manual_payout = frappe.whitelist()(record_manual_payout) if False else record_manual_payout
-
-# Apply whitelist decorator properly:
 def _whitelist(fn):
     return frappe.whitelist()(fn)
 
