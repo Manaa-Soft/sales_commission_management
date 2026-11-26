@@ -171,21 +171,55 @@ def _validate_evidence(source_doctype, source_name, sett, amount, payment_date, 
 
 
 def _resolve_payable_account(company):
-    try:
-        accrued, payable, expense, _cc, _pe = None, None, None, None, None
-        from sales_commission_management.sales_commission_management.doctype.commission_settlement.commission_settlement import (
-            _resolve_settlement_accounts,
-        )
+    from sales_commission_management.sales_commission_management.doctype.commission_settlement.commission_settlement import (
+        _resolve_settlement_accounts,
+    )
 
-        res = _resolve_settlement_accounts(company)
-        if isinstance(res, (tuple, list)):
-            if len(res) >= 2:
-                payable = res[1]
-        elif isinstance(res, dict):
-            payable = res.get("payable") or res.get("commission_payable_account")
-    except Exception:
-        payable = None
+    # Fail closed: propagate resolution errors instead of swallowing them.
+    res = _resolve_settlement_accounts(company)
+    payable = None
+    if isinstance(res, (tuple, list)):
+        if len(res) >= 2:
+            payable = res[1]
+    elif isinstance(res, dict):
+        payable = res.get("payable") or res.get("commission_payable_account")
+    if not payable:
+        frappe.throw(
+            _("Commission payable account could not be resolved for company {0}.").format(company)
+        )
     return payable
+
+
+def _resolve_valid_parties(sett):
+    """Resolve the set of valid party identifiers for a settlement's beneficiary.
+
+    A Journal Entry / Payment Entry may reference the beneficiary through its
+    linked Employee or Supplier mapping, not only through the raw Sales Person
+    / Sales Partner name.
+    """
+    parties = set()
+    ben = _get_attr(sett, "beneficiary", None)
+    if ben and ben != "(group)":
+        parties.add(ben)
+    sp = _get_attr(sett, "sales_person", None)
+    if sp:
+        parties.add(sp)
+        try:
+            emp = frappe.get_cached_value("Sales Person", sp, "employee")
+            if emp:
+                parties.add(emp)
+        except Exception:
+            pass
+    partner = _get_attr(sett, "sales_partner", None)
+    if partner:
+        parties.add(partner)
+    emp = _get_attr(sett, "employee", None)
+    if emp:
+        parties.add(emp)
+    supplier = _get_attr(sett, "supplier", None)
+    if supplier:
+        parties.add(supplier)
+    return parties
 
 
 def _validate_journal_entry_evidence(ev, sett, amount, commission_currency, company):
@@ -207,8 +241,7 @@ def _validate_journal_entry_evidence(ev, sett, amount, commission_currency, comp
     if ev_currency and commission_currency and ev_currency != commission_currency:
         frappe.throw(_("Journal Entry currency does not match commission currency."))
 
-    # Accounts: the commission payable account must be among the rows, and at
-    # least one cash/bank (asset) account must be present.
+    # Accounts.
     accounts = getattr(ev, "accounts", None) or []
     account_names = []
     for row in accounts or []:
@@ -218,39 +251,72 @@ def _validate_journal_entry_evidence(ev, sett, amount, commission_currency, comp
     if not account_names:
         frappe.throw(_("Journal Entry has no account lines."))
 
+    # Fail-closed payable account resolution.
     payable = _resolve_payable_account(company)
-    if payable and payable not in account_names:
+
+    if payable not in account_names:
         frappe.throw(_("Journal Entry does not include the commission payable account."))
 
-    has_asset = False
+    # Cash/Bank accounts must use account_type Cash or Bank (not any Asset).
+    has_cash_bank = False
     for acct in account_names:
         try:
-            root_type = frappe.get_cached_value("Account", acct, "root_type")
+            acct_type = frappe.get_cached_value("Account", acct, "account_type")
         except Exception:
-            root_type = None
-        if root_type == "Asset":
-            has_asset = True
+            acct_type = None
+        if acct_type in ("Cash", "Bank"):
+            has_cash_bank = True
             break
-    if not has_asset:
-        frappe.throw(_("Journal Entry must include a cash or bank (asset) account."))
+    if not has_cash_bank:
+        frappe.throw(_("Journal Entry must include a cash or bank account."))
 
-    # Beneficiary / party reference where applicable: if the settlement has a
-    # beneficiary and the JE rows carry a party, it must match.
-    beneficiary = _get_attr(sett, "sales_person", None) or _get_attr(sett, "sales_partner", None)
-    party_found = False
+    # Debit/credit direction validation.
+    # Commission payable (liability) must be debited; cash/bank must be credited.
+    payable_debit = 0.0
+    payable_credit = 0.0
+    cash_credit = 0.0
+    cash_debit = 0.0
+    for row in accounts or []:
+        acct = getattr(row, "account", None) if not isinstance(row, dict) else row.get("account")
+        debit = flt(getattr(row, "debit", 0) if not isinstance(row, dict) else row.get("debit", 0))
+        credit = flt(getattr(row, "credit", 0) if not isinstance(row, dict) else row.get("credit", 0))
+        if acct == payable:
+            payable_debit += debit
+            payable_credit += credit
+        else:
+            try:
+                acct_type = frappe.get_cached_value("Account", acct, "account_type")
+            except Exception:
+                acct_type = None
+            if acct_type in ("Cash", "Bank"):
+                cash_credit += credit
+                cash_debit += debit
+    if payable_credit > tolerance:
+        frappe.throw(_("Commission payable account must be debited, not credited."))
+    if cash_debit > tolerance:
+        frappe.throw(_("Cash or bank account must be credited, not debited."))
+    if abs(payable_debit - flt(amount, prec)) > tolerance:
+        frappe.throw(_("Commission payable debit does not match payment amount."))
+    if abs(cash_credit - flt(amount, prec)) > tolerance:
+        frappe.throw(_("Cash or bank credit does not match payment amount."))
+
+    # Beneficiary / party reference: resolve through Employee/Supplier mapping.
+    valid_parties = _resolve_valid_parties(sett)
     for row in accounts or []:
         party = getattr(row, "party", None) if not isinstance(row, dict) else row.get("party")
+        party_type = getattr(row, "party_type", None) if not isinstance(row, dict) else row.get("party_type")
         if party:
-            party_found = True
-            if beneficiary and party != beneficiary:
+            if party not in valid_parties:
                 frappe.throw(_("Journal Entry party does not match settlement beneficiary."))
-    # Party is optional; not all JEs carry a party. Only enforce when present.
+            if not party_type:
+                frappe.throw(_("Party type is required when a party is referenced."))
 
 
 def _validate_payment_entry_evidence(ev, sett, amount, commission_currency, company):
     """Validate a Payment Entry as evidence for the Manual Approved Route."""
-    if getattr(ev, "payment_type", None) not in (None, "Pay", "Receive"):
-        frappe.throw(_("Payment Entry must be a Pay or Receive entry."))
+    # Manual payout only creates Payout events, so the evidence must be a Pay entry.
+    if getattr(ev, "payment_type", None) not in (None, "Pay"):
+        frappe.throw(_("Payment Entry must be a Pay type for manual payout evidence."))
 
     # Amount: paid_amount / received_amount.
     ev_amount = None
@@ -267,12 +333,25 @@ def _validate_payment_entry_evidence(ev, sett, amount, commission_currency, comp
         frappe.throw(_("Payment Entry amount does not match payment amount."))
 
     # Currency check.
-    ev_currency = getattr(ev, "currency", None) or getattr(ev, "paid_from_account_currency", None)
+    ev_currency = getattr(ev, "currency", None) or getattr(ev, "paid_to_account_currency", None) or getattr(ev, "paid_from_account_currency", None)
     if ev_currency and commission_currency and ev_currency != commission_currency:
-        # Allow company currency? keep strict match to commission currency.
         frappe.throw(_("Payment Entry currency does not match commission currency."))
 
-    # Posting date already checked by caller. Company checked by caller.
+    # Company check (also done by caller, but enforce here too).
+    ev_company = getattr(ev, "company", None)
+    if ev_company and company and ev_company != company:
+        frappe.throw(_("Payment Entry company does not match settlement company."))
+
+    # Beneficiary mapping: party, when present, must resolve to the
+    # settlement's Employee/Supplier mapping.
+    valid_parties = _resolve_valid_parties(sett)
+    party = getattr(ev, "party", None)
+    party_type = getattr(ev, "party_type", None)
+    if party:
+        if party not in valid_parties:
+            frappe.throw(_("Payment Entry party does not match settlement beneficiary."))
+        if not party_type:
+            frappe.throw(_("Party type is required when a party is referenced."))
 
 
 def record_manual_payout(settlement=None, **kwargs):
@@ -420,7 +499,7 @@ def record_manual_payout(settlement=None, **kwargs):
     # created events instead of being rejected with "no outstanding".
     try:
         _raw_existing = frappe.db.sql(
-            "SELECT name, event_type, commission_amount "
+            "SELECT name, event_type, commission_amount, source_row, settlement_item "
             "FROM `tabCommission Payout Event` "
             "WHERE source_doctype = %s AND source_name = %s "
             "  AND settlement = %s AND docstatus = 1 "
@@ -429,31 +508,46 @@ def record_manual_payout(settlement=None, **kwargs):
             as_dict=True,
         )
     except Exception:
-        _raw_existing = []
+        frappe.log_error(
+            frappe.get_traceback(),
+            "Manual payout idempotency lookup failed",
+        )
+        raise
     existing_event_names = []
     existing_net_comm = 0.0
+    has_reversal = False
     for _r in (_raw_existing or []):
         _et = _get_attr(_r, "event_type", None)
         _amt = flt(_get_attr(_r, "commission_amount", 0))
         if _et == "Payout":
             existing_event_names.append(_get_attr(_r, "name", None))
             existing_net_comm += _amt
-        elif _et == "Payout Reversal":
+        elif _et in ("Payout Reversal", "Recovery", "Recovery Reversal"):
+            has_reversal = True
             existing_net_comm -= _amt
     if existing_event_names:
         prec_id = _cp(commission_currency)
         tol_id = (10 ** (-prec_id)) if prec_id and prec_id > 0 else 0.005
-        if abs(existing_net_comm - flt(amount, prec_id)) <= tol_id:
-            # Exact retry: return existing events without reallocating.
-            if refresh_settlement_payout_status is not None:
-                try:
-                    refresh_settlement_payout_status(sett_name)
-                except Exception:
-                    pass
-            return existing_event_names
-        frappe.throw(
-            _("Existing payout events for this evidence do not match the requested amount; refusing to reprocess.")
-        )
+        if has_reversal:
+            frappe.throw(
+                _("Existing payout events include reversals or recoveries; refusing to reprocess.")
+            )
+        if abs(existing_net_comm - flt(amount, prec_id)) > tol_id:
+            frappe.throw(
+                _("Existing payout events for this evidence do not match the requested amount; refusing to reprocess.")
+            )
+        # Verify the existing event set matches the settlement items.
+        if len(existing_event_names) != len(items):
+            frappe.throw(
+                _("Existing payout event count does not match settlement items; refusing to reprocess.")
+            )
+        # Exact retry: return existing events without reallocating.
+        if refresh_settlement_payout_status is not None:
+            try:
+                refresh_settlement_payout_status(sett_name)
+            except Exception:
+                pass
+        return existing_event_names
 
     # Outstanding check (fail closed).
     if compute_payout_status is None:

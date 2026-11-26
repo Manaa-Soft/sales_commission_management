@@ -258,8 +258,8 @@ class CommissionPayoutEvent(Document):
                         )
         # Source row validation for Payment Entry events.
         if self.source_doctype == "Payment Entry":
-            if not self.source_row:
-                frappe.throw(_("Source row is required for Payment Entry events."))
+            if not self.source_name:
+                frappe.throw(_("Source document is required for Payment Entry events."))
             # Validate source Payment Entry exists and is submitted.
             pe = frappe.get_doc("Payment Entry", self.source_name)
             if pe.docstatus != 1:
@@ -271,93 +271,158 @@ class CommissionPayoutEvent(Document):
             else:
                 if pe.payment_type != "Pay":
                     frappe.throw(_("Payment Entry must be a Pay type."))
-            if pe.party_type != "Supplier":
-                frappe.throw(_("Payment Entry must be a Supplier payment."))
-            # Validate Payment Entry matches settlement company and supplier.
+
+            # Determine workflow: Manual Approved Route vs automatic Supplier PI.
+            is_manual = False
+            sett = None
             if self.settlement:
                 sett = frappe.get_doc("Commission Settlement", self.settlement)
+                if getattr(sett, "settlement_method", None) == "Manual Approved Route":
+                    is_manual = True
+
+            if is_manual:
+                # Manual Approved Route: no Supplier Purchase Invoice and no
+                # Payment Entry Reference row required. source_row is a
+                # Commission Settlement Item id.
+                if not self.source_row:
+                    frappe.throw(_("Source row is required for Payment Entry events."))
+                # source_row must be a Commission Settlement Item of this settlement.
+                item = frappe.db.get_value(
+                    "Commission Settlement Item", self.source_row,
+                    ["parent", "commission_ledger_entry"], as_dict=True,
+                )
+                if not item:
+                    frappe.throw(_("Source row is not a valid Commission Settlement Item."))
+                if item.parent != self.settlement:
+                    frappe.throw(_("Source row does not belong to the referenced settlement."))
+                if self.commission_entry and item.commission_ledger_entry != self.commission_entry:
+                    frappe.throw(_("Source row does not match the referenced commission entry."))
+                # Company check.
                 if pe.company != sett.company:
                     frappe.throw(_("Payment Entry company must match settlement company."))
-                if pe.party != sett.supplier:
-                    frappe.throw(_("Payment Entry supplier must match settlement supplier."))
-                # Validate Purchase Invoice exists and is submitted.
-                sett_doc = sett.settlement_document
-                sett_doc_type = sett.settlement_document_type
-                if not sett_doc:
-                    frappe.throw(_("Settlement must have a submitted Purchase Invoice."))
-                if sett_doc_type != "Purchase Invoice":
-                    frappe.throw(_("Settlement must be a Supplier Purchase Invoice settlement."))
-                pi = frappe.get_doc("Purchase Invoice", sett_doc)
-                if pi.docstatus != 1:
-                    frappe.throw(_("Purchase Invoice must be submitted."))
-                if pi.supplier != sett.supplier:
-                    frappe.throw(_("Purchase Invoice supplier must match settlement supplier."))
-                if pi.company != sett.company:
-                    frappe.throw(_("Purchase Invoice company must match settlement company."))
-            # Validate source_row belongs to the source Payment Entry.
-            parent = frappe.db.get_value("Payment Entry Reference", self.source_row, "parent")
-            if parent != self.source_name:
-                frappe.throw(_("Source row does not belong to the referenced Payment Entry."))
-            # Validate reference identifies the settlement's Purchase Invoice.
-            ref_doctype = frappe.db.get_value("Payment Entry Reference", self.source_row, "reference_doctype")
-            ref_name = frappe.db.get_value("Payment Entry Reference", self.source_row, "reference_name")
-            if ref_doctype != "Purchase Invoice":
-                frappe.throw(_("Source row must reference a Purchase Invoice."))
-            if self.settlement:
-                sett_doc = frappe.db.get_value("Commission Settlement", self.settlement, "settlement_document")
-                if sett_doc and ref_name != sett_doc:
-                    frappe.throw(_("Source row must reference the settlement's Purchase Invoice."))
-            # Validate that the Payment Entry Reference's allocated amount agrees
-            # with the payout event's source amount. Checking only the referenced
-            # Purchase Invoice is insufficient to establish the amount actually
-            # allocated to this settlement.
-            allocated_amount = frappe.db.get_value(
-                "Payment Entry Reference", self.source_row, "allocated_amount"
-            )
-            # Fail closed: a missing allocated amount is not a valid match.
-            if allocated_amount is None:
-                frappe.throw(
-                    _("Source row has no allocated amount.")
-                )
-            # Fetch the Payment Entry for currency context.
-            pe = frappe.get_doc("Payment Entry", self.source_name)
-            # Currency alignment: depends on payment direction.
-            # Receive: party account is paid_from (supplier refund).
-            # Pay: party account is paid_to (commission payout).
-            if pe.payment_type == "Receive":
-                alloc_currency = getattr(pe, "paid_from_account_currency", None)
-                party_account = pe.paid_from
+                # Beneficiary mapping: party, when present, must resolve.
+                valid_parties = set()
+                ben = getattr(sett, "beneficiary", None)
+                if ben and ben != "(group)":
+                    valid_parties.add(ben)
+                sp = getattr(sett, "sales_person", None)
+                if sp:
+                    valid_parties.add(sp)
+                    try:
+                        emp = frappe.get_cached_value("Sales Person", sp, "employee")
+                        if emp:
+                            valid_parties.add(emp)
+                    except Exception:
+                        pass
+                emp = getattr(sett, "employee", None)
+                if emp:
+                    valid_parties.add(emp)
+                supplier = getattr(sett, "supplier", None)
+                if supplier:
+                    valid_parties.add(supplier)
+                party = getattr(pe, "party", None)
+                if party and valid_parties and party not in valid_parties:
+                    frappe.throw(_("Payment Entry party does not match settlement beneficiary."))
+                # Amount validation against source amount.
+                ev_amount = getattr(pe, "paid_amount", None)
+                if ev_amount is None:
+                    ev_amount = getattr(pe, "received_amount", None)
+                if ev_amount is None:
+                    ev_amount = getattr(pe, "amount", None)
+                if ev_amount is None:
+                    frappe.throw(_("Payment Entry amount is missing."))
+                prec = _currency_precision(self.source_currency or self.commission_currency)
+                tolerance = (10 ** (-prec)) if prec and prec > 0 else 0.005
+                if self.source_amount is not None and abs(flt(ev_amount, prec) - flt(self.source_amount, prec)) > tolerance:
+                    frappe.throw(
+                        _("Source amount ({0}) does not match Payment Entry amount ({1}).").format(
+                            self.source_amount, ev_amount
+                        )
+                    )
+                # Require source amount positive.
+                if self.source_amount is not None and flt(self.source_amount, prec) <= 0:
+                    frappe.throw(_("Source amount must be positive."))
+                # Currency alignment.
+                ev_currency = getattr(pe, "currency", None) or getattr(pe, "paid_to_account_currency", None) or getattr(pe, "paid_from_account_currency", None)
+                if ev_currency and self.source_currency and ev_currency != self.source_currency:
+                    frappe.throw(
+                        _("Source currency ({0}) must match the Payment Entry currency ({1}).").format(
+                            self.source_currency, ev_currency
+                        )
+                    )
             else:
-                alloc_currency = getattr(pe, "paid_to_account_currency", None)
-                party_account = pe.paid_to
-            if not alloc_currency:
-                alloc_currency = frappe.get_cached_value("Account", party_account, "account_currency")
-            if not alloc_currency:
-                frappe.throw(_("Cannot resolve the Payment Entry Reference allocated currency."))
-            if not self.source_currency:
-                frappe.throw(_("Source currency is required for Payment Entry events."))
-            if alloc_currency != self.source_currency:
-                frappe.throw(
-                    _("Source currency ({0}) must match the Payment Entry Reference allocated currency ({1}).").format(
-                        self.source_currency, alloc_currency
+                # Automatic Supplier Purchase Invoice route: retain existing validation.
+                if pe.party_type != "Supplier":
+                    frappe.throw(_("Payment Entry must be a Supplier payment."))
+                if not self.source_row:
+                    frappe.throw(_("Source row is required for Payment Entry events."))
+                if self.settlement:
+                    if pe.company != sett.company:
+                        frappe.throw(_("Payment Entry company must match settlement company."))
+                    if pe.party != sett.supplier:
+                        frappe.throw(_("Payment Entry supplier must match settlement supplier."))
+                    sett_doc = sett.settlement_document
+                    sett_doc_type = sett.settlement_document_type
+                    if not sett_doc:
+                        frappe.throw(_("Settlement must have a submitted Purchase Invoice."))
+                    if sett_doc_type != "Purchase Invoice":
+                        frappe.throw(_("Settlement must be a Supplier Purchase Invoice settlement."))
+                    pi = frappe.get_doc("Purchase Invoice", sett_doc)
+                    if pi.docstatus != 1:
+                        frappe.throw(_("Purchase Invoice must be submitted."))
+                    if pi.supplier != sett.supplier:
+                        frappe.throw(_("Purchase Invoice supplier must match settlement supplier."))
+                    if pi.company != sett.company:
+                        frappe.throw(_("Purchase Invoice company must match settlement company."))
+                # Validate source_row belongs to the source Payment Entry.
+                parent = frappe.db.get_value("Payment Entry Reference", self.source_row, "parent")
+                if parent != self.source_name:
+                    frappe.throw(_("Source row does not belong to the referenced Payment Entry."))
+                ref_doctype = frappe.db.get_value("Payment Entry Reference", self.source_row, "reference_doctype")
+                ref_name = frappe.db.get_value("Payment Entry Reference", self.source_row, "reference_name")
+                if ref_doctype != "Purchase Invoice":
+                    frappe.throw(_("Source row must reference a Purchase Invoice."))
+                if self.settlement:
+                    sett_doc = frappe.db.get_value("Commission Settlement", self.settlement, "settlement_document")
+                    if sett_doc and ref_name != sett_doc:
+                        frappe.throw(_("Source row must reference the settlement's Purchase Invoice."))
+                allocated_amount = frappe.db.get_value(
+                    "Payment Entry Reference", self.source_row, "allocated_amount"
+                )
+                if allocated_amount is None:
+                    frappe.throw(
+                        _("Source row has no allocated amount.")
                     )
-                )
-            precision = _currency_precision(self.source_currency)
-            # Item-level payout events are shares of the Payment Entry Reference
-            # allocation, not the whole allocation. Validate that the share is
-            # positive and does not exceed the reference's allocated amount; the
-            # aggregate of all item shares is reconciled by the supplier payment
-            # handler (see payout/supplier_payment.py).
-            if flt(self.source_amount, precision) <= 0:
-                frappe.throw(
-                    _("Source amount must be positive.")
-                )
-            if flt(self.source_amount, precision) > flt(allocated_amount, precision):
-                frappe.throw(
-                    _("Source amount ({0}) exceeds the Payment Entry Reference allocated amount ({1}).").format(
-                        self.source_amount, allocated_amount
+                pe = frappe.get_doc("Payment Entry", self.source_name)
+                if pe.payment_type == "Receive":
+                    alloc_currency = getattr(pe, "paid_from_account_currency", None)
+                    party_account = pe.paid_from
+                else:
+                    alloc_currency = getattr(pe, "paid_to_account_currency", None)
+                    party_account = pe.paid_to
+                if not alloc_currency:
+                    alloc_currency = frappe.get_cached_value("Account", party_account, "account_currency")
+                if not alloc_currency:
+                    frappe.throw(_("Cannot resolve the Payment Entry Reference allocated currency."))
+                if not self.source_currency:
+                    frappe.throw(_("Source currency is required for Payment Entry events."))
+                if alloc_currency != self.source_currency:
+                    frappe.throw(
+                        _("Source currency ({0}) must match the Payment Entry Reference allocated currency ({1}).").format(
+                            self.source_currency, alloc_currency
+                        )
                     )
-                )
+                precision = _currency_precision(self.source_currency)
+                if flt(self.source_amount, precision) <= 0:
+                    frappe.throw(
+                        _("Source amount must be positive.")
+                    )
+                if flt(self.source_amount, precision) > flt(allocated_amount, precision):
+                    frappe.throw(
+                        _("Source amount ({0}) exceeds the Payment Entry Reference allocated amount ({1}).").format(
+                            self.source_amount, allocated_amount
+                        )
+                    )
         # FX snapshot consistency.
         if self.fx_from_currency or self.fx_to_currency or self.fx_rate:
             if not self.fx_from_currency or not self.fx_to_currency:
