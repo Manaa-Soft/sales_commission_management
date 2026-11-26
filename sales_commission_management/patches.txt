@@ -1,2 +1,3 @@
 sales_commission_management.patches.rename_hashed_to_series
 sales_commission_management.patches.ensure_commission_settings_single
+sales_commission_management.patches.migrate_commission_settings_legacy_data

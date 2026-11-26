@@ -13,13 +13,33 @@ def _company_currency(company):
     )
 
 
+def _commission_settings():
+    """Return the Commission Settings single doc, self-healing issingle drift.
+
+    Returns None if the DocType is not installed. Ensures ``issingle`` is set on
+    the DocType row before addressing the single record, so production sites do
+    not need manual SQL fixes.
+    """
+    if not frappe.db.exists("DocType", "Commission Settings"):
+        return None
+    if not frappe.db.get_value("DocType", "Commission Settings", "issingle"):
+        frappe.db.set_value(
+            "DocType", "Commission Settings", "issingle", 1, update_modified=False
+        )
+        frappe.clear_cache(doctype="Commission Settings")
+    try:
+        return frappe.get_single("Commission Settings")
+    except Exception:
+        return None
+
+
 def _get_accounting_mode():
     """Return the configured accounting mode. Fail closed if not configured."""
-    if not frappe.db.exists("Commission Settings"):
+    settings = _commission_settings()
+    if not settings:
         frappe.throw(
             _("Commission Settings must be configured before settlement.")
         )
-    settings = frappe.get_single("Commission Settings")
     mode = getattr(settings, "accounting_mode", None)
     if mode not in ("Subledger Until Settlement", "Periodic Accrual"):
         frappe.throw(_("Invalid Commission Accounting Mode."))
@@ -38,9 +58,7 @@ def _resolve_settlement_accounts(company):
     expense = None
     cost_center = None
     payroll_expense = None
-    if not frappe.db.exists("Commission Settings"):
-        return accrued, payable, expense, cost_center, payroll_expense
-    settings = frappe.get_single("Commission Settings")
+    settings = _commission_settings()
     if settings:
         for row in (getattr(settings, "account_mappings", None) or []):
             if getattr(row, "company", None) == company and getattr(row, "enabled", 1):
@@ -567,17 +585,19 @@ class CommissionSettlement(Document):
             self.status = "Approved"
 
     def _create_additional_salary(self):
+        if not frappe.db.exists("DocType", "Additional Salary"):
+            frappe.throw(
+                _(
+                    "HRMS is not installed or 'Additional Salary' DocType is not "
+                    "available. Install HRMS or choose a different settlement method."
+                )
+            )
         if not self.employee:
             frappe.throw(_("Employee is required for Additional Salary settlement."))
         if not self.company:
             frappe.throw(_("Company is required for settlement."))
-        salary_component = (
-            frappe.db.get_single_value(
-                "Commission Settings", "default_salary_component"
-            )
-            if frappe.db.exists("Commission Settings")
-            else None
-        )
+        _settings = _commission_settings()
+        salary_component = getattr(_settings, "default_salary_component", None) if _settings else None
         if not salary_component:
             salary_component = (
                 "Commission"
@@ -674,11 +694,8 @@ class CommissionSettlement(Document):
         if not self.company:
             frappe.throw(_("Company is required for settlement."))
 
-        item_code = (
-            frappe.db.get_single_value("Commission Settings", "default_commission_item")
-            if frappe.db.exists("Commission Settings")
-            else None
-        )
+        _settings = _commission_settings()
+        item_code = getattr(_settings, "default_commission_item", None) if _settings else None
         if not item_code:
             item_code = frappe.db.get_value("Item", {"item_name": "Commission"}, "name")
 
@@ -1037,6 +1054,12 @@ def _available_balance_for_entry(entry_name, exclude_settlement=None):
     if available < 0:
         available = 0.0
     return flt(available, 2)
+
+
+@frappe.whitelist()
+def hrms_available():
+    """Whether the HRMS 'Additional Salary' DocType is available on this site."""
+    return bool(frappe.db.exists("DocType", "Additional Salary"))
 
 
 @frappe.whitelist()

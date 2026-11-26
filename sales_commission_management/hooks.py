@@ -48,3 +48,11 @@ scheduler_events = {
         "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.recompute_period_slabs"
     ]
 }
+
+after_migrate = [
+    "sales_commission_management.patches.migrate_commission_settings_legacy_data.ensure"
+]
+
+after_install = [
+    "sales_commission_management.patches.migrate_commission_settings_legacy_data.ensure"
+]
