@@ -1,551 +1,617 @@
 {
- "actions": [],
- "allow_rename": 0,
- "creation": "2026-01-01 00:00:00.000000",
- "doctype": "DocType",
- "editable_grid": 1,
- "engine": "InnoDB",
- "field_order": [
-  "naming_series",
-  "event_key",
-  "event_type",
-  "company",
-  "posting_date",
-  "commission_period",
-  "source_doctype",
-  "source_name",
-  "source_row",
-  "source_payment_entry",
-  "source_payment_reference",
-  "original_invoice",
-  "return_invoice",
-  "plan",
-  "rule",
-  "pool_code",
-  "beneficiary_type",
-  "sales_person",
-  "sales_partner",
-  "employee",
-  "supplier",
-  "item_code",
-  "item_name",
-  "item_group",
-  "source_qty",
-  "source_uom",
-  "commission_qty",
-  "commission_uom",
-  "transaction_currency",
-  "transaction_basis_amount",
-  "company_currency",
-  "company_basis_amount",
-  "conversion_rate_snapshot",
-  "commission_to_company_rate",
-  "commission_currency",
-  "commission_rate",
-  "fixed_amount_snapshot",
-  "earned_delta",
-  "payable_eligible_delta",
-  "reserved_delta",
-  "paid_delta",
-  "reverses_entry",
-  "settlement",
-  "accrual_batch",
-  "accrued_amount",
-  "calculation_snapshot",
-  "sales_invoice",
-  "commission_basis",
-  "commission_basis_amount",
-  "exchange_rate",
-  "earned_commission",
-  "payable_amount",
-  "collection_eligible_amount",
-  "paid_amount",
-  "settled_amount",
-  "outstanding_amount",
-  "collection_events",
-  "status",
-  "accrual_status",
-  "collection_status",
-  "settlement_status",
-  "original_entry",
-  "remarks"
- ],
- "fields": [
-  {
-   "fieldname": "naming_series",
-   "fieldtype": "Select",
-   "label": "Naming Series",
-   "options": "CE-.YYYY.-.####",
-   "default": "CE-.YYYY.-.####",
-   "hidden": 1,
-   "reqd": 0
-  },
-  {
-   "fieldname": "event_key",
-   "fieldtype": "Data",
-   "label": "Event Key",
-   "unique": 1,
-   "read_only": 1
-  },
-  {
-   "fieldname": "event_type",
-   "fieldtype": "Select",
-   "label": "Event Type",
-   "options": "Invoice Earned\nCollection\nReturn Adjustment\nCancellation Reversal\nManual Adjustment\nSettlement Reservation\nSettlement Reversal",
-   "read_only": 1,
-   "reqd": 1
-  },
-  {
-   "fieldname": "company",
-   "fieldtype": "Link",
-   "label": "Company",
-   "options": "Company",
-   "read_only": 1,
-   "reqd": 1
-  },
-  {
-   "fieldname": "posting_date",
-   "fieldtype": "Date",
-   "label": "Posting Date",
-   "read_only": 1
-  },
-  {
-   "fieldname": "commission_period",
-   "fieldtype": "Link",
-   "label": "Commission Period",
-   "options": "Commission Period",
-   "read_only": 1
-  },
-  {
-   "fieldname": "source_doctype",
-   "fieldtype": "Link",
-   "label": "Source DocType",
-   "options": "DocType",
-   "read_only": 1
-  },
-  {
-   "fieldname": "source_name",
-   "fieldtype": "Dynamic Link",
-   "label": "Source Document",
-   "options": "source_doctype",
-   "read_only": 1
-  },
-  {
-   "fieldname": "source_row",
-   "fieldtype": "Data",
-   "label": "Source Row",
-   "read_only": 1
-  },
-  {
-   "fieldname": "source_payment_entry",
-   "fieldtype": "Link",
-   "label": "Source Payment Entry",
-   "options": "Payment Entry",
-   "read_only": 1
-  },
-  {
-   "fieldname": "source_payment_reference",
-   "fieldtype": "Data",
-   "label": "Source Payment Reference",
-   "read_only": 1
-  },
-  {
-   "fieldname": "original_invoice",
-   "fieldtype": "Link",
-   "label": "Original Invoice",
-   "options": "Sales Invoice",
-   "read_only": 1
-  },
-  {
-   "fieldname": "return_invoice",
-   "fieldtype": "Link",
-   "label": "Return Invoice",
-   "options": "Sales Invoice",
-   "read_only": 1
-  },
-  {
-   "fieldname": "plan",
-   "fieldtype": "Link",
-   "label": "Commission Plan",
-   "options": "Commission Plan",
-   "read_only": 1
-  },
-  {
-   "fieldname": "rule",
-   "fieldtype": "Link",
-   "label": "Commission Rule",
-   "options": "Commission Rule",
-   "read_only": 1
-  },
-  {
-   "fieldname": "pool_code",
-   "fieldtype": "Data",
-   "label": "Pool Code",
-   "read_only": 1
-  },
-  {
-   "fieldname": "beneficiary_type",
-   "fieldtype": "Select",
-   "label": "Beneficiary Type",
-   "options": "Sales Person\nSales Partner",
-   "read_only": 1
-  },
-  {
-   "fieldname": "sales_person",
-   "fieldtype": "Link",
-   "label": "Sales Person",
-   "options": "Sales Person",
-   "read_only": 1
-  },
-  {
-   "fieldname": "sales_partner",
-   "fieldtype": "Link",
-   "label": "Sales Partner",
-   "options": "Sales Partner",
-   "read_only": 1
-  },
-  {
-   "fieldname": "employee",
-   "fieldtype": "Link",
-   "label": "Employee",
-   "options": "Employee",
-   "read_only": 1
-  },
-  {
-   "fieldname": "supplier",
-   "fieldtype": "Link",
-   "label": "Supplier",
-   "options": "Supplier",
-   "read_only": 1
-  },
-  {
-   "fieldname": "item_code",
-   "fieldtype": "Link",
-   "label": "Item",
-   "options": "Item",
-   "read_only": 1
-  },
-  {
-   "fieldname": "item_name",
-   "fieldtype": "Data",
-   "label": "Item Name",
-   "read_only": 1
-  },
-  {
-   "fieldname": "item_group",
-   "fieldtype": "Link",
-   "label": "Item Group",
-   "options": "Item Group",
-   "read_only": 1
-  },
-  {
-   "fieldname": "source_qty",
-   "fieldtype": "Float",
-   "label": "Source Quantity",
-   "read_only": 1
-  },
-  {
-   "fieldname": "source_uom",
-   "fieldtype": "Link",
-   "label": "Source UOM",
-   "options": "UOM",
-   "read_only": 1
-  },
-  {
-   "fieldname": "commission_qty",
-   "fieldtype": "Float",
-   "label": "Commission Quantity",
-   "read_only": 1
-  },
-  {
-   "fieldname": "commission_uom",
-   "fieldtype": "Link",
-   "label": "Commission UOM",
-   "options": "UOM",
-   "read_only": 1
-  },
-  {
-   "fieldname": "transaction_currency",
-   "fieldtype": "Link",
-   "label": "Transaction Currency",
-   "options": "Currency",
-   "read_only": 1
-  },
-  {
-   "fieldname": "transaction_basis_amount",
-   "fieldtype": "Currency",
-   "label": "Transaction Basis Amount",
-   "read_only": 1,
-   "options": "transaction_currency"
-  },
-  {
-   "fieldname": "company_currency",
-   "fieldtype": "Link",
-   "label": "Company Currency",
-   "options": "Currency",
-   "read_only": 1
-  },
-  {
-   "fieldname": "company_basis_amount",
-   "fieldtype": "Currency",
-   "label": "Company Basis Amount",
-   "read_only": 1,
-   "options": "company_currency"
-  },
-  {
-   "fieldname": "conversion_rate_snapshot",
-   "fieldtype": "Float",
-   "label": "Conversion Rate Snapshot",
-   "read_only": 1
-  },
-  {
-   "fieldname": "commission_to_company_rate",
-   "fieldtype": "Float",
-   "label": "Commission to Company Rate",
-   "read_only": 1,
-   "default": 1
-  },
-  {
-   "fieldname": "commission_currency",
-   "fieldtype": "Link",
-   "label": "Commission Currency",
-   "options": "Currency",
-   "read_only": 1
-  },
-  {
-   "fieldname": "commission_rate",
-   "fieldtype": "Percent",
-   "label": "Commission Rate",
-   "read_only": 1
-  },
-  {
-   "fieldname": "fixed_amount_snapshot",
-   "fieldtype": "Currency",
-   "label": "Fixed Amount Snapshot",
-   "read_only": 1,
-   "options": "commission_currency"
-  },
-  {
-   "fieldname": "earned_delta",
-   "fieldtype": "Currency",
-   "label": "Earned Delta",
-   "read_only": 1,
-   "options": "commission_currency"
-  },
-  {
-   "fieldname": "payable_eligible_delta",
-   "fieldtype": "Currency",
-   "label": "Payable Eligible Delta",
-   "read_only": 1,
-   "options": "commission_currency"
-  },
-  {
-   "fieldname": "reserved_delta",
-   "fieldtype": "Currency",
-   "label": "Reserved Delta",
-   "read_only": 1,
-   "options": "commission_currency"
-  },
-  {
-   "fieldname": "paid_delta",
-   "fieldtype": "Currency",
-   "label": "Paid Delta",
-   "read_only": 1,
-   "options": "commission_currency"
-  },
-  {
-   "fieldname": "reverses_entry",
-   "fieldtype": "Link",
-   "label": "Reverses Entry",
-   "options": "Commission Entry",
-   "read_only": 1
-  },
-  {
-   "fieldname": "settlement",
-   "fieldtype": "Link",
-   "label": "Commission Settlement",
-   "options": "Commission Settlement",
-   "read_only": 1
-  },
-  {
-   "fieldname": "accrual_batch",
-   "fieldtype": "Link",
-   "label": "Commission Accrual Batch",
-   "options": "Commission Accrual Batch",
-   "read_only": 1
-  },
-  {
-   "fieldname": "accrued_amount",
-   "fieldtype": "Currency",
-   "label": "Accrued Amount",
-   "read_only": 1,
-   "options": "commission_currency"
-  },
-  {
-   "fieldname": "calculation_snapshot",
-   "fieldtype": "Long Text",
-   "label": "Calculation Snapshot",
-   "read_only": 1
-  },
-  {
-   "fieldname": "sales_invoice",
-   "fieldtype": "Link",
-   "label": "Sales Invoice",
-   "options": "Sales Invoice",
-   "read_only": 1
-  },
-  {
-   "fieldname": "commission_basis",
-   "fieldtype": "Select",
-   "label": "Commission Basis",
-   "options": "Net Total\nGross Profit\nFixed Amount",
-   "read_only": 1
-  },
-  {
-   "fieldname": "commission_basis_amount",
-   "fieldtype": "Currency",
-   "label": "Commission Basis Amount",
-   "read_only": 1,
-   "options": "company_currency"
-  },
-  {
-   "fieldname": "exchange_rate",
-   "fieldtype": "Float",
-   "label": "Exchange Rate",
-   "read_only": 1
-  },
-  {
-   "fieldname": "earned_commission",
-   "fieldtype": "Currency",
-   "label": "Earned Commission",
-   "read_only": 1,
-   "options": "commission_currency"
-  },
-  {
-   "fieldname": "payable_amount",
-   "fieldtype": "Currency",
-   "label": "Payable Amount",
-   "read_only": 1,
-   "options": "commission_currency"
-  },
-  {
-   "fieldname": "collection_eligible_amount",
-   "fieldtype": "Currency",
-   "label": "Collection Eligible Amount",
-   "read_only": 1,
-   "options": "commission_currency"
-  },
-  {
-   "fieldname": "paid_amount",
-   "fieldtype": "Currency",
-   "label": "Paid Amount",
-   "read_only": 1,
-   "options": "commission_currency"
-  },
-  {
-   "fieldname": "settled_amount",
-   "fieldtype": "Currency",
-   "label": "Settled Amount (Actual Payout)",
-   "read_only": 1,
-   "options": "commission_currency"
-  },
-  {
-   "fieldname": "outstanding_amount",
-   "fieldtype": "Currency",
-   "label": "Outstanding Amount",
-   "read_only": 1,
-   "options": "commission_currency"
-  },
-  {
-   "fieldname": "collection_events",
-   "fieldtype": "Table",
-   "label": "Collection Events",
-   "options": "Commission Collection Event",
-   "read_only": 1
-  },
-  {
-   "fieldname": "status",
-   "fieldtype": "Select",
-   "label": "Status",
-   "options": "Earned\nAccrued\nPayable\nPartially Paid\nPaid\nReserved\nReversed\nAdjusted",
-   "read_only": 1
-  },
-  {
-   "fieldname": "accrual_status",
-   "fieldtype": "Select",
-   "label": "Accrual Status",
-   "options": "Not Accrued\nPartially Accrued\nAccrued\nReversed",
-   "default": "Not Accrued",
-   "read_only": 1
-  },
-  {
-   "fieldname": "collection_status",
-   "fieldtype": "Select",
-   "label": "Collection Status",
-   "options": "Not Eligible\nPartially Eligible\nEligible",
-   "default": "Not Eligible",
-   "read_only": 1
-  },
-  {
-   "fieldname": "settlement_status",
-   "fieldtype": "Select",
-   "label": "Settlement Status",
-   "options": "Not Reserved\nPartially Reserved\nReserved\nPartially Paid\nPaid",
-   "default": "Not Reserved",
-   "read_only": 1
-  },
-  {
-   "fieldname": "original_entry",
-   "fieldtype": "Link",
-   "label": "Original Entry",
-   "options": "Commission Entry",
-   "read_only": 1
-  },
-  {
-   "fieldname": "remarks",
-   "fieldtype": "Small Text",
-   "label": "Remarks",
-   "read_only": 1
-  }
- ],
- "index_web_pages_for_search": 1,
- "is_submittable": 1,
- "links": [],
- "modified": "2026-01-01 00:00:00.000000",
- "modified_by": "Administrator",
- "module": "Sales Commission Management",
- "name": "Commission Entry",
- "owner": "Administrator",
- "permissions": [
-  {
-   "create": 1,
-   "delete": 1,
-   "email": 1,
-   "export": 1,
-   "print": 1,
-   "read": 1,
-   "report": 1,
-   "role": "System Manager",
-   "share": 1,
-   "write": 1
-  },
-  {
-   "create": 0,
-   "delete": 0,
-   "email": 1,
-   "export": 1,
-   "print": 1,
-   "read": 1,
-   "report": 1,
-   "role": "Accounts Manager",
-   "share": 0,
-   "write": 0
-  }
- ],
- "sort_field": "modified",
- "sort_order": "DESC",
- "states": [],
- "title_field": "sales_invoice",
- "track_changes": 1,
- "autoname": "naming_series:"
+  "actions": [],
+  "allow_rename": 0,
+  "creation": "2026-01-01 00:00:00.000000",
+  "doctype": "DocType",
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "naming_series",
+    "event_key",
+    "event_type",
+    "company",
+    "posting_date",
+    "commission_period",
+    "source_doctype",
+    "source_name",
+    "source_row",
+    "source_payment_entry",
+    "source_payment_reference",
+    "original_invoice",
+    "return_invoice",
+    "plan",
+    "rule",
+    "pool_code",
+    "beneficiary_type",
+    "sales_person",
+    "sales_partner",
+    "employee",
+    "supplier",
+    "item_code",
+    "item_name",
+    "item_group",
+    "source_qty",
+    "source_uom",
+    "commission_qty",
+    "commission_uom",
+    "transaction_currency",
+    "transaction_basis_amount",
+    "company_currency",
+    "company_basis_amount",
+    "conversion_rate_snapshot",
+    "commission_to_company_rate",
+    "commission_currency",
+    "commission_rate",
+    "fixed_amount_snapshot",
+    "earned_delta",
+    "payable_eligible_delta",
+    "reserved_delta",
+    "paid_delta",
+    "reverses_entry",
+    "settlement",
+    "accrual_batch",
+    "accrued_amount",
+    "calculation_snapshot",
+    "sales_invoice",
+    "commission_basis",
+    "commission_basis_amount",
+    "exchange_rate",
+    "earned_commission",
+    "payable_amount",
+    "collection_eligible_amount",
+    "paid_amount",
+    "settled_amount",
+    "outstanding_amount",
+    "collection_events",
+    "status",
+    "accrual_status",
+    "collection_status",
+    "settlement_status",
+    "original_entry",
+    "remarks"
+  ],
+  "fields": [
+    {
+      "fieldname": "naming_series",
+      "fieldtype": "Select",
+      "label": "Naming Series",
+      "options": "CE-.YYYY.-.####",
+      "default": "CE-.YYYY.-.####",
+      "hidden": 1,
+      "reqd": 0
+    },
+    {
+      "fieldname": "event_key",
+      "fieldtype": "Data",
+      "label": "Event Key",
+      "unique": 1,
+      "read_only": 1
+    },
+    {
+      "fieldname": "event_type",
+      "fieldtype": "Select",
+      "label": "Event Type",
+      "options": "Invoice Earned\nCollection\nReturn Adjustment\nCancellation Reversal\nManual Adjustment\nSettlement Reservation\nSettlement Reversal",
+      "read_only": 1,
+      "reqd": 1
+    },
+    {
+      "fieldname": "company",
+      "fieldtype": "Link",
+      "label": "Company",
+      "options": "Company",
+      "read_only": 1,
+      "reqd": 1
+    },
+    {
+      "fieldname": "posting_date",
+      "fieldtype": "Date",
+      "label": "Posting Date",
+      "read_only": 1
+    },
+    {
+      "fieldname": "commission_period",
+      "fieldtype": "Link",
+      "label": "Commission Period",
+      "options": "Commission Period",
+      "read_only": 1
+    },
+    {
+      "fieldname": "source_doctype",
+      "fieldtype": "Link",
+      "label": "Source DocType",
+      "options": "DocType",
+      "read_only": 1
+    },
+    {
+      "fieldname": "source_name",
+      "fieldtype": "Dynamic Link",
+      "label": "Source Document",
+      "options": "source_doctype",
+      "read_only": 1
+    },
+    {
+      "fieldname": "source_row",
+      "fieldtype": "Data",
+      "label": "Source Row",
+      "read_only": 1
+    },
+    {
+      "fieldname": "source_payment_entry",
+      "fieldtype": "Link",
+      "label": "Source Payment Entry",
+      "options": "Payment Entry",
+      "read_only": 1
+    },
+    {
+      "fieldname": "source_payment_reference",
+      "fieldtype": "Data",
+      "label": "Source Payment Reference",
+      "read_only": 1
+    },
+    {
+      "fieldname": "original_invoice",
+      "fieldtype": "Link",
+      "label": "Original Invoice",
+      "options": "Sales Invoice",
+      "read_only": 1
+    },
+    {
+      "fieldname": "return_invoice",
+      "fieldtype": "Link",
+      "label": "Return Invoice",
+      "options": "Sales Invoice",
+      "read_only": 1
+    },
+    {
+      "fieldname": "plan",
+      "fieldtype": "Link",
+      "label": "Commission Plan",
+      "options": "Commission Plan",
+      "read_only": 1
+    },
+    {
+      "fieldname": "rule",
+      "fieldtype": "Link",
+      "label": "Commission Rule",
+      "options": "Commission Rule",
+      "read_only": 1
+    },
+    {
+      "fieldname": "pool_code",
+      "fieldtype": "Data",
+      "label": "Pool Code",
+      "read_only": 1
+    },
+    {
+      "fieldname": "beneficiary_type",
+      "fieldtype": "Select",
+      "label": "Beneficiary Type",
+      "options": "Sales Person\nSales Partner",
+      "read_only": 1
+    },
+    {
+      "fieldname": "sales_person",
+      "fieldtype": "Link",
+      "label": "Sales Person",
+      "options": "Sales Person",
+      "read_only": 1
+    },
+    {
+      "fieldname": "sales_partner",
+      "fieldtype": "Link",
+      "label": "Sales Partner",
+      "options": "Sales Partner",
+      "read_only": 1
+    },
+    {
+      "fieldname": "employee",
+      "fieldtype": "Link",
+      "label": "Employee",
+      "options": "Employee",
+      "read_only": 1
+    },
+    {
+      "fieldname": "supplier",
+      "fieldtype": "Link",
+      "label": "Supplier",
+      "options": "Supplier",
+      "read_only": 1
+    },
+    {
+      "fieldname": "item_code",
+      "fieldtype": "Link",
+      "label": "Item",
+      "options": "Item",
+      "read_only": 1
+    },
+    {
+      "fieldname": "item_name",
+      "fieldtype": "Data",
+      "label": "Item Name",
+      "read_only": 1
+    },
+    {
+      "fieldname": "item_group",
+      "fieldtype": "Link",
+      "label": "Item Group",
+      "options": "Item Group",
+      "read_only": 1
+    },
+    {
+      "fieldname": "source_qty",
+      "fieldtype": "Float",
+      "label": "Source Quantity",
+      "read_only": 1
+    },
+    {
+      "fieldname": "source_uom",
+      "fieldtype": "Link",
+      "label": "Source UOM",
+      "options": "UOM",
+      "read_only": 1
+    },
+    {
+      "fieldname": "commission_qty",
+      "fieldtype": "Float",
+      "label": "Commission Quantity",
+      "read_only": 1
+    },
+    {
+      "fieldname": "commission_uom",
+      "fieldtype": "Link",
+      "label": "Commission UOM",
+      "options": "UOM",
+      "read_only": 1
+    },
+    {
+      "fieldname": "transaction_currency",
+      "fieldtype": "Link",
+      "label": "Transaction Currency",
+      "options": "Currency",
+      "read_only": 1
+    },
+    {
+      "fieldname": "transaction_basis_amount",
+      "fieldtype": "Currency",
+      "label": "Transaction Basis Amount",
+      "read_only": 1,
+      "options": "transaction_currency"
+    },
+    {
+      "fieldname": "company_currency",
+      "fieldtype": "Link",
+      "label": "Company Currency",
+      "options": "Currency",
+      "read_only": 1
+    },
+    {
+      "fieldname": "company_basis_amount",
+      "fieldtype": "Currency",
+      "label": "Company Basis Amount",
+      "read_only": 1,
+      "options": "company_currency"
+    },
+    {
+      "fieldname": "conversion_rate_snapshot",
+      "fieldtype": "Float",
+      "label": "Conversion Rate Snapshot",
+      "read_only": 1
+    },
+    {
+      "fieldname": "commission_to_company_rate",
+      "fieldtype": "Float",
+      "label": "Commission to Company Rate",
+      "read_only": 1,
+      "default": 1
+    },
+    {
+      "fieldname": "commission_currency",
+      "fieldtype": "Link",
+      "label": "Commission Currency",
+      "options": "Currency",
+      "read_only": 1
+    },
+    {
+      "fieldname": "commission_rate",
+      "fieldtype": "Percent",
+      "label": "Commission Rate",
+      "read_only": 1
+    },
+    {
+      "fieldname": "fixed_amount_snapshot",
+      "fieldtype": "Currency",
+      "label": "Fixed Amount Snapshot",
+      "read_only": 1,
+      "options": "commission_currency"
+    },
+    {
+      "fieldname": "earned_delta",
+      "fieldtype": "Currency",
+      "label": "Earned Delta",
+      "read_only": 1,
+      "options": "commission_currency"
+    },
+    {
+      "fieldname": "payable_eligible_delta",
+      "fieldtype": "Currency",
+      "label": "Payable Eligible Delta",
+      "read_only": 1,
+      "options": "commission_currency"
+    },
+    {
+      "fieldname": "reserved_delta",
+      "fieldtype": "Currency",
+      "label": "Reserved Delta",
+      "read_only": 1,
+      "options": "commission_currency"
+    },
+    {
+      "fieldname": "paid_delta",
+      "fieldtype": "Currency",
+      "label": "Paid Delta",
+      "read_only": 1,
+      "options": "commission_currency"
+    },
+    {
+      "fieldname": "reverses_entry",
+      "fieldtype": "Link",
+      "label": "Reverses Entry",
+      "options": "Commission Entry",
+      "read_only": 1
+    },
+    {
+      "fieldname": "settlement",
+      "fieldtype": "Link",
+      "label": "Commission Settlement",
+      "options": "Commission Settlement",
+      "read_only": 1
+    },
+    {
+      "fieldname": "accrual_batch",
+      "fieldtype": "Link",
+      "label": "Commission Accrual Batch",
+      "options": "Commission Accrual Batch",
+      "read_only": 1
+    },
+    {
+      "fieldname": "accrued_amount",
+      "fieldtype": "Currency",
+      "label": "Accrued Amount",
+      "read_only": 1,
+      "options": "commission_currency"
+    },
+    {
+      "fieldname": "calculation_snapshot",
+      "fieldtype": "Long Text",
+      "label": "Calculation Snapshot",
+      "read_only": 1
+    },
+    {
+      "fieldname": "sales_invoice",
+      "fieldtype": "Link",
+      "label": "Sales Invoice",
+      "options": "Sales Invoice",
+      "read_only": 1
+    },
+    {
+      "fieldname": "commission_basis",
+      "fieldtype": "Select",
+      "label": "Commission Basis",
+      "options": "Net Total\nGross Profit\nFixed Amount",
+      "read_only": 1
+    },
+    {
+      "fieldname": "commission_basis_amount",
+      "fieldtype": "Currency",
+      "label": "Commission Basis Amount",
+      "read_only": 1,
+      "options": "company_currency"
+    },
+    {
+      "fieldname": "exchange_rate",
+      "fieldtype": "Float",
+      "label": "Exchange Rate",
+      "read_only": 1
+    },
+    {
+      "fieldname": "earned_commission",
+      "fieldtype": "Currency",
+      "label": "Earned Commission",
+      "read_only": 1,
+      "options": "commission_currency"
+    },
+    {
+      "fieldname": "payable_amount",
+      "fieldtype": "Currency",
+      "label": "Payable Amount",
+      "read_only": 1,
+      "options": "commission_currency"
+    },
+    {
+      "fieldname": "collection_eligible_amount",
+      "fieldtype": "Currency",
+      "label": "Collection Eligible Amount",
+      "read_only": 1,
+      "options": "commission_currency"
+    },
+    {
+      "fieldname": "paid_amount",
+      "fieldtype": "Currency",
+      "label": "Paid Amount",
+      "read_only": 1,
+      "options": "commission_currency"
+    },
+    {
+      "fieldname": "settled_amount",
+      "fieldtype": "Currency",
+      "label": "Settled Amount (Actual Payout)",
+      "read_only": 1,
+      "options": "commission_currency"
+    },
+    {
+      "fieldname": "outstanding_amount",
+      "fieldtype": "Currency",
+      "label": "Outstanding Amount",
+      "read_only": 1,
+      "options": "commission_currency"
+    },
+    {
+      "fieldname": "collection_events",
+      "fieldtype": "Table",
+      "label": "Collection Events",
+      "options": "Commission Collection Event",
+      "read_only": 1
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "Earned\nAccrued\nPayable\nPartially Paid\nPaid\nReserved\nReversed\nAdjusted",
+      "read_only": 1
+    },
+    {
+      "fieldname": "accrual_status",
+      "fieldtype": "Select",
+      "label": "Accrual Status",
+      "options": "Not Accrued\nPartially Accrued\nAccrued\nReversed",
+      "default": "Not Accrued",
+      "read_only": 1
+    },
+    {
+      "fieldname": "collection_status",
+      "fieldtype": "Select",
+      "label": "Collection Status",
+      "options": "Not Eligible\nPartially Eligible\nEligible",
+      "default": "Not Eligible",
+      "read_only": 1
+    },
+    {
+      "fieldname": "settlement_status",
+      "fieldtype": "Select",
+      "label": "Settlement Status",
+      "options": "Not Reserved\nPartially Reserved\nReserved\nPartially Paid\nPaid",
+      "default": "Not Reserved",
+      "read_only": 1
+    },
+    {
+      "fieldname": "original_entry",
+      "fieldtype": "Link",
+      "label": "Original Entry",
+      "options": "Commission Entry",
+      "read_only": 1
+    },
+    {
+      "fieldname": "remarks",
+      "fieldtype": "Small Text",
+      "label": "Remarks",
+      "read_only": 1
+    }
+  ],
+  "index_web_pages_for_search": 1,
+  "is_submittable": 1,
+  "links": [],
+  "modified": "2026-01-01 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Sales Commission Management",
+  "name": "Commission Entry",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "role": "System Manager",
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "share": 1,
+      "write": 1,
+      "submit": 1,
+      "cancel": 1,
+      "amend": 1
+    },
+    {
+      "role": "Commission Manager",
+      "create": 1,
+      "delete": 0,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "share": 0,
+      "write": 1,
+      "submit": 1,
+      "cancel": 1,
+      "amend": 0
+    },
+    {
+      "role": "Accounts Manager",
+      "create": 1,
+      "delete": 0,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "share": 0,
+      "write": 1,
+      "submit": 1,
+      "cancel": 1,
+      "amend": 0
+    },
+    {
+      "role": "Sales Manager",
+      "create": 0,
+      "delete": 0,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "share": 0,
+      "write": 0,
+      "submit": 0,
+      "cancel": 0,
+      "amend": 0
+    },
+    {
+      "role": "Sales Person",
+      "create": 0,
+      "delete": 0,
+      "email": 0,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "share": 0,
+      "write": 0,
+      "submit": 0,
+      "cancel": 0,
+      "amend": 0
+    },
+    {
+      "role": "Accounts User",
+      "create": 1,
+      "delete": 0,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "share": 0,
+      "write": 1,
+      "submit": 0,
+      "cancel": 0,
+      "amend": 0
+    }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": [],
+  "title_field": "sales_invoice",
+  "track_changes": 1,
+  "autoname": "naming_series:"
 }

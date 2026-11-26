@@ -1,65 +1,255 @@
 {
- "actions": [],
- "allow_rename": 0,
- "creation": "2026-01-01 00:00:00.000000",
- "doctype": "DocType",
- "editable_grid": 0,
- "engine": "InnoDB",
- "field_order": [
-  "enabled",
-  "default_company",
-  "engine_ownership",
-  "accounting_mode",
-  "default_commission_currency",
-  "enable_sales_invoice",
-  "enable_payment_entry",
-  "enable_pos_invoice",
-  "enable_delivery_note",
-  "block_native_hrms_overlap",
-  "allow_manual_adjustments",
-  "rounding_policy",
-  "default_cost_center",
-  "default_commission_payable_account",
-  "default_accrued_liability_account",
-  "default_commission_expense_account",
-  "account_mappings_section",
-  "account_mappings"
- ],
- "fields": [
-  { "fieldname": "enabled", "fieldtype": "Check", "label": "Enabled", "default": "1" },
-  { "fieldname": "default_company", "fieldtype": "Link", "label": "Default Company", "options": "Company" },
-  { "fieldname": "engine_ownership", "fieldtype": "Select", "label": "Commission Engine Ownership", "options": "Native ERPNext/HRMS\nCustom Commission App\nMixed - Explicit Plan Assignment", "default": "Custom Commission App" },
-  { "fieldname": "accounting_mode", "fieldtype": "Select", "label": "Accounting Mode", "options": "Subledger Until Settlement\nPeriodic Accrual", "default": "Subledger Until Settlement" },
-  { "fieldname": "default_commission_currency", "fieldtype": "Select", "label": "Default Commission Currency", "options": "Company Currency\nTransaction Currency\nPlan Currency", "default": "Company Currency" },
-  { "fieldname": "enable_sales_invoice", "fieldtype": "Check", "label": "Enable Sales Invoice Source", "default": "1" },
-  { "fieldname": "enable_payment_entry", "fieldtype": "Check", "label": "Enable Payment Entry Source", "default": "1" },
-  { "fieldname": "enable_pos_invoice", "fieldtype": "Check", "label": "Enable POS Invoice Source" },
-  { "fieldname": "enable_delivery_note", "fieldtype": "Check", "label": "Enable Delivery Note Source" },
-  { "fieldname": "block_native_hrms_overlap", "fieldtype": "Check", "label": "Block Native HRMS Overlap", "default": "1" },
-  { "fieldname": "allow_manual_adjustments", "fieldtype": "Check", "label": "Allow Manual Adjustments", "default": "1" },
-  { "fieldname": "rounding_policy", "fieldtype": "Select", "label": "Rounding Policy", "options": "Company Precision\nConfigured Precision", "default": "Company Precision" },
-  { "fieldname": "default_cost_center", "fieldtype": "Link", "label": "Default Cost Center", "options": "Cost Center" },
-  { "fieldname": "default_salary_component", "fieldtype": "Link", "label": "Default Salary Component", "options": "Salary Component" },
-  { "fieldname": "default_commission_item", "fieldtype": "Link", "label": "Default Commission Item", "options": "Item" },
-   { "fieldname": "default_commission_payable_account", "fieldtype": "Link", "label": "Default Commission Payable Account", "options": "Account" },
-   { "fieldname": "default_accrued_liability_account", "fieldtype": "Link", "label": "Default Accrued Liability Account", "options": "Account" },
-   { "fieldname": "default_commission_expense_account", "fieldtype": "Link", "label": "Default Commission Expense Account", "options": "Account" },
-   { "fieldname": "account_mappings_section", "fieldtype": "Section Break", "label": "Company Account Mappings" },
-  { "fieldname": "account_mappings", "fieldtype": "Table", "label": "Account Mappings", "options": "Commission Account Mapping" }
- ],
- "index_web_pages_for_search": 1,
- "is_single": 1,
- "links": [],
- "modified": "2026-01-01 00:00:00.000000",
- "modified_by": "Administrator",
- "module": "Sales Commission Management",
- "name": "Commission Settings",
- "owner": "Administrator",
- "permissions": [
-  { "create": 1, "delete": 1, "email": 1, "export": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1 }
- ],
- "sort_field": "modified",
- "sort_order": "DESC",
- "states": [],
- "track_changes": 1
+  "actions": [],
+  "allow_rename": 0,
+  "creation": "2026-01-01 00:00:00.000000",
+  "doctype": "DocType",
+  "editable_grid": 0,
+  "engine": "InnoDB",
+  "field_order": [
+    "enabled",
+    "default_company",
+    "engine_ownership",
+    "accounting_mode",
+    "default_commission_currency",
+    "enable_sales_invoice",
+    "enable_payment_entry",
+    "enable_pos_invoice",
+    "enable_delivery_note",
+    "block_native_hrms_overlap",
+    "allow_manual_adjustments",
+    "rounding_policy",
+    "default_cost_center",
+    "default_commission_payable_account",
+    "default_accrued_liability_account",
+    "default_commission_expense_account",
+    "account_mappings_section",
+    "account_mappings"
+  ],
+  "fields": [
+    {
+      "fieldname": "enabled",
+      "fieldtype": "Check",
+      "label": "Enabled",
+      "default": "1"
+    },
+    {
+      "fieldname": "default_company",
+      "fieldtype": "Link",
+      "label": "Default Company",
+      "options": "Company"
+    },
+    {
+      "fieldname": "engine_ownership",
+      "fieldtype": "Select",
+      "label": "Commission Engine Ownership",
+      "options": "Native ERPNext/HRMS\nCustom Commission App\nMixed - Explicit Plan Assignment",
+      "default": "Custom Commission App"
+    },
+    {
+      "fieldname": "accounting_mode",
+      "fieldtype": "Select",
+      "label": "Accounting Mode",
+      "options": "Subledger Until Settlement\nPeriodic Accrual",
+      "default": "Subledger Until Settlement"
+    },
+    {
+      "fieldname": "default_commission_currency",
+      "fieldtype": "Select",
+      "label": "Default Commission Currency",
+      "options": "Company Currency\nTransaction Currency\nPlan Currency",
+      "default": "Company Currency"
+    },
+    {
+      "fieldname": "enable_sales_invoice",
+      "fieldtype": "Check",
+      "label": "Enable Sales Invoice Source",
+      "default": "1"
+    },
+    {
+      "fieldname": "enable_payment_entry",
+      "fieldtype": "Check",
+      "label": "Enable Payment Entry Source",
+      "default": "1"
+    },
+    {
+      "fieldname": "enable_pos_invoice",
+      "fieldtype": "Check",
+      "label": "Enable POS Invoice Source"
+    },
+    {
+      "fieldname": "enable_delivery_note",
+      "fieldtype": "Check",
+      "label": "Enable Delivery Note Source"
+    },
+    {
+      "fieldname": "block_native_hrms_overlap",
+      "fieldtype": "Check",
+      "label": "Block Native HRMS Overlap",
+      "default": "1"
+    },
+    {
+      "fieldname": "allow_manual_adjustments",
+      "fieldtype": "Check",
+      "label": "Allow Manual Adjustments",
+      "default": "1"
+    },
+    {
+      "fieldname": "rounding_policy",
+      "fieldtype": "Select",
+      "label": "Rounding Policy",
+      "options": "Company Precision\nConfigured Precision",
+      "default": "Company Precision"
+    },
+    {
+      "fieldname": "default_cost_center",
+      "fieldtype": "Link",
+      "label": "Default Cost Center",
+      "options": "Cost Center"
+    },
+    {
+      "fieldname": "default_salary_component",
+      "fieldtype": "Link",
+      "label": "Default Salary Component",
+      "options": "Salary Component"
+    },
+    {
+      "fieldname": "default_commission_item",
+      "fieldtype": "Link",
+      "label": "Default Commission Item",
+      "options": "Item"
+    },
+    {
+      "fieldname": "default_commission_payable_account",
+      "fieldtype": "Link",
+      "label": "Default Commission Payable Account",
+      "options": "Account"
+    },
+    {
+      "fieldname": "default_accrued_liability_account",
+      "fieldtype": "Link",
+      "label": "Default Accrued Liability Account",
+      "options": "Account"
+    },
+    {
+      "fieldname": "default_commission_expense_account",
+      "fieldtype": "Link",
+      "label": "Default Commission Expense Account",
+      "options": "Account"
+    },
+    {
+      "fieldname": "account_mappings_section",
+      "fieldtype": "Section Break",
+      "label": "Company Account Mappings"
+    },
+    {
+      "fieldname": "account_mappings",
+      "fieldtype": "Table",
+      "label": "Account Mappings",
+      "options": "Commission Account Mapping"
+    }
+  ],
+  "index_web_pages_for_search": 1,
+  "is_single": 1,
+  "links": [],
+  "modified": "2026-01-01 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Sales Commission Management",
+  "name": "Commission Settings",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "role": "System Manager",
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "share": 1,
+      "write": 1,
+      "submit": 0,
+      "cancel": 0,
+      "amend": 0
+    },
+    {
+      "role": "Commission Manager",
+      "create": 1,
+      "delete": 0,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "share": 0,
+      "write": 1,
+      "submit": 0,
+      "cancel": 0,
+      "amend": 0
+    },
+    {
+      "role": "Accounts Manager",
+      "create": 1,
+      "delete": 0,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "share": 0,
+      "write": 1,
+      "submit": 0,
+      "cancel": 0,
+      "amend": 0
+    },
+    {
+      "role": "Sales Manager",
+      "create": 0,
+      "delete": 0,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "share": 0,
+      "write": 0,
+      "submit": 0,
+      "cancel": 0,
+      "amend": 0
+    },
+    {
+      "role": "Sales Person",
+      "create": 0,
+      "delete": 0,
+      "email": 0,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "share": 0,
+      "write": 0,
+      "submit": 0,
+      "cancel": 0,
+      "amend": 0
+    },
+    {
+      "role": "Accounts User",
+      "create": 1,
+      "delete": 0,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "share": 0,
+      "write": 1,
+      "submit": 0,
+      "cancel": 0,
+      "amend": 0
+    }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": [],
+  "track_changes": 1
 }
