@@ -1,119 +1,131 @@
 {
- "actions": [],
- "creation": "2026-01-01 00:00:00.000000",
- "doctype": "DocType",
- "editable_grid": 1,
- "engine": "InnoDB",
- "field_order": [
-  "naming_series",
-  "beneficiary_type",
-  "sales_person",
-  "sales_partner",
-  "item_group",
-  "target_metric",
-  "target_value",
-  "target_currency",
-  "target_uom",
-  "period_type",
-  "monthly_distribution",
-  "attainment_percentage"
- ],
- "fields": [
-  {
-   "fieldname": "naming_series",
-   "fieldtype": "Select",
-   "label": "Naming Series",
-   "options": "CT-.YYYY.-.####",
-   "default": "CT-.YYYY.-.####",
-   "hidden": 1,
-   "reqd": 0
-  },
-  {
-   "fieldname": "beneficiary_type",
-   "fieldtype": "Select",
-   "label": "Beneficiary Type",
-   "options": "Sales Person\nSales Partner",
-   "reqd": 1
-  },
-  {
-   "fieldname": "sales_person",
-   "fieldtype": "Link",
-   "label": "Sales Person",
-   "options": "Sales Person",
-   "depends_on": "eval:doc.beneficiary_type=='Sales Person'"
-  },
-  {
-   "fieldname": "sales_partner",
-   "fieldtype": "Link",
-   "label": "Sales Partner",
-   "options": "Sales Partner",
-   "depends_on": "eval:doc.beneficiary_type=='Sales Partner'"
-  },
-  {
-   "fieldname": "item_group",
-   "fieldtype": "Link",
-   "label": "Item Group",
-   "options": "Item Group"
-  },
-  {
-   "fieldname": "target_metric",
-   "fieldtype": "Select",
-   "label": "Target Metric",
-   "options": "Net Sales\nGross Profit\nQuantity\nCollected Net Sales",
-   "reqd": 1
-  },
-  {
-   "fieldname": "target_value",
-   "fieldtype": "Float",
-   "label": "Target Value",
-   "reqd": 1
-  },
-  {
-   "fieldname": "target_currency",
-   "fieldtype": "Link",
-   "label": "Target Currency",
-   "options": "Currency",
-   "depends_on": "eval:doc.target_metric=='Net Sales' || doc.target_metric=='Gross Profit' || doc.target_metric=='Collected Net Sales'"
-  },
-  {
-   "fieldname": "target_uom",
-   "fieldtype": "Link",
-   "label": "Target UOM",
-   "options": "UOM",
-   "depends_on": "eval:doc.target_metric=='Quantity'"
-  },
-  {
-   "fieldname": "period_type",
-   "fieldtype": "Select",
-   "label": "Period Type",
-   "options": "Monthly\nQuarterly\nYearly",
-   "default": "Monthly",
-   "reqd": 1
-  },
-  {
-   "fieldname": "monthly_distribution",
-   "fieldtype": "Link",
-   "label": "Monthly Distribution",
-   "options": "Monthly Distribution"
-  },
-  {
-   "fieldname": "attainment_percentage",
-   "fieldtype": "Percent",
-   "label": "Attainment Percentage",
-   "read_only": 1
-  }
- ],
- "istable": 1,
- "links": [],
- "modified": "2026-01-01 00:00:00.000000",
- "modified_by": "Administrator",
- "module": "Sales Commission Management",
- "name": "Commission Target",
- "owner": "Administrator",
- "permissions": [],
- "sort_field": "creation",
- "sort_order": "ASC",
- "states": [],
- "track_changes": 1,
- "autoname": "naming_series:"
+  "actions": [],
+  "creation": "2026-01-01 00:00:00.000000",
+  "doctype": "DocType",
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "naming_series",
+    "beneficiary_type",
+    "sales_person",
+    "sales_partner",
+    "item_group",
+    "target_metric",
+    "target_value",
+    "target_currency",
+    "target_uom",
+    "period_type",
+    "monthly_distribution",
+    "attainment_percentage"
+  ],
+  "fields": [
+    {
+      "fieldname": "naming_series",
+      "fieldtype": "Select",
+      "label": "Naming Series",
+      "options": "CT-.YYYY.-.####",
+      "default": "CT-.YYYY.-.####",
+      "hidden": 1,
+      "reqd": 0,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "beneficiary_type",
+      "fieldtype": "Select",
+      "label": "Beneficiary Type",
+      "options": "Sales Person\nSales Partner",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "sales_person",
+      "fieldtype": "Link",
+      "label": "Sales Person",
+      "options": "Sales Person",
+      "depends_on": "eval:doc.beneficiary_type=='Sales Person'",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "sales_partner",
+      "fieldtype": "Link",
+      "label": "Sales Partner",
+      "options": "Sales Partner",
+      "depends_on": "eval:doc.beneficiary_type=='Sales Partner'",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "item_group",
+      "fieldtype": "Link",
+      "label": "Item Group",
+      "options": "Item Group",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "target_metric",
+      "fieldtype": "Select",
+      "label": "Target Metric",
+      "options": "Net Sales\nGross Profit\nQuantity\nCollected Net Sales",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "target_value",
+      "fieldtype": "Float",
+      "label": "Target Value",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "target_currency",
+      "fieldtype": "Link",
+      "label": "Target Currency",
+      "options": "Currency",
+      "depends_on": "eval:doc.target_metric=='Net Sales' || doc.target_metric=='Gross Profit' || doc.target_metric=='Collected Net Sales'",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "target_uom",
+      "fieldtype": "Link",
+      "label": "Target UOM",
+      "options": "UOM",
+      "depends_on": "eval:doc.target_metric=='Quantity'",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "period_type",
+      "fieldtype": "Select",
+      "label": "Period Type",
+      "options": "Monthly\nQuarterly\nYearly",
+      "default": "Monthly",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "monthly_distribution",
+      "fieldtype": "Link",
+      "label": "Monthly Distribution",
+      "options": "Monthly Distribution",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "attainment_percentage",
+      "fieldtype": "Percent",
+      "label": "Attainment Percentage",
+      "read_only": 1,
+      "in_list_view": 1
+    }
+  ],
+  "istable": 1,
+  "links": [],
+  "modified": "2026-01-01 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Sales Commission Management",
+  "name": "Commission Target",
+  "owner": "Administrator",
+  "permissions": [],
+  "sort_field": "creation",
+  "sort_order": "ASC",
+  "states": [],
+  "track_changes": 1,
+  "autoname": "naming_series:"
 }

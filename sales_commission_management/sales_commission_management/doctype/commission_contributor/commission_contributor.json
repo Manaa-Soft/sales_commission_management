@@ -1,43 +1,104 @@
 {
- "actions": [],
- "creation": "2026-01-01 00:00:00.000000",
- "doctype": "DocType",
- "editable_grid": 1,
- "engine": "InnoDB",
- "field_order": [
-  "pool_code",
-  "contributor_type",
-  "sales_person",
-  "sales_partner",
-  "role_type",
-  "split_percentage",
-  "commission_rate",
-  "commission_multiplier",
-  "require_employee",
-  "require_supplier"
- ],
- "fields": [
-  { "fieldname": "pool_code", "fieldtype": "Data", "label": "Pool Code", "default": "INTERNAL_SALES" },
-  { "fieldname": "contributor_type", "fieldtype": "Select", "label": "Contributor Type", "options": "Sales Person\nSales Partner", "reqd": 1 },
-  { "fieldname": "sales_person", "fieldtype": "Link", "label": "Sales Person", "options": "Sales Person", "depends_on": "eval:doc.contributor_type=='Sales Person'" },
-  { "fieldname": "sales_partner", "fieldtype": "Link", "label": "Sales Partner", "options": "Sales Partner", "depends_on": "eval:doc.contributor_type=='Sales Partner'" },
-  { "fieldname": "role_type", "fieldtype": "Select", "label": "Role Type", "options": "Hunter\nAccount Manager\nTeam Lead\nOther" },
-  { "fieldname": "split_percentage", "fieldtype": "Percent", "label": "Split Percentage", "reqd": 1 },
-  { "fieldname": "commission_rate", "fieldtype": "Percent", "label": "Commission Rate (Override)", "description": "Override only; defaults to the plan rule rate. Leave blank to use the plan rule rate." },
-  { "fieldname": "commission_multiplier", "fieldtype": "Float", "label": "Commission Multiplier", "default": "1.0" },
-  { "fieldname": "require_employee", "fieldtype": "Check", "label": "Require Employee Link" },
-  { "fieldname": "require_supplier", "fieldtype": "Check", "label": "Require Supplier Link" }
- ],
- "istable": 1,
- "links": [],
- "modified": "2026-01-01 00:00:00.000000",
- "modified_by": "Administrator",
- "module": "Sales Commission Management",
- "name": "Commission Contributor",
- "owner": "Administrator",
- "permissions": [],
- "sort_field": "creation",
- "sort_order": "ASC",
- "states": [],
- "track_changes": 1
+  "actions": [],
+  "creation": "2026-01-01 00:00:00.000000",
+  "doctype": "DocType",
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "pool_code",
+    "contributor_type",
+    "sales_person",
+    "sales_partner",
+    "role_type",
+    "split_percentage",
+    "commission_rate",
+    "commission_multiplier",
+    "require_employee",
+    "require_supplier"
+  ],
+  "fields": [
+    {
+      "fieldname": "pool_code",
+      "fieldtype": "Data",
+      "label": "Pool Code",
+      "default": "INTERNAL_SALES",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "contributor_type",
+      "fieldtype": "Select",
+      "label": "Contributor Type",
+      "options": "Sales Person\nSales Partner",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "sales_person",
+      "fieldtype": "Link",
+      "label": "Sales Person",
+      "options": "Sales Person",
+      "depends_on": "eval:doc.contributor_type=='Sales Person'",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "sales_partner",
+      "fieldtype": "Link",
+      "label": "Sales Partner",
+      "options": "Sales Partner",
+      "depends_on": "eval:doc.contributor_type=='Sales Partner'",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "role_type",
+      "fieldtype": "Select",
+      "label": "Role Type",
+      "options": "Hunter\nAccount Manager\nTeam Lead\nOther",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "split_percentage",
+      "fieldtype": "Percent",
+      "label": "Split Percentage",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "commission_rate",
+      "fieldtype": "Percent",
+      "label": "Commission Rate (Override)",
+      "description": "Override only; defaults to the plan rule rate. Leave blank to use the plan rule rate.",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "commission_multiplier",
+      "fieldtype": "Float",
+      "label": "Commission Multiplier",
+      "default": "1.0",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "require_employee",
+      "fieldtype": "Check",
+      "label": "Require Employee Link",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "require_supplier",
+      "fieldtype": "Check",
+      "label": "Require Supplier Link",
+      "in_list_view": 1
+    }
+  ],
+  "istable": 1,
+  "links": [],
+  "modified": "2026-01-01 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Sales Commission Management",
+  "name": "Commission Contributor",
+  "owner": "Administrator",
+  "permissions": [],
+  "sort_field": "creation",
+  "sort_order": "ASC",
+  "states": [],
+  "track_changes": 1
 }

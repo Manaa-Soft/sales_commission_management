@@ -26,93 +26,107 @@
       "fieldtype": "Link",
       "label": "Commission Ledger Entry",
       "options": "Commission Entry",
-      "reqd": 1
+      "reqd": 1,
+      "in_list_view": 1
     },
     {
       "fieldname": "original_source_invoice",
       "fieldtype": "Link",
       "label": "Original Source Invoice",
-      "options": "Sales Invoice"
+      "options": "Sales Invoice",
+      "in_list_view": 1
     },
     {
       "fieldname": "beneficiary",
       "fieldtype": "Data",
-      "label": "Beneficiary"
+      "label": "Beneficiary",
+      "in_list_view": 1
     },
     {
       "fieldname": "earned_balance",
       "fieldtype": "Currency",
       "label": "Earned Balance",
       "read_only": 1,
-      "options": "commission_currency"
+      "options": "commission_currency",
+      "in_list_view": 1
     },
     {
       "fieldname": "eligible_balance",
       "fieldtype": "Currency",
       "label": "Eligible Balance",
       "read_only": 1,
-      "options": "commission_currency"
+      "options": "commission_currency",
+      "in_list_view": 1
     },
     {
       "fieldname": "reserved_amount",
       "fieldtype": "Currency",
       "label": "Reserved Amount",
       "read_only": 1,
-      "options": "commission_currency"
+      "options": "commission_currency",
+      "in_list_view": 1
     },
     {
       "fieldname": "already_settled_amount",
       "fieldtype": "Currency",
       "label": "Already Settled Amount",
       "read_only": 1,
-      "options": "commission_currency"
+      "options": "commission_currency",
+      "in_list_view": 1
     },
     {
       "fieldname": "amount_included",
       "fieldtype": "Currency",
       "label": "Amount Included",
       "reqd": 1,
-      "options": "commission_currency"
+      "options": "commission_currency",
+      "in_list_view": 1
     },
     {
       "fieldname": "reclassified_amount",
       "fieldtype": "Currency",
       "label": "Reclassified Amount",
       "options": "commission_currency",
-      "read_only": 1
+      "read_only": 1,
+      "in_list_view": 1
     },
     {
       "fieldname": "source_currency",
       "fieldtype": "Link",
       "label": "Source Currency",
       "options": "Currency",
-      "read_only": 1
+      "read_only": 1,
+      "in_list_view": 1
     },
     {
       "fieldname": "source_currency_amount",
       "fieldtype": "Currency",
       "label": "Source Currency Amount",
-      "options": "source_currency"
+      "options": "source_currency",
+      "in_list_view": 1
     },
     {
       "fieldname": "company_currency",
       "fieldtype": "Link",
       "label": "Company Currency",
       "options": "Currency",
-      "read_only": 1
+      "read_only": 1,
+      "in_list_view": 1
     },
     {
       "fieldname": "base_currency_amount",
       "fieldtype": "Currency",
       "label": "Base Currency Amount",
-      "options": "company_currency"
+      "options": "company_currency",
+      "in_list_view": 1
     },
     {
       "fieldname": "commission_to_company_rate",
       "fieldtype": "Float",
       "label": "Commission to Company Rate",
       "precision": "6",
-      "read_only": 1
+      "read_only": 1,
+      "in_list_view": 1
     }
   ],
   "istable": 1,
