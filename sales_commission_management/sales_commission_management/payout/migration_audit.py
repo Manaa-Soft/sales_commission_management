@@ -77,6 +77,7 @@ def run_audit(companies=None):
         "proposed_actions": [],
         "manual_review": [],
     }
+    audit_incomplete = False
 
     # Resolve company filter.
     if companies is None:
@@ -196,17 +197,48 @@ def run_audit(companies=None):
                             "expected_parent": e.source_name,
                             "action": "Source row must belong to the referenced Payment Entry.",
                         })
-                    if row_ref_dt and e.settlement:
-                        sett_doc = frappe.db.get_value(
-                            "Commission Settlement", e.settlement, "settlement_document"
+                    if e.settlement:
+                        sett_info = frappe.db.get_value(
+                            "Commission Settlement", e.settlement,
+                            ["settlement_document", "settlement_document_type", "company"],
+                            as_dict=True,
                         )
-                        if sett_doc and row_ref_name != sett_doc:
-                            report["issues"].append({
-                                "type": "source_row_reference_mismatch",
-                                "severity": "P1",
-                                "event": e.name,
-                                "action": "Source row must reference the settlement's Purchase Invoice.",
-                            })
+                        if sett_info:
+                            # Validate both reference_doctype and reference_name.
+                            if row_ref_dt and sett_info.settlement_document_type and row_ref_dt != sett_info.settlement_document_type:
+                                report["issues"].append({
+                                    "type": "source_row_doctype_mismatch",
+                                    "severity": "P1",
+                                    "event": e.name,
+                                    "action": "Source row reference DocType must match settlement document type.",
+                                })
+                            if row_ref_name and sett_info.settlement_document and row_ref_name != sett_info.settlement_document:
+                                report["issues"].append({
+                                    "type": "source_row_reference_mismatch",
+                                    "severity": "P1",
+                                    "event": e.name,
+                                    "action": "Source row must reference the settlement's Purchase Invoice.",
+                                })
+                            # Company consistency between payout event and settlement.
+                            if sett_info.company and e.company and sett_info.company != e.company:
+                                report["issues"].append({
+                                    "type": "event_settlement_company_mismatch",
+                                    "severity": "P1",
+                                    "event": e.name,
+                                    "action": "Payout event company must match settlement company.",
+                                })
+                            # Source Payment Entry company consistency.
+                            try:
+                                pe_company = frappe.db.get_value("Payment Entry", e.source_name, "company")
+                                if pe_company and e.company and pe_company != e.company:
+                                    report["issues"].append({
+                                        "type": "source_pe_company_mismatch",
+                                        "severity": "P1",
+                                        "event": e.name,
+                                        "action": "Source Payment Entry company must match payout event company.",
+                                    })
+                            except Exception:
+                                pass
                 except Exception as ex:
                     report["issues"].append({
                         "type": "source_row_check_error",
@@ -338,6 +370,29 @@ def run_audit(companies=None):
                 "event": e.name,
                 "action": "Populate all currency fields.",
             })
+        # Empty currency strings detection
+        for curr_field in ("commission_currency", "company_currency", "settlement_currency"):
+            val = getattr(e, curr_field, None)
+            if val is None or (isinstance(val, str) and val.strip() == ""):
+                report["issues"].append({
+                    "type": "missing_currency",
+                    "severity": "P2",
+                    "event": e.name,
+                    "action": "Populate {0}.".format(curr_field),
+                })
+
+        # FX snapshot: required when commission and company currencies differ
+        comm_curr = e.commission_currency
+        comp_curr = e.company_currency
+        needs_fx = comm_curr and comp_curr and comm_curr != comp_curr
+        has_fx = bool(e.fx_from_currency and e.fx_to_currency and e.fx_rate)
+        if needs_fx and not has_fx:
+            report["issues"].append({
+                "type": "missing_fx_snapshot",
+                "severity": "P2",
+                "event": e.name,
+                "action": "FX snapshot required when commission and company currencies differ.",
+            })
         # FX snapshot completeness + finite positive rate
         if e.fx_from_currency or e.fx_to_currency or e.fx_rate:
             if not (e.fx_from_currency and e.fx_to_currency and e.fx_rate):
@@ -364,13 +419,22 @@ def run_audit(companies=None):
                         "action": "FX rate must be finite and positive.",
                     })
 
-    # 8. GL idempotency records
+    # 8. GL idempotency records (company-scoped: include records linked to
+    # authorized payout events so incorrectly populated company values are
+    # still detected without exposing unrelated companies)
     try:
-        idem_rows = frappe.get_all(
+        all_idem = frappe.get_all(
             "Commission GL Idempotency",
             fields=["name", "idempotency_key", "journal_entry", "posting_fingerprint",
-                    "posting_purpose", "source_event", "company", "posting_fingerprint"],
+                    "posting_purpose", "source_event", "company"],
         )
+        # Filter: keep records whose company is authorized OR whose source_event
+        # belongs to an authorized payout event.
+        authorized_event_names = {e.name for e in events}
+        idem_rows = []
+        for r in all_idem:
+            if companies is None or r.company in (companies or []) or r.source_event in authorized_event_names:
+                idem_rows.append(r)
         report["inspected"]["gl_idempotency"] = len(idem_rows)
         seen_keys = {}
         for r in idem_rows:
@@ -412,7 +476,6 @@ def run_audit(companies=None):
                             "record": r.name,
                             "action": "GL entry company must match idempotency record.",
                         })
-            # Duplicate idempotency keys
             seen_keys.setdefault(r.idempotency_key, []).append(r.name)
         for key, names in seen_keys.items():
             if len(names) > 1:
@@ -424,10 +487,12 @@ def run_audit(companies=None):
                     "action": "Remove duplicate idempotency records; verify Journal Entries.",
                 })
     except Exception as e:
+        audit_incomplete = True
         report["issues"].append({
             "type": "gl_idempotency_audit_error",
-            "severity": "P2",
+            "severity": "P1",
             "error": str(e),
+            "action": "GL audit failed; results are incomplete.",
         })
 
     # 9. Settlement reconciliation (all derived fields)
@@ -440,29 +505,30 @@ def run_audit(companies=None):
             ps = compute_payout_status(sett.name, for_update=False)
             precision = _cp(sett.commission_currency) if sett.commission_currency else 2
             diffs = []
-            if abs(flt(sett.total_paid or 0, precision) - flt(ps.get("actual_paid_amount", 0), precision)) > 0.005:
+            if abs(flt(sett.total_paid or 0, precision) - flt(ps.get("actual_paid_amount", 0), precision)) > 0:
                 diffs.append("total_paid: stored={0} derived={1}".format(
                     sett.total_paid, ps.get("actual_paid_amount")
                 ))
-            if abs(flt(sett.outstanding or 0, precision) - flt(ps.get("outstanding_payout_amount", 0), precision)) > 0.005:
+            if abs(flt(sett.outstanding or 0, precision) - flt(ps.get("outstanding_payout_amount", 0), precision)) > 0:
                 diffs.append("outstanding: stored={0} derived={1}".format(
                     sett.outstanding, ps.get("outstanding_payout_amount")
                 ))
-            if abs(flt(sett.actual_paid_amount or 0, precision) - flt(ps.get("actual_paid_amount", 0), precision)) > 0.005:
+            if abs(flt(sett.actual_paid_amount or 0, precision) - flt(ps.get("actual_paid_amount", 0), precision)) > 0:
                 diffs.append("actual_paid_amount: stored={0} derived={1}".format(
                     sett.actual_paid_amount, ps.get("actual_paid_amount")
                 ))
-            if abs(flt(sett.outstanding_payout_amount or 0, precision) - flt(ps.get("outstanding_payout_amount", 0), precision)) > 0.005:
+            if abs(flt(sett.outstanding_payout_amount or 0, precision) - flt(ps.get("outstanding_payout_amount", 0), precision)) > 0:
                 diffs.append("outstanding_payout_amount: stored={0} derived={1}".format(
                     sett.outstanding_payout_amount, ps.get("outstanding_payout_amount")
                 ))
-            if abs(flt(sett.recoverable_amount or 0, precision) - flt(ps.get("recoverable_amount", 0), precision)) > 0.005:
+            if abs(flt(sett.recoverable_amount or 0, precision) - flt(ps.get("recoverable_amount", 0), precision)) > 0:
                 diffs.append("recoverable_amount: stored={0} derived={1}".format(
                     sett.recoverable_amount, ps.get("recoverable_amount")
                 ))
-            if sett.payout_status and sett.payout_status != ps.get("payout_status"):
+            derived_status = ps.get("payout_status") or "Not Paid"
+            if (sett.payout_status or "Not Paid") != derived_status:
                 diffs.append("payout_status: stored={0} derived={1}".format(
-                    sett.payout_status, ps.get("payout_status")
+                    sett.payout_status, derived_status
                 ))
             if diffs:
                 report["issues"].append({
