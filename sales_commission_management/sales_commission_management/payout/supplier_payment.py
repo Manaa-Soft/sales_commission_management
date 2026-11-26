@@ -277,6 +277,8 @@ def resolve_supplier_payment_currencies(payment_entry, payment_reference):
     )
     if not source_currency:
         frappe.throw(_("Missing source (party account) currency."))
+    paid_from_account_currency = _get_attr(payment_entry, "paid_from_account_currency", None)
+    source_exchange_rate = _get_attr(payment_entry, "source_exchange_rate", None)
     source_amount = flt(_get_attr(payment_reference, "allocated_amount", 0))
     if source_amount <= 0:
         frappe.throw(_("Allocated amount must be positive."))
@@ -350,6 +352,8 @@ def resolve_supplier_payment_currencies(payment_entry, payment_reference):
         "company_amount": company_amount,
         "settlement_fx_rate": settlement_fx_rate,
         "target_exchange_rate": target_exchange_rate,
+        "paid_from_account_currency": paid_from_account_currency,
+        "source_exchange_rate": source_exchange_rate,
     }
 
 
@@ -1206,14 +1210,18 @@ def process_supplier_payment_entry(payment_entry):
                 "company_amount": alloc["company_amount"],
                 "fx_from_currency": resolved["commission_currency"],
                 "fx_to_currency": resolved["settlement_currency"],
-                "fx_rate": resolved["settlement_fx_rate"],
+                "fx_rate": (
+                    flt(resolved["settlement_amount"] / resolved["commission_amount"], 6)
+                    if resolved.get("commission_amount")
+                    else resolved["settlement_fx_rate"]
+                ),
                 "fx_date": _get_attr(settlement, "settlement_fx_date", None)
                 or _get_attr(pe, "posting_date", None)
                 or frappe.utils.nowdate(),
                 "fx_source": "Commission Settlement",
-                "payment_fx_from_currency": resolved["source_currency"],
+                "payment_fx_from_currency": resolved.get("paid_from_account_currency") or resolved["source_currency"],
                 "payment_fx_to_currency": resolved["company_currency"],
-                "payment_fx_rate": resolved["target_exchange_rate"],
+                "payment_fx_rate": resolved.get("source_exchange_rate") or resolved["target_exchange_rate"],
                 "payment_fx_date": _get_attr(pe, "posting_date", None)
                 or frappe.utils.nowdate(),
                 "payment_fx_source": "Payment Entry target_exchange_rate",

@@ -739,8 +739,9 @@ class CommissionSettlement(Document):
         self.settlement_currency = settlement_currency
         self.settlement_fx_rate = pi_fx_rate
         self.settlement_fx_date = pi_date
-        self.settlement_fx_from_currency = frappe.db.get_value("Company", self.company, "default_currency")
-        self.settlement_fx_to_currency = settlement_currency
+        # ERPNext convention: from=settlement, to=company, rate=company/settlement
+        self.settlement_fx_from_currency = settlement_currency
+        self.settlement_fx_to_currency = frappe.db.get_value("Company", self.company, "default_currency")
         self.settlement_fx_source = "ERPNext get_exchange_rate"
 
         item_row = {
