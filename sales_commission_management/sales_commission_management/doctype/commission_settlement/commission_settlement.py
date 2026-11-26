@@ -220,14 +220,19 @@ class CommissionSettlement(Document):
                 # amount from the linked Commission Entry (per-item, so entries
                 # with different historical rates are handled correctly).
                 rate = flt(getattr(entry, "commission_to_company_rate", 0))
-                if not rate or rate <= 0:
-                    comm_curr = getattr(entry, "commission_currency", None)
-                    comp_curr = getattr(entry, "company_currency", None)
-                    if comm_curr and comp_curr and comm_curr == comp_curr:
+                comm_curr = getattr(entry, "commission_currency", None)
+                comp_curr = getattr(entry, "company_currency", None)
+                if comm_curr and comp_curr and comm_curr == comp_curr:
+                    # Identical currencies: rate is legitimately 1.0.
+                    if not rate or rate <= 0:
                         rate = 1.0
+                if not rate or rate <= 0:
+                    frappe.throw(
+                        _("Missing or invalid commission-to-company rate for entry {0}.").format(entry_name)
+                    )
                 row.commission_to_company_rate = rate
                 row.base_currency_amount = flt(
-                    flt(row.amount_included) * (rate if rate else 1.0), 6
+                    flt(row.amount_included) * rate, 6
                 )
                 if not row.original_source_invoice:
                     row.original_source_invoice = getattr(entry, "sales_invoice", None)

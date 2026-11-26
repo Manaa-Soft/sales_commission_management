@@ -487,9 +487,26 @@ def _allocate_core(
                 "Previously paid amount cannot be negative for item {0}.".format(item_id)
             )
 
-        # Item balance is supplied in commission currency; convert to settlement
-        # (Purchase Invoice) currency.
-        settlement_balance = flt(settlement_amount * fx, prec)
+        # Item balance: prefer the per-item company-currency snapshot when
+        # available, converting to settlement currency via the company->
+        # settlement rate (fx).  Fall back to the legacy single-rate conversion
+        # only when company_amount is not supplied.
+        item_company_amount = it.get("company_amount") if isinstance(it, dict) else getattr(it, "company_amount", None)
+        if item_company_amount is None:
+            item_company_amount = it.get("base_currency_amount") if isinstance(it, dict) else getattr(it, "base_currency_amount", None)
+        c2c_rate = it.get("commission_to_company_rate") if isinstance(it, dict) else getattr(it, "commission_to_company_rate", None)
+        c2c_rate = flt(c2c_rate) if c2c_rate is not None else 0.0
+        if item_company_amount is not None and flt(item_company_amount) > 0:
+            company_amount = flt(item_company_amount)
+            settlement_balance = flt(company_amount / fx, prec)
+            if c2c_rate and c2c_rate > 0:
+                commission_balance = flt(company_amount / c2c_rate, prec)
+            else:
+                commission_balance = flt(settlement_amount, prec)
+        else:
+            # Legacy fallback: treat settlement_amount as commission amount.
+            commission_balance = flt(settlement_amount, prec)
+            settlement_balance = flt(flt(settlement_amount) / fx, prec)
         remaining = flt(settlement_balance - previously_paid, prec)
         if remaining < 0:
             raise ValueError(
@@ -499,8 +516,9 @@ def _allocate_core(
         prepared.append(
             {
                 "item": item_id,
-                "commission_balance": settlement_amount,
+                "commission_balance": commission_balance,
                 "settlement_balance": settlement_balance,
+                "company_balance": flt(item_company_amount or 0, prec),
                 "previously_paid": previously_paid,
                 "remaining": remaining,
             }
@@ -529,7 +547,16 @@ def _allocate_core(
 
     # Source / commission / company aggregate totals in their own minor units.
     source_minor_total = _to_minor(source_allocation, prec)
-    commission_total = flt(payment_allocation / fx, prec)
+    # Commission total derived from per-item commission balances, scaled by
+    # the payment ratio (not a single aggregate FX rate).
+    total_settlement_remaining = flt(sum(p["remaining"] for p in allocatable), prec)
+    total_commission_remaining = flt(sum(p.get("commission_balance", 0) for p in allocatable), prec)
+    if total_settlement_remaining > 0 and total_commission_remaining > 0:
+        commission_total = flt(
+            payment_allocation * (total_commission_remaining / total_settlement_remaining), prec
+        )
+    else:
+        commission_total = flt(payment_allocation, prec)
     commission_minor_total = _to_minor(commission_total, prec)
     company_total = flt(source_allocation * tr, prec)
     company_minor_total = _to_minor(company_total, prec)
@@ -546,11 +573,12 @@ def _allocate_core(
         raise ValueError("No positive settlement allocations produced.")
 
     eligible_weights = [allocatable[i]["remaining"] for i in eligible_indices]
+    commission_eligible_weights = [allocatable[i].get("commission_balance", 0) or allocatable[i]["remaining"] for i in eligible_indices]
     source_dist = _largest_remainder_distribution(
         source_minor_total, eligible_weights, prec
     )
     commission_dist = _largest_remainder_distribution(
-        commission_minor_total, eligible_weights, prec
+        commission_minor_total, commission_eligible_weights, prec
     )
     company_dist = _largest_remainder_distribution(
         company_minor_total, eligible_weights, prec
@@ -1144,11 +1172,15 @@ def process_supplier_payment_entry(payment_entry):
             if not si_name or not ce_name:
                 continue
             comm_balance = flt(_get_attr(si, "amount_included", 0))
+            company_balance = flt(_get_attr(si, "base_currency_amount", 0))
+            c2c_rate = flt(_get_attr(si, "commission_to_company_rate", 0))
             prev_paid = _previously_paid_for_item(si_name)
             items.append(
                 {
                     "item": si_name,
                     "settlement_amount": comm_balance,
+                    "company_amount": company_balance,
+                    "commission_to_company_rate": c2c_rate,
                     "previously_paid": prev_paid,
                 }
             )
@@ -1211,8 +1243,8 @@ def process_supplier_payment_entry(payment_entry):
                 "fx_from_currency": resolved["commission_currency"],
                 "fx_to_currency": resolved["settlement_currency"],
                 "fx_rate": (
-                    flt(resolved["settlement_amount"] / resolved["commission_amount"], 6)
-                    if resolved.get("commission_amount")
+                    flt(alloc["settlement_amount"] / alloc["commission_amount"], 6)
+                    if alloc.get("commission_amount")
                     else resolved["settlement_fx_rate"]
                 ),
                 "fx_date": _get_attr(settlement, "settlement_fx_date", None)

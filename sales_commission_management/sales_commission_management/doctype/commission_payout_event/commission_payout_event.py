@@ -398,6 +398,8 @@ class CommissionPayoutEvent(Document):
                 "fx_from_currency", "fx_to_currency", "fx_rate",
                 "fx_date", "fx_source", "remarks", "evidence_attachment",
                 "naming_series",
+                "payment_fx_from_currency", "payment_fx_to_currency",
+                "payment_fx_rate", "payment_fx_date", "payment_fx_source",
             ],
             as_dict=True,
         )
