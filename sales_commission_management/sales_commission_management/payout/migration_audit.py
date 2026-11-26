@@ -101,7 +101,7 @@ def run_audit(companies=None):
             "outstanding", "payout_status", "actual_paid_amount",
             "outstanding_payout_amount", "recoverable_amount",
             "commission_currency", "beneficiary_type", "sales_person",
-            "sales_partner", "employee", "supplier", "settlement",
+            "sales_partner", "employee", "supplier",
         ],
     )
     report["inspected"]["settlements"] = len(settlements)
