@@ -79,10 +79,12 @@ def get_commission_recovery_position(commission_entry, for_update=True):
             )
         )
 
-    precision = _cp(company_currency)
-
-    # --- Original commission (converted to company currency) ---
     comm_currency = orig["commission_currency"] or company_currency
+    # Recovery position is computed in commission currency to avoid mixing
+    # FX differences with commission overpayment.
+    precision = _cp(comm_currency)
+
+    # --- Original commission (in commission currency) ---
     rate = flt(orig["commission_to_company_rate"])
     if comm_currency == company_currency:
         rate = 1.0
@@ -92,9 +94,8 @@ def get_commission_recovery_position(commission_entry, for_update=True):
                 commission_entry
             )
         )
-    original_commission = flt(
-        flt(orig["earned_commission"]) * rate, precision
-    )
+    # Keep entitlement in commission currency (do not convert to company).
+    original_commission = flt(orig["earned_commission"], precision)
 
     # --- Return adjustments ---
     adjustments = frappe.get_all(
@@ -153,45 +154,36 @@ def get_commission_recovery_position(commission_entry, for_update=True):
     # --- Calculate net entitlement (signed sum in company currency) ---
     net_entitlement_raw = original_commission
     for adj in adjustments:
-        adj_rate = flt(adj["commission_to_company_rate"])
-        adj_comm_curr = adj["commission_currency"] or company_currency
-        if adj_comm_curr == company_currency:
-            adj_rate = 1.0
-        elif adj_rate <= 0:
+        adj_comm_curr = adj["commission_currency"] or comm_currency
+        if adj_comm_curr != comm_currency:
             frappe.throw(
-                _("Invalid commission-to-company rate for adjustment {0}.").format(
-                    adj["name"]
+                _("Adjustment {0} currency {1} does not match entry currency {2}.").format(
+                    adj["name"], adj_comm_curr, comm_currency
                 )
             )
-        adj_amount = flt(flt(adj["earned_commission"]) * adj_rate, precision)
+        adj_amount = flt(adj["earned_commission"], precision)
         net_entitlement_raw += adj_amount
 
     for cr in cancel_of_returns:
-        cr_rate = flt(cr["commission_to_company_rate"])
-        cr_comm_curr = cr["commission_currency"] or company_currency
-        if cr_comm_curr == company_currency:
-            cr_rate = 1.0
-        elif cr_rate <= 0:
+        cr_comm_curr = cr["commission_currency"] or comm_currency
+        if cr_comm_curr != comm_currency:
             frappe.throw(
-                _("Invalid commission-to-company rate for cancellation {0}.").format(
-                    cr["name"]
+                _("Cancellation {0} currency {1} does not match entry currency {2}.").format(
+                    cr["name"], cr_comm_curr, comm_currency
                 )
             )
-        cr_amount = flt(flt(cr["earned_commission"]) * cr_rate, precision)
+        cr_amount = flt(cr["earned_commission"], precision)
         net_entitlement_raw += cr_amount
 
     for co in cancel_of_original:
-        co_rate = flt(co["commission_to_company_rate"])
-        co_comm_curr = co["commission_currency"] or company_currency
-        if co_comm_curr == company_currency:
-            co_rate = 1.0
-        elif co_rate <= 0:
+        co_comm_curr = co["commission_currency"] or comm_currency
+        if co_comm_curr != comm_currency:
             frappe.throw(
-                _("Invalid commission-to-company rate for cancellation {0}.").format(
-                    co["name"]
+                _("Cancellation {0} currency {1} does not match entry currency {2}.").format(
+                    co["name"], co_comm_curr, comm_currency
                 )
             )
-        co_amount = flt(flt(co["earned_commission"]) * co_rate, precision)
+        co_amount = flt(co["earned_commission"], precision)
         net_entitlement_raw += co_amount
 
     net_entitlement = flt(max(0.0, net_entitlement_raw), precision)
@@ -207,6 +199,8 @@ def get_commission_recovery_position(commission_entry, for_update=True):
         fields=[
             "name",
             "posting_date",
+            "commission_amount",
+            "commission_currency",
             "company_amount",
             "company_currency",
         ],
@@ -235,10 +229,10 @@ def get_commission_recovery_position(commission_entry, for_update=True):
     net_paid = 0.0
     payout_allocations = []
     for pe in payout_events:
-        pe_amount = flt(pe["company_amount"], precision)
+        pe_amount = flt(pe["commission_amount"], precision)
         pe_reversals = reversal_map.get(pe["name"], [])
         reversal_total = flt(
-            sum(flt(pr["company_amount"], precision) for pr in pe_reversals),
+            sum(flt(pr["commission_amount"], precision) for pr in pe_reversals),
             precision,
         )
         net_pe = flt(pe_amount - reversal_total, precision)
@@ -283,8 +277,8 @@ def get_commission_recovery_position(commission_entry, for_update=True):
         reversal_payout_map[rr["name"]] = payout
 
     gross_net_recovered = flt(
-        sum(flt(r["company_amount"], precision) for r in recovery_events)
-        - sum(flt(rr["company_amount"], precision) for rr in recovery_reversals),
+        sum(flt(r["commission_amount"], precision) for r in recovery_events)
+        - sum(flt(rr["commission_amount"], precision) for rr in recovery_reversals),
         precision,
     )
 
@@ -317,7 +311,7 @@ def get_commission_recovery_position(commission_entry, for_update=True):
         if not po:
             continue
         recovered_by_payout[po] = flt(
-            recovered_by_payout.get(po, 0.0) + flt(re["company_amount"], precision),
+            recovered_by_payout.get(po, 0.0) + flt(re["commission_amount"], precision),
             precision,
         )
     for rr in recovery_reversals:
@@ -325,7 +319,7 @@ def get_commission_recovery_position(commission_entry, for_update=True):
         if not po:
             continue
         recovered_by_payout[po] = flt(
-            recovered_by_payout.get(po, 0.0) - flt(rr["company_amount"], precision),
+            recovered_by_payout.get(po, 0.0) - flt(rr["commission_amount"], precision),
             precision,
         )
 
@@ -384,7 +378,7 @@ def get_commission_recovery_position(commission_entry, for_update=True):
     # --- Return position ---
     return {
         "commission_entry": commission_entry,
-        "currency": company_currency,
+        "currency": comm_currency,
         "original_commission": original_commission,
         "net_entitlement": net_entitlement,
         "net_paid": net_paid,
