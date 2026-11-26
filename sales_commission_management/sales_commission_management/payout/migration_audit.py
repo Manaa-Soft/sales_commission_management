@@ -88,7 +88,6 @@ def run_audit(companies=None):
     if companies:
         sett_filters["company"] = ["in", companies]
     elif companies == []:
-        # No authorized companies: return empty report.
         report["summary"] = {"records_inspected": {"settlements": 0, "payout_events": 0, "gl_idempotency": 0},
                             "issues_found": 0, "p1_issues": 0, "p2_issues": 0, "manual_review_count": 0}
         return report
@@ -106,14 +105,14 @@ def run_audit(companies=None):
         ],
     )
     report["inspected"]["settlements"] = len(settlements)
+    authorized_settlement_names = {s.name for s in settlements}
 
-    # 2. Payout events (filtered by authorized companies via settlement link or company field)
-    event_filters = {"docstatus": 1}
-    if companies:
-        event_filters["company"] = ["in", companies]
-    events = frappe.get_all(
+    # 2. Payout events: include events whose own company is authorized OR whose
+    # settlement is an authorized settlement (so incorrectly populated company
+    # values on events are still detected).
+    all_events = frappe.get_all(
         "Commission Payout Event",
-        filters=event_filters,
+        filters={"docstatus": 1},
         fields=[
             "name", "event_type", "settlement", "commission_entry",
             "company", "source_doctype", "source_name", "source_row",
@@ -125,6 +124,12 @@ def run_audit(companies=None):
             "evidence_level", "posting_date", "beneficiary",
         ],
     )
+    events = []
+    for e in all_events:
+        if companies is None:
+            events.append(e)
+        elif e.company in companies or e.settlement in authorized_settlement_names:
+            events.append(e)
     report["inspected"]["payout_events"] = len(events)
 
     event_names = {e.name for e in events}
@@ -237,8 +242,15 @@ def run_audit(companies=None):
                                         "event": e.name,
                                         "action": "Source Payment Entry company must match payout event company.",
                                     })
-                            except Exception:
-                                pass
+                            except Exception as ex:
+                                audit_incomplete = True
+                                report["issues"].append({
+                                    "type": "source_pe_check_error",
+                                    "severity": "P2",
+                                    "event": e.name,
+                                    "error": str(ex),
+                                    "action": "Payment Entry company lookup failed.",
+                                })
                 except Exception as ex:
                     report["issues"].append({
                         "type": "source_row_check_error",
@@ -539,11 +551,13 @@ def run_audit(companies=None):
                     "action": "Refresh payout status fields via refresh_settlement_payout_status().",
                 })
         except Exception as e:
+            audit_incomplete = True
             report["issues"].append({
                 "type": "settlement_audit_error",
-                "severity": "P2",
+                "severity": "P1",
                 "settlement": sett.name,
                 "error": str(e),
+                "action": "Settlement audit calculation failed; results are incomplete.",
             })
 
     # 10. Inconsistent currencies / settlement currency missing
@@ -580,7 +594,6 @@ def run_audit(companies=None):
                 impact[key]["settlements_affected"] += 1
                 impact[key]["settlements"].append(issue["settlement"])
     # Compute actual monetary diffs per company/currency (fail-closed: record errors)
-    audit_incomplete = False
     for sett in settlements:
         try:
             from sales_commission_management.sales_commission_management.payout.status import (
@@ -655,6 +668,8 @@ def run_audit(companies=None):
         "Verify source document references for all payout events.",
         "Obtain Finance sign-off on reconciliation discrepancies before applying corrections.",
     ]
+
+    report["audit_incomplete"] = audit_incomplete
 
     # Summary counts
     report["summary"] = {
