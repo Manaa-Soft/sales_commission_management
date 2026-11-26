@@ -36,6 +36,24 @@ def _check_api_authorization():
         )
 
 
+def _authorized_companies():
+    """Return the list of companies the current user may audit.
+
+    System Managers may audit all companies. Accounts Managers are restricted
+    to companies for which they have an explicit User Permission.
+    """
+    roles = set(frappe.get_roles(frappe.session.user))
+    if "System Manager" in roles:
+        return None  # None means "all companies"
+    # Accounts Manager: restrict to permitted companies.
+    companies = frappe.get_all(
+        "User Permission",
+        filters={"user": frappe.session.user, "allow": "Company"},
+        pluck="for_value",
+    )
+    return companies or []
+
+
 def _is_finite_positive(val):
     import math
     try:
@@ -45,8 +63,13 @@ def _is_finite_positive(val):
     return math.isfinite(v) and v > 0
 
 
-def run_audit():
-    """Run the read-only migration audit and return a structured report dict."""
+def run_audit(companies=None):
+    """Run the read-only migration audit and return a structured report dict.
+
+    Args:
+        companies: optional list of company names to restrict the audit to.
+            When None, all companies are audited (trusted bench execution).
+    """
     report = {
         "inspected": {},
         "issues": [],
@@ -55,10 +78,24 @@ def run_audit():
         "manual_review": [],
     }
 
+    # Resolve company filter.
+    if companies is None:
+        companies = _authorized_companies() if frappe.session.user != "Guest" else None
+    # None => all companies; [] => no access.
+
+    sett_filters = {"docstatus": 1}
+    if companies:
+        sett_filters["company"] = ["in", companies]
+    elif companies == []:
+        # No authorized companies: return empty report.
+        report["summary"] = {"records_inspected": {"settlements": 0, "payout_events": 0, "gl_idempotency": 0},
+                            "issues_found": 0, "p1_issues": 0, "p2_issues": 0, "manual_review_count": 0}
+        return report
+
     # 1. Submitted settlements
     settlements = frappe.get_all(
         "Commission Settlement",
-        filters={"docstatus": 1},
+        filters=sett_filters,
         fields=[
             "name", "company", "status", "total_payable", "total_paid",
             "outstanding", "payout_status", "actual_paid_amount",
@@ -69,10 +106,13 @@ def run_audit():
     )
     report["inspected"]["settlements"] = len(settlements)
 
-    # 2. Payout events
+    # 2. Payout events (filtered by authorized companies via settlement link or company field)
+    event_filters = {"docstatus": 1}
+    if companies:
+        event_filters["company"] = ["in", companies]
     events = frappe.get_all(
         "Commission Payout Event",
-        filters={"docstatus": 1},
+        filters=event_filters,
         fields=[
             "name", "event_type", "settlement", "commission_entry",
             "company", "source_doctype", "source_name", "source_row",
@@ -114,14 +154,66 @@ def run_audit():
                 "action": "Populate source DocType and source name; verify against linked document.",
             })
             continue
-        # Source-row ownership check
-        if e.source_doctype == "Payment Entry" and not e.source_row:
-            report["issues"].append({
-                "type": "missing_source_row",
-                "severity": "P2",
-                "event": e.name,
-                "action": "Populate the exact Payment Entry Reference row.",
-            })
+        # Source-row ownership check for Payment Entry events
+        if e.source_doctype == "Payment Entry":
+            if not e.source_row:
+                report["issues"].append({
+                    "type": "missing_source_row",
+                    "severity": "P2",
+                    "event": e.name,
+                    "action": "Populate the exact Payment Entry Reference row.",
+                })
+            else:
+                # Verify the child row exists and belongs to the source PE.
+                try:
+                    row_parent = frappe.db.get_value(
+                        "Payment Entry Reference", e.source_row, "parent"
+                    )
+                    row_ref_dt = frappe.db.get_value(
+                        "Payment Entry Reference", e.source_row, "reference_doctype"
+                    )
+                    row_ref_name = frappe.db.get_value(
+                        "Payment Entry Reference", e.source_row, "reference_name"
+                    )
+                    row_allocated = frappe.db.get_value(
+                        "Payment Entry Reference", e.source_row, "allocated_amount"
+                    )
+                    if row_parent is None:
+                        report["issues"].append({
+                            "type": "missing_source_row_record",
+                            "severity": "P1",
+                            "event": e.name,
+                            "source_row": e.source_row,
+                            "action": "Payment Entry Reference row does not exist.",
+                        })
+                    elif row_parent != e.source_name:
+                        report["issues"].append({
+                            "type": "source_row_ownership_mismatch",
+                            "severity": "P1",
+                            "event": e.name,
+                            "source_row": e.source_row,
+                            "parent": row_parent,
+                            "expected_parent": e.source_name,
+                            "action": "Source row must belong to the referenced Payment Entry.",
+                        })
+                    if row_ref_dt and e.settlement:
+                        sett_doc = frappe.db.get_value(
+                            "Commission Settlement", e.settlement, "settlement_document"
+                        )
+                        if sett_doc and row_ref_name != sett_doc:
+                            report["issues"].append({
+                                "type": "source_row_reference_mismatch",
+                                "severity": "P1",
+                                "event": e.name,
+                                "action": "Source row must reference the settlement's Purchase Invoice.",
+                            })
+                except Exception as ex:
+                    report["issues"].append({
+                        "type": "source_row_check_error",
+                        "severity": "P2",
+                        "event": e.name,
+                        "error": str(ex),
+                    })
         try:
             if not frappe.db.exists(e.source_doctype, e.source_name):
                 report["issues"].append({
@@ -400,22 +492,29 @@ def run_audit():
 
     # 11. Financial impact by company and currency (actual monetary differences)
     impact = {}
+    # Initialize impact buckets for all companies/currencies present
+    for sett in settlements:
+        key = "{0}:{1}".format(sett.company, sett.commission_currency)
+        impact.setdefault(key, {
+            "company": sett.company,
+            "currency": sett.commission_currency,
+            "settlements_affected": 0,
+            "total_payable_diff": 0.0,
+            "actual_paid_diff": 0.0,
+            "outstanding_diff": 0.0,
+            "recovery_diff": 0.0,
+            "settlements": [],
+            "calculation_errors": [],
+        })
     for issue in report["issues"]:
         if issue.get("type") == "settlement_balance_mismatch":
             sett = frappe.get_doc("Commission Settlement", issue["settlement"])
             key = "{0}:{1}".format(sett.company, sett.commission_currency)
-            impact.setdefault(key, {
-                "company": sett.company,
-                "currency": sett.commission_currency,
-                "settlements_affected": 0,
-                "total_payable_diff": 0.0,
-                "actual_paid_diff": 0.0,
-                "recovery_diff": 0.0,
-                "settlements": [],
-            })
-            impact[key]["settlements_affected"] += 1
-            impact[key]["settlements"].append(issue["settlement"])
-    # Compute actual monetary diffs per company/currency
+            if key in impact:
+                impact[key]["settlements_affected"] += 1
+                impact[key]["settlements"].append(issue["settlement"])
+    # Compute actual monetary diffs per company/currency (fail-closed: record errors)
+    audit_incomplete = False
     for sett in settlements:
         try:
             from sales_commission_management.sales_commission_management.payout.status import (
@@ -427,24 +526,48 @@ def run_audit():
             key = "{0}:{1}".format(sett.company, sett.commission_currency)
             if key not in impact:
                 continue
-            # Add diffs
+            # Signed variances (stored - derived)
             impact[key]["total_payable_diff"] = flt(
                 impact[key]["total_payable_diff"]
-                + abs(flt(sett.total_payable or 0, precision) - flt(ps.get("total_payable", 0), precision)),
+                + (flt(sett.total_payable or 0, precision) - flt(ps.get("total_payable", 0), precision)),
                 precision,
             )
             impact[key]["actual_paid_diff"] = flt(
                 impact[key]["actual_paid_diff"]
-                + abs(flt(sett.actual_paid_amount or 0, precision) - flt(ps.get("actual_paid_amount", 0), precision)),
+                + (flt(sett.actual_paid_amount or 0, precision) - flt(ps.get("actual_paid_amount", 0), precision)),
+                precision,
+            )
+            impact[key]["outstanding_diff"] = flt(
+                impact[key]["outstanding_diff"]
+                + (flt(sett.outstanding or 0, precision) - flt(ps.get("outstanding_payout_amount", 0), precision)),
                 precision,
             )
             impact[key]["recovery_diff"] = flt(
                 impact[key]["recovery_diff"]
-                + abs(flt(sett.recoverable_amount or 0, precision) - flt(ps.get("recoverable_amount", 0), precision)),
+                + (flt(sett.recoverable_amount or 0, precision) - flt(ps.get("recoverable_amount", 0), precision)),
                 precision,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            audit_incomplete = True
+            key = "{0}:{1}".format(sett.company, sett.commission_currency)
+            if key in impact:
+                impact[key]["calculation_errors"].append(
+                    {"settlement": sett.name, "error": str(e)}
+                )
+            report["issues"].append({
+                "type": "financial_impact_calculation_error",
+                "severity": "P1",
+                "settlement": sett.name,
+                "error": str(e),
+                "action": "Fix calculation error before relying on financial impact.",
+            })
+    if audit_incomplete:
+        report["audit_incomplete"] = True
+        report["issues"].append({
+            "type": "audit_incomplete",
+            "severity": "P1",
+            "action": "One or more financial calculations failed; audit results are incomplete.",
+        })
     report["financial_impact"] = impact
 
     # 12. Records requiring manual Finance review

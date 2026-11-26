@@ -66,7 +66,7 @@ def get_data(filters):
 
     data = []
     for r in rows:
-        ps = compute_payout_status(r.name)
+        ps = compute_payout_status(r.name, for_update=False)
         beneficiary = (
             r.sales_person or r.sales_partner or r.employee or r.supplier or r.beneficiary_type
         )
