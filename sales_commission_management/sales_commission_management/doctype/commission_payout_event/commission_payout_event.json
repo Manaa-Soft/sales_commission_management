@@ -120,6 +120,32 @@
       "read_only": 1
     },
     {
+      "fieldname": "payout_batch",
+      "fieldtype": "Link",
+      "label": "Payout Batch",
+      "options": "Commission Payout Batch",
+      "read_only": 1
+    },
+    {
+      "fieldname": "payout_batch_item",
+      "fieldtype": "Data",
+      "label": "Payout Batch Item",
+      "read_only": 1
+    },
+    {
+      "fieldname": "payout_batch",
+      "fieldtype": "Link",
+      "label": "Payout Batch",
+      "options": "Commission Payout Batch",
+      "read_only": 1
+    },
+    {
+      "fieldname": "payout_batch_item",
+      "fieldtype": "Data",
+      "label": "Payout Batch Item",
+      "read_only": 1
+    },
+    {
       "fieldname": "commission_entry",
       "fieldtype": "Link",
       "label": "Commission Entry",

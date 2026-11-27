@@ -322,6 +322,21 @@ class CommissionPayoutEvent(Document):
                 # Company check.
                 if pe.company != sett.company:
                     frappe.throw(_("Payment Entry company must match settlement company."))
+                # Account validation (fail closed).
+                from sales_commission_management.sales_commission_management.payout.manual_payment import _resolve_payable_account
+                payable = _resolve_payable_account(pe.company)
+                if not getattr(pe, "paid_to", None):
+                    frappe.throw(_("Payment Entry paid_to account is required."))
+                if pe.paid_to != payable:
+                    frappe.throw(_("Payment Entry paid_to must be the Commission Payable account."))
+                if not getattr(pe, "paid_from", None):
+                    frappe.throw(_("Payment Entry paid_from account is required."))
+                try:
+                    _acct_type = frappe.get_cached_value("Account", pe.paid_from, "account_type")
+                except Exception:
+                    _acct_type = None
+                if _acct_type not in ("Cash", "Bank"):
+                    frappe.throw(_("Payment Entry paid_from must be a Cash or Bank account."))
                 # Beneficiary mapping: party, when present, must resolve.
                 valid_parties = set()
                 ben = getattr(sett, "beneficiary", None)
@@ -375,7 +390,7 @@ class CommissionPayoutEvent(Document):
                 if not party:
                     frappe.throw(_("Payment Entry must identify the beneficiary."))
                 _exp = _expected_party_type(party)
-                if _exp is not None and party_type != _exp:
+                if _exp is None or party_type != _exp:
                     frappe.throw(_("Payment Entry party type does not match the referenced party."))
             else:
                 # Automatic Supplier Purchase Invoice route: retain existing validation.
@@ -538,7 +553,7 @@ class CommissionPayoutEvent(Document):
                     if not party_type:
                         frappe.throw(_("Party type is required when a party is referenced."))
                     _exp = _expected_party_type(party)
-                    if _exp is not None and party_type != _exp:
+                    if _exp is None or party_type != _exp:
                         frappe.throw(_("Journal Entry party type does not match the referenced party."))
                 else:
                     try:
@@ -601,6 +616,7 @@ class CommissionPayoutEvent(Document):
                 "naming_series",
                 "payment_fx_from_currency", "payment_fx_to_currency",
                 "payment_fx_rate", "payment_fx_date", "payment_fx_source",
+                "payout_batch", "payout_batch_item",
             ],
             as_dict=True,
         )

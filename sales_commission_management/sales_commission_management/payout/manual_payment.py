@@ -56,6 +56,12 @@ except Exception:  # pragma: no cover
 
 
 def _expected_party_type(party):
+    """Resolve the actual ERPNext party type for a beneficiary name.
+
+    Fail closed: only return a concrete type when the name resolves to a real
+    Employee/Supplier/Customer record. Returns None for unresolved names (e.g.
+    Sales Person display names) so callers can reject.
+    """
     if not party:
         return None
     for doctype in ("Employee", "Supplier", "Customer"):
@@ -65,6 +71,69 @@ def _expected_party_type(party):
         except Exception:
             continue
     return None
+
+
+def resolve_commission_accounting_beneficiary(sett):
+    """Resolve the canonical ERPNext accounting party for a settlement.
+
+    Returns a dict ``{"party_type": ..., "party": ...}`` and throws when the
+    settlement's beneficiary cannot be mapped to a valid accounting party.
+    Sales Person beneficiaries must link to an Employee; Sales Partner
+    beneficiaries must have an explicitly configured Supplier/accounting party.
+    """
+    ben_type = _get_attr(sett, "beneficiary_type", None)
+    employee = _get_attr(sett, "employee", None)
+    sales_person = _get_attr(sett, "sales_person", None)
+    sales_partner = _get_attr(sett, "sales_partner", None)
+    supplier = _get_attr(sett, "supplier", None)
+    beneficiary = _get_attr(sett, "beneficiary", None)
+
+    if ben_type == "Sales Person" or sales_person:
+        emp = employee
+        if not emp and sales_person:
+            try:
+                emp = frappe.get_cached_value("Sales Person", sales_person, "employee")
+            except Exception:
+                emp = None
+        if emp and frappe.db.exists("Employee", emp):
+            return {"party_type": "Employee", "party": emp}
+        frappe.throw(
+            _("Sales Person beneficiary has no linked Employee accounting party.")
+        )
+
+    if ben_type == "Sales Partner" or sales_partner:
+        # Explicitly configured accounting party (Supplier or other valid party).
+        for cand in (supplier, beneficiary):
+            if cand and frappe.db.exists("Supplier", cand):
+                return {"party_type": "Supplier", "party": cand}
+        # Allow a configured Employee as an explicit accounting party.
+        for cand in (employee, beneficiary):
+            if cand and frappe.db.exists("Employee", cand):
+                return {"party_type": "Employee", "party": cand}
+        frappe.throw(
+            _("Sales Partner beneficiary has no configured accounting party.")
+        )
+
+    # Employee / Supplier beneficiaries.
+    if employee:
+        if frappe.db.exists("Employee", employee):
+            return {"party_type": "Employee", "party": employee}
+        frappe.throw(_("Commission settlement employee is not a valid Employee."))
+    if supplier:
+        if frappe.db.exists("Supplier", supplier):
+            return {"party_type": "Supplier", "party": supplier}
+        frappe.throw(_("Commission settlement supplier is not a valid Supplier."))
+    if beneficiary and beneficiary != "(group)":
+        for dt in ("Employee", "Supplier", "Customer"):
+            try:
+                if frappe.db.exists(dt, beneficiary):
+                    return {"party_type": dt, "party": beneficiary}
+            except Exception:
+                continue
+
+    frappe.throw(
+        _("Commission settlement beneficiary could not be resolved to an accounting party.")
+    )
 
 
 def _company_currency(company):
@@ -334,7 +403,15 @@ def _validate_journal_entry_evidence(ev, sett, amount, commission_currency, comp
         frappe.throw(_("Cash or bank credit does not match payment amount."))
 
     # Beneficiary / party reference: must be present on the payable row.
-    valid_parties = _resolve_valid_parties(sett)
+    resolved = resolve_commission_accounting_beneficiary(sett)
+    expected_party = resolved["party"]
+    expected_party_type = resolved["party_type"]
+    valid_parties = {expected_party}
+    # Keep legacy valid parties for compatibility, but require canonical match.
+    try:
+        valid_parties |= _resolve_valid_parties(sett)
+    except Exception:
+        pass
     payable_party_found = False
     for row in accounts or []:
         acct = getattr(row, "account", None) if not isinstance(row, dict) else row.get("account")
@@ -344,12 +421,11 @@ def _validate_journal_entry_evidence(ev, sett, amount, commission_currency, comp
         party_type = getattr(row, "party_type", None) if not isinstance(row, dict) else row.get("party_type")
         if not party:
             frappe.throw(_("Commission payable account row must identify the beneficiary."))
-        if party not in valid_parties:
+        if party != expected_party and party not in valid_parties:
             frappe.throw(_("Journal Entry party does not match settlement beneficiary."))
         if not party_type:
             frappe.throw(_("Party type is required when a party is referenced."))
-        _exp = _expected_party_type(party)
-        if _exp is not None and party_type != _exp:
+        if party_type != expected_party_type:
             frappe.throw(_("Journal Entry party type does not match the referenced party."))
         payable_party_found = True
     if not payable_party_found:
@@ -385,34 +461,43 @@ def _validate_payment_entry_evidence(ev, sett, amount, commission_currency, comp
     if ev_company and company and ev_company != company:
         frappe.throw(_("Payment Entry company does not match settlement company."))
 
-    # Beneficiary mapping: party must be present and resolve to the
-    # settlement's Employee/Supplier mapping.
-    valid_parties = _resolve_valid_parties(sett)
+    # Canonical beneficiary resolution from the settlement.
+    resolved = resolve_commission_accounting_beneficiary(sett)
+    expected_party = resolved["party"]
+    expected_party_type = resolved["party_type"]
+
     party = getattr(ev, "party", None)
     party_type = getattr(ev, "party_type", None)
     if not party:
         frappe.throw(_("Payment Entry must identify the beneficiary."))
-    if party not in valid_parties:
+    if party != expected_party:
         frappe.throw(_("Payment Entry party does not match settlement beneficiary."))
     if not party_type:
         frappe.throw(_("Party type is required when a party is referenced."))
-    _exp = _expected_party_type(party)
-    if _exp is not None and party_type != _exp:
+    if party_type != expected_party_type:
         frappe.throw(_("Payment Entry party type does not match the referenced party."))
 
-    # Account validation for Payment Entry evidence.
+    # Account validation for Payment Entry evidence (fail closed).
     payable = _resolve_payable_account(company)
     paid_to = getattr(ev, "paid_to", None)
-    if paid_to and payable and paid_to != payable:
-        frappe.throw(_("Payment Entry paid_to account must be the commission payable account."))
+    if not paid_to:
+        frappe.throw(_("Payment Entry paid_to account is required."))
+    if paid_to != payable:
+        frappe.throw(_("Payment Entry paid_to must be the Commission Payable account."))
     paid_from = getattr(ev, "paid_from", None)
-    if paid_from:
-        try:
-            acct_type = frappe.get_cached_value("Account", paid_from, "account_type")
-        except Exception:
-            acct_type = None
-        if acct_type not in ("Cash", "Bank"):
-            frappe.throw(_("Payment Entry paid_from account must be a cash or bank account."))
+    if not paid_from:
+        frappe.throw(_("Payment Entry paid_from account is required."))
+    try:
+        acct_type = frappe.get_cached_value("Account", paid_from, "account_type")
+    except Exception:
+        acct_type = None
+    if acct_type not in ("Cash", "Bank"):
+        frappe.throw(_("Payment Entry paid_from must be a Cash or Bank account."))
+
+    # Beneficiary-side account currency must match commission currency.
+    paid_to_currency = getattr(ev, "paid_to_account_currency", None)
+    if paid_to_currency and commission_currency and paid_to_currency != commission_currency:
+        frappe.throw(_("Payment Entry paid_to account currency must match commission currency."))
 
 
 def record_manual_payout(settlement=None, **kwargs):
@@ -523,18 +608,34 @@ def record_manual_payout(settlement=None, **kwargs):
     target_exchange_rate = flt(target_exchange_rate)
 
     # For Payment Entry evidence, the beneficiary-side (commission -> company)
-    # conversion must use the submitted Payment Entry's actual target_exchange_rate,
-    # not an independently resolved rate.
+    # conversion must use the submitted Payment Entry's actual target_exchange_rate.
+    # Fail closed: do not retain an independently resolved rate.
     if source_doctype == "Payment Entry":
         try:
             pe_doc = frappe.get_doc("Payment Entry", source_name)
-            pe_rate = getattr(pe_doc, "target_exchange_rate", None)
-            if pe_rate and _is_finite(pe_rate) and float(pe_rate) > 0:
-                target_exchange_rate = flt(pe_rate)
         except Exception:
-            pass
-        if not target_exchange_rate or not _is_finite(target_exchange_rate) or float(target_exchange_rate) <= 0:
-            frappe.throw(_("Invalid or missing target exchange rate on Payment Entry."))
+            frappe.throw(_("Payment Entry {0} does not exist.").format(source_name))
+        pe_rate = getattr(pe_doc, "target_exchange_rate", None)
+        if not pe_rate or not _is_finite(pe_rate) or float(pe_rate) <= 0:
+            # Same-currency transactions use a rate of 1.0.
+            if company_currency == commission_currency:
+                pe_rate = 1.0
+            else:
+                frappe.throw(_("Invalid or missing Payment Entry target exchange rate."))
+        target_exchange_rate = flt(pe_rate)
+        # Verify beneficiary-side reconciliation: base_received = received * rate.
+        pe_received = flt(getattr(pe_doc, "received_amount", 0) or 0)
+        pe_base_received = flt(getattr(pe_doc, "base_received_amount", 0) or 0)
+        if pe_received > 0 and pe_base_received > 0:
+            expected_base = flt(pe_received * float(pe_rate), _cp(company_currency))
+            prec = _cp(company_currency)
+            tolerance = (10 ** (-prec)) if prec and prec > 0 else 0.005
+            if abs(expected_base - pe_base_received) > tolerance:
+                frappe.throw(_("Payment Entry beneficiary-side amount does not reconcile."))
+        elif pe_base_received <= 0 and company_currency != commission_currency:
+            frappe.throw(_("Payment Entry base received amount is required for foreign currency."))
+        if company_currency == commission_currency:
+            target_exchange_rate = 1.0
 
     # Amounts: input amount is commission currency.
     commission_amount_total = flt(amount, _cp(commission_currency))
@@ -726,7 +827,22 @@ def record_manual_payout(settlement=None, **kwargs):
         pe_doc = frappe.get_doc("Payment Entry", source_name)
         pe_total = flt(getattr(pe_doc, "base_received_amount", 0) or 0)
         if pe_total <= 0:
-            pe_total = flt(getattr(pe_doc, "received_amount", 0) or 0)
+            frappe.throw(
+                _("Payment Entry base received amount is required for voucher reconciliation.")
+            )
+        # Verify base_received = received * target_exchange_rate.
+        pe_received = flt(getattr(pe_doc, "received_amount", 0) or 0)
+        pe_rate = flt(getattr(pe_doc, "target_exchange_rate", 0) or 0)
+        if pe_rate <= 0:
+            pe_rate = 1.0 if company_currency == commission_currency else pe_rate
+        if pe_received > 0 and pe_rate > 0:
+            expected_base = flt(pe_received * pe_rate, _cp(company_currency))
+            prec = _cp(company_currency)
+            tolerance = (10 ** (-prec)) if prec and prec > 0 else 0.005
+            if abs(expected_base - pe_total) > tolerance:
+                frappe.throw(
+                    _("Payment Entry beneficiary-side amount does not reconcile.")
+                )
         prec = _cp(company_currency)
         tolerance = (10 ** (-prec)) if prec and prec > 0 else 0.005
         if abs(pe_total - total_alloc_company) > tolerance:
