@@ -7,6 +7,28 @@ from frappe.utils import flt
 from sales_commission_management.sales_commission_management.utils import currency_precision as _currency_precision
 
 
+def _expected_party_type(party):
+    """Resolve the actual ERPNext party type for a beneficiary name.
+
+    Returns the DocType name whose record ``party`` refers to, or None when
+    it cannot be determined.
+    """
+    if not party:
+        return None
+    for doctype, type_name in (
+        ("Employee", "Employee"),
+        ("Supplier", "Supplier"),
+        ("Customer", "Customer"),
+        ("Sales Person", None),
+    ):
+        try:
+            if frappe.db.exists(doctype, party):
+                return type_name if type_name else None
+        except Exception:
+            continue
+    return None
+
+
 class CommissionPayoutEvent(Document):
     """Immutable audit record of a commission payout or recovery event."""
 
@@ -332,21 +354,8 @@ class CommissionPayoutEvent(Document):
                 # source_row must match settlement_item (Manual Approved Route).
                 if self.source_row and self.settlement_item and self.source_row != self.settlement_item:
                     frappe.throw(_("Source row must match the settlement item."))
-                # Amount validation against source amount (beneficiary side).
-                ev_amount = getattr(pe, "received_amount", None)
-                if ev_amount is None:
-                    ev_amount = getattr(pe, "amount", None)
-                if ev_amount is None:
-                    frappe.throw(_("Payment Entry amount is missing."))
-                prec = _currency_precision(self.source_currency or self.commission_currency)
-                tolerance = (10 ** (-prec)) if prec and prec > 0 else 0.005
-                if self.source_amount is not None and abs(flt(ev_amount, prec) - flt(self.source_amount, prec)) > tolerance:
-                    frappe.throw(
-                        _("Source amount ({0}) does not match Payment Entry amount ({1}).").format(
-                            self.source_amount, ev_amount
-                        )
-                    )
                 # Require source amount positive.
+                prec = _currency_precision(self.source_currency or self.commission_currency)
                 if self.source_amount is not None and flt(self.source_amount, prec) <= 0:
                     frappe.throw(_("Source amount must be positive."))
                 # Currency alignment (beneficiary side).
@@ -359,6 +368,15 @@ class CommissionPayoutEvent(Document):
                             self.source_currency, ev_currency
                         )
                     )
+                # Beneficiary-side Party Type must match the referenced party's
+                # actual ERPNext party type (not merely be non-empty).
+                party = getattr(pe, "party", None)
+                party_type = getattr(pe, "party_type", None)
+                if not party:
+                    frappe.throw(_("Payment Entry must identify the beneficiary."))
+                _exp = _expected_party_type(party)
+                if _exp is not None and party_type != _exp:
+                    frappe.throw(_("Payment Entry party type does not match the referenced party."))
             else:
                 # Automatic Supplier Purchase Invoice route: retain existing validation.
                 if pe.party_type != "Supplier":
@@ -443,17 +461,37 @@ class CommissionPayoutEvent(Document):
                 frappe.throw(_("Journal Entry company must match event company."))
             if self.posting_date and getattr(je, "posting_date", None) and str(je.posting_date) != str(self.posting_date):
                 frappe.throw(_("Journal Entry date does not match posting date."))
+            # Manual Approved Route enforcement for Journal Entry evidence.
+            if self.settlement:
+                sett = frappe.get_doc("Commission Settlement", self.settlement)
+                if getattr(sett, "settlement_method", None) != "Manual Approved Route":
+                    frappe.throw(_("Journal Entry manual payout requires a Manual Approved Route settlement."))
+            if not self.source_row:
+                frappe.throw(_("Source row is required for Journal Entry events."))
+            if self.settlement:
+                item = frappe.db.get_value(
+                    "Commission Settlement Item", self.source_row,
+                    ["parent", "commission_ledger_entry"], as_dict=True,
+                )
+                if not item:
+                    frappe.throw(_("Source row is not a valid Commission Settlement Item."))
+                if item.parent != self.settlement:
+                    frappe.throw(_("Source row does not belong to the referenced settlement."))
+                if self.commission_entry and item.commission_ledger_entry != self.commission_entry:
+                    frappe.throw(_("Source row does not match the referenced commission entry."))
+            if self.source_row and self.settlement_item and self.source_row != self.settlement_item:
+                frappe.throw(_("Source row must match the settlement item."))
             total_debit = flt(je.total_debit)
             total_credit = flt(je.total_credit)
             if total_debit <= 0 or total_credit <= 0:
                 frappe.throw(_("Journal Entry must contain debit and credit lines."))
             if abs(total_debit - total_credit) > 0.005:
                 frappe.throw(_("Journal Entry debits and credits do not balance."))
-            expected_company = flt(self.company_amount)
-            prec = _currency_precision(self.company_currency or "USD")
-            tolerance = (10 ** (-prec)) if prec and prec > 0 else 0.005
-            if abs(total_debit - expected_company) > tolerance and abs(total_credit - expected_company) > tolerance:
-                frappe.throw(_("Journal Entry amount does not match payment amount."))
+            # Per-event voucher-total comparison is intentionally NOT performed
+            # here: a single Journal Entry may cover multiple settlement items.
+            # The complete voucher is reconciled once in the manual payout
+            # workflow against the full allocation set. Only structural checks
+            # remain at controller level.
             from sales_commission_management.sales_commission_management.payout.manual_payment import _resolve_payable_account
             payable = _resolve_payable_account(self.company)
             account_names = [getattr(r, "account", None) for r in (je.accounts or [])]
@@ -499,6 +537,9 @@ class CommissionPayoutEvent(Document):
                         frappe.throw(_("Journal Entry party does not match settlement beneficiary."))
                     if not party_type:
                         frappe.throw(_("Party type is required when a party is referenced."))
+                    _exp = _expected_party_type(party)
+                    if _exp is not None and party_type != _exp:
+                        frappe.throw(_("Journal Entry party type does not match the referenced party."))
                 else:
                     try:
                         acct_type = frappe.get_cached_value("Account", acct, "account_type")

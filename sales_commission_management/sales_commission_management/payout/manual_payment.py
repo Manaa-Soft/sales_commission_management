@@ -55,6 +55,18 @@ except Exception:  # pragma: no cover
     refresh_settlement_payout_status = None
 
 
+def _expected_party_type(party):
+    if not party:
+        return None
+    for doctype in ("Employee", "Supplier", "Customer"):
+        try:
+            if frappe.db.exists(doctype, party):
+                return doctype
+        except Exception:
+            continue
+    return None
+
+
 def _company_currency(company):
     if not company:
         return None
@@ -336,6 +348,9 @@ def _validate_journal_entry_evidence(ev, sett, amount, commission_currency, comp
             frappe.throw(_("Journal Entry party does not match settlement beneficiary."))
         if not party_type:
             frappe.throw(_("Party type is required when a party is referenced."))
+        _exp = _expected_party_type(party)
+        if _exp is not None and party_type != _exp:
+            frappe.throw(_("Journal Entry party type does not match the referenced party."))
         payable_party_found = True
     if not payable_party_found:
         frappe.throw(_("Commission payable account row must identify the beneficiary."))
@@ -381,20 +396,39 @@ def _validate_payment_entry_evidence(ev, sett, amount, commission_currency, comp
         frappe.throw(_("Payment Entry party does not match settlement beneficiary."))
     if not party_type:
         frappe.throw(_("Party type is required when a party is referenced."))
+    _exp = _expected_party_type(party)
+    if _exp is not None and party_type != _exp:
+        frappe.throw(_("Payment Entry party type does not match the referenced party."))
+
+    # Account validation for Payment Entry evidence.
+    payable = _resolve_payable_account(company)
+    paid_to = getattr(ev, "paid_to", None)
+    if paid_to and payable and paid_to != payable:
+        frappe.throw(_("Payment Entry paid_to account must be the commission payable account."))
+    paid_from = getattr(ev, "paid_from", None)
+    if paid_from:
+        try:
+            acct_type = frappe.get_cached_value("Account", paid_from, "account_type")
+        except Exception:
+            acct_type = None
+        if acct_type not in ("Cash", "Bank"):
+            frappe.throw(_("Payment Entry paid_from account must be a cash or bank account."))
 
 
 def record_manual_payout(settlement=None, **kwargs):
     # Type validation at the whitelisted entry point.
     if isinstance(settlement, (list, dict)):
         frappe.throw(_("Settlement must be a string name, not {0}.").format(type(settlement).__name__))
-    for scalar in ("amount", "paid_amount", "payment_amount", "total_amount"):
+    for scalar in ("amount", "paid_amount", "payment_amount", "total_amount", "amount_paid", "payout_amount"):
         v = kwargs.get(scalar)
         if v is not None and isinstance(v, (list, dict)):
             frappe.throw(_("{0} must be a scalar value.").format(scalar))
-    for scalar in ("source_name", "evidence_reference", "reference", "voucher"):
+        if v is not None and isinstance(v, bool):
+            frappe.throw(_("{0} must be a scalar value.").format(scalar))
+    for scalar in ("source_name", "evidence_reference", "reference", "voucher", "evidence", "voucher_no"):
         v = kwargs.get(scalar)
         if v is not None and not isinstance(v, str):
-            kwargs[scalar] = str(v)
+            frappe.throw(_("{0} must be a string value.").format(scalar))
     """Record a manual (evidence-based) payout against a settlement."""
     if frappe.session.user == "Guest":
         frappe.throw(_("Authentication required."), frappe.PermissionError)
@@ -487,6 +521,20 @@ def record_manual_payout(settlement=None, **kwargs):
         if not target_exchange_rate or not _is_finite(target_exchange_rate) or float(target_exchange_rate) <= 0:
             frappe.throw(_("Invalid or missing company exchange rate."))
     target_exchange_rate = flt(target_exchange_rate)
+
+    # For Payment Entry evidence, the beneficiary-side (commission -> company)
+    # conversion must use the submitted Payment Entry's actual target_exchange_rate,
+    # not an independently resolved rate.
+    if source_doctype == "Payment Entry":
+        try:
+            pe_doc = frappe.get_doc("Payment Entry", source_name)
+            pe_rate = getattr(pe_doc, "target_exchange_rate", None)
+            if pe_rate and _is_finite(pe_rate) and float(pe_rate) > 0:
+                target_exchange_rate = flt(pe_rate)
+        except Exception:
+            pass
+        if not target_exchange_rate or not _is_finite(target_exchange_rate) or float(target_exchange_rate) <= 0:
+            frappe.throw(_("Invalid or missing target exchange rate on Payment Entry."))
 
     # Amounts: input amount is commission currency.
     commission_amount_total = flt(amount, _cp(commission_currency))
@@ -663,34 +711,31 @@ def record_manual_payout(settlement=None, **kwargs):
     # check that the per-event controller cannot perform.
     total_alloc_company = sum(flt(a.get("company_amount", 0)) for a in allocations)
     if source_doctype == "Journal Entry":
-        je_total_debit = 0.0
-        try:
-            je_doc = frappe.get_doc("Journal Entry", source_name)
-            for acct in (je_doc.accounts or []):
-                je_total_debit += flt(getattr(acct, "debit_in_account_currency", 0) or 0)
-        except Exception:
-            je_total_debit = None
-        if je_total_debit is not None and abs(je_total_debit - total_alloc_company) > 0.005:
+        je_doc = frappe.get_doc("Journal Entry", source_name)
+        je_total = flt(getattr(je_doc, "total_debit", 0) or 0)
+        prec = _cp(company_currency)
+        tolerance = (10 ** (-prec)) if prec and prec > 0 else 0.005
+        if abs(je_total - total_alloc_company) > tolerance:
             frappe.throw(
                 _("Journal Entry total debit ({0}) does not match the sum of "
                   "allocated company amounts ({1}).").format(
-                    je_total_debit, total_alloc_company
+                    je_total, total_alloc_company
                 )
             )
     elif source_doctype == "Payment Entry":
-        try:
-            pe_doc = frappe.get_doc("Payment Entry", source_name)
-            pe_total = flt(getattr(pe_doc, "base_received_amount", 0) or
-                           getattr(pe_doc, "received_amount", 0))
-            if abs(pe_total - total_alloc_company) > 0.005:
-                frappe.throw(
-                    _("Payment Entry total ({0}) does not match the sum of "
-                      "allocated company amounts ({1}).").format(
-                        pe_total, total_alloc_company
-                    )
+        pe_doc = frappe.get_doc("Payment Entry", source_name)
+        pe_total = flt(getattr(pe_doc, "base_received_amount", 0) or 0)
+        if pe_total <= 0:
+            pe_total = flt(getattr(pe_doc, "received_amount", 0) or 0)
+        prec = _cp(company_currency)
+        tolerance = (10 ** (-prec)) if prec and prec > 0 else 0.005
+        if abs(pe_total - total_alloc_company) > tolerance:
+            frappe.throw(
+                _("Payment Entry total ({0}) does not match the sum of "
+                  "allocated company amounts ({1}).").format(
+                    pe_total, total_alloc_company
                 )
-        except frappe.DoesNotExistError:
-            pass
+            )
 
     created_events = []
     for alloc in allocations:
