@@ -325,8 +325,12 @@ class CommissionPayoutEvent(Document):
                 # Account validation (fail closed).
                 from sales_commission_management.sales_commission_management.payout.manual_payment import _resolve_payable_account
                 payable = _resolve_payable_account(pe.company)
+                if not payable:
+                    frappe.throw(_("Commission payable account does not exist."))
                 _payable_company = frappe.get_cached_value("Account", payable, "company")
-                if _payable_company and pe.company and _payable_company != pe.company:
+                if not _payable_company:
+                    frappe.throw(_("Commission payable account company could not be resolved."))
+                if _payable_company != pe.company:
                     frappe.throw(_("Commission payable account does not belong to the company."))
                 if not getattr(pe, "paid_to", None):
                     frappe.throw(_("Payment Entry paid_to account is required."))
@@ -334,13 +338,17 @@ class CommissionPayoutEvent(Document):
                     frappe.throw(_("Payment Entry paid_to must be the Commission Payable account."))
                 if not getattr(pe, "paid_from", None):
                     frappe.throw(_("Payment Entry paid_from account is required."))
+                if not frappe.db.exists("Account", pe.paid_from):
+                    frappe.throw(_("Account does not exist."))
                 try:
                     _acct_type = frappe.get_cached_value("Account", pe.paid_from, "account_type")
                     _acct_company = frappe.get_cached_value("Account", pe.paid_from, "company")
                 except Exception:
                     _acct_type = None
                     _acct_company = None
-                if _acct_company and pe.company and _acct_company != pe.company:
+                if not _acct_company:
+                    frappe.throw(_("Account company could not be resolved."))
+                if _acct_company != pe.company:
                     frappe.throw(_("Payment Entry paid_from account does not belong to the company."))
                 if _acct_type not in ("Cash", "Bank"):
                     frappe.throw(_("Payment Entry paid_from must be a Cash or Bank account."))
@@ -519,8 +527,12 @@ class CommissionPayoutEvent(Document):
             # remain at controller level.
             from sales_commission_management.sales_commission_management.payout.manual_payment import _resolve_payable_account
             payable = _resolve_payable_account(self.company)
+            if not payable:
+                frappe.throw(_("Commission payable account does not exist."))
             _payable_company = frappe.get_cached_value("Account", payable, "company")
-            if _payable_company and self.company and _payable_company != self.company:
+            if not _payable_company:
+                frappe.throw(_("Commission payable account company could not be resolved."))
+            if _payable_company != self.company:
                 frappe.throw(_("Commission payable account does not belong to the company."))
             account_names = [getattr(r, "account", None) for r in (je.accounts or [])]
             if payable not in account_names:
@@ -529,9 +541,11 @@ class CommissionPayoutEvent(Document):
             for acct in account_names:
                 try:
                     acct_type = frappe.get_cached_value("Account", acct, "account_type")
+                    acct_company = frappe.get_cached_value("Account", acct, "company")
                 except Exception:
                     acct_type = None
-                if acct_type in ("Cash", "Bank"):
+                    acct_company = None
+                if acct_type in ("Cash", "Bank") and (not self.company or acct_company == self.company):
                     has_cash_bank = True
                     break
             if not has_cash_bank:
@@ -574,7 +588,13 @@ class CommissionPayoutEvent(Document):
                     except Exception:
                         acct_type = None
                         acct_company = None
-                    if acct_company and self.company and acct_company != self.company:
+                    if not acct:
+                        frappe.throw(_("Account is required."))
+                    if not frappe.db.exists("Account", acct):
+                        frappe.throw(_("Account does not exist."))
+                    if not acct_company:
+                        frappe.throw(_("Account company could not be resolved."))
+                    if acct_company != self.company:
                         frappe.throw(_("Cash or bank account does not belong to the company."))
                     if acct_type in ("Cash", "Bank"):
                         cash_credit += credit

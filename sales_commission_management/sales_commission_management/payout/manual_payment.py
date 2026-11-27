@@ -229,9 +229,13 @@ def _validate_evidence(source_doctype, source_name, sett, amount, payment_date, 
 
     company = getattr(sett, "company", None)
 
-    # Company check.
+    # Company check (fail closed).
     ev_company = getattr(ev, "company", None)
-    if ev_company and company and ev_company != company:
+    if not ev_company:
+        frappe.throw(_("Evidence document company could not be resolved."))
+    if not company:
+        frappe.throw(_("Settlement company could not be resolved."))
+    if ev_company != company:
         frappe.throw(_("Evidence document company does not match settlement company."))
 
     # Date check.
@@ -343,6 +347,15 @@ def _validate_journal_entry_evidence(ev, sett, amount, commission_currency, comp
     if ev_currency and company_currency and ev_currency != company_currency:
         frappe.throw(_("Journal Entry currency does not match company currency."))
 
+    # Company check (fail closed).
+    ev_company = getattr(ev, "company", None)
+    if not ev_company:
+        frappe.throw(_("Journal Entry company could not be resolved."))
+    if not company:
+        frappe.throw(_("Settlement company could not be resolved."))
+    if ev_company != company:
+        frappe.throw(_("Journal Entry company does not match settlement company."))
+
     # Accounts.
     accounts = getattr(ev, "accounts", None) or []
     account_names = []
@@ -355,7 +368,15 @@ def _validate_journal_entry_evidence(ev, sett, amount, commission_currency, comp
 
     # Fail-closed payable account resolution.
     payable = _resolve_payable_account(company)
-
+    if not payable:
+        frappe.throw(_("Commission payable account does not exist."))
+    if not frappe.db.exists("Account", payable):
+        frappe.throw(_("Commission payable account does not exist."))
+    _payable_company = frappe.get_cached_value("Account", payable, "company")
+    if not _payable_company:
+        frappe.throw(_("Commission payable account company could not be resolved."))
+    if _payable_company != company:
+        frappe.throw(_("Commission payable account does not belong to the company."))
     if payable not in account_names:
         frappe.throw(_("Journal Entry does not include the commission payable account."))
 
@@ -364,9 +385,11 @@ def _validate_journal_entry_evidence(ev, sett, amount, commission_currency, comp
     for acct in account_names:
         try:
             acct_type = frappe.get_cached_value("Account", acct, "account_type")
+            acct_company = frappe.get_cached_value("Account", acct, "company")
         except Exception:
             acct_type = None
-        if acct_type in ("Cash", "Bank"):
+            acct_company = None
+        if acct_type in ("Cash", "Bank") and (not company or acct_company == company):
             has_cash_bank = True
             break
     if not has_cash_bank:
@@ -388,8 +411,18 @@ def _validate_journal_entry_evidence(ev, sett, amount, commission_currency, comp
         else:
             try:
                 acct_type = frappe.get_cached_value("Account", acct, "account_type")
+                acct_company = frappe.get_cached_value("Account", acct, "company")
             except Exception:
                 acct_type = None
+                acct_company = None
+            if not acct:
+                frappe.throw(_("Account is required."))
+            if not frappe.db.exists("Account", acct):
+                frappe.throw(_("Account does not exist."))
+            if not acct_company:
+                frappe.throw(_("Account company could not be resolved."))
+            if acct_company != company:
+                frappe.throw(_("Cash or bank account does not belong to the company."))
             if acct_type in ("Cash", "Bank"):
                 cash_credit += credit
                 cash_debit += debit
@@ -450,9 +483,13 @@ def _validate_payment_entry_evidence(ev, sett, amount, commission_currency, comp
     if ev_currency != commission_currency:
         frappe.throw(_("Payment Entry currency does not match commission currency."))
 
-    # Company check (also done by caller, but enforce here too).
+    # Company check (fail closed).
     ev_company = getattr(ev, "company", None)
-    if ev_company and company and ev_company != company:
+    if not ev_company:
+        frappe.throw(_("Payment Entry company could not be resolved."))
+    if not company:
+        frappe.throw(_("Settlement company could not be resolved."))
+    if ev_company != company:
         frappe.throw(_("Payment Entry company does not match settlement company."))
 
     # Canonical beneficiary resolution from the settlement.
@@ -473,6 +510,13 @@ def _validate_payment_entry_evidence(ev, sett, amount, commission_currency, comp
 
     # Account validation for Payment Entry evidence (fail closed).
     payable = _resolve_payable_account(company)
+    if not payable:
+        frappe.throw(_("Commission payable account does not exist."))
+    _payable_company = frappe.get_cached_value("Account", payable, "company")
+    if not _payable_company:
+        frappe.throw(_("Commission payable account company could not be resolved."))
+    if _payable_company != company:
+        frappe.throw(_("Commission payable account does not belong to the company."))
     paid_to = getattr(ev, "paid_to", None)
     if not paid_to:
         frappe.throw(_("Payment Entry paid_to account is required."))
@@ -481,10 +525,18 @@ def _validate_payment_entry_evidence(ev, sett, amount, commission_currency, comp
     paid_from = getattr(ev, "paid_from", None)
     if not paid_from:
         frappe.throw(_("Payment Entry paid_from account is required."))
+    if not frappe.db.exists("Account", paid_from):
+        frappe.throw(_("Account does not exist."))
     try:
         acct_type = frappe.get_cached_value("Account", paid_from, "account_type")
+        acct_company = frappe.get_cached_value("Account", paid_from, "company")
     except Exception:
         acct_type = None
+        acct_company = None
+    if not acct_company:
+        frappe.throw(_("Account company could not be resolved."))
+    if acct_company != company:
+        frappe.throw(_("Payment Entry paid_from account does not belong to the company."))
     if acct_type not in ("Cash", "Bank"):
         frappe.throw(_("Payment Entry paid_from must be a Cash or Bank account."))
 
@@ -860,7 +912,7 @@ def record_manual_payout(settlement=None, **kwargs):
                 frappe.throw(_("Existing payout event settlement FX rate is missing; refusing to reprocess."))
             if abs(flt(_get_attr(_r, "fx_rate", 0)) - flt(settlement_fx_rate)) > (10 ** (-6)):
                 frappe.throw(_("Existing payout event settlement FX rate does not match; refusing to reprocess."))
-            if _get_attr(_r, "fx_date", None) != payment_date:
+            if _get_attr(_r, "fx_date", None) is None or str(getdate(_get_attr(_r, "fx_date", None))) != payment_date:
                 frappe.throw(_("Existing payout event settlement FX date does not match; refusing to reprocess."))
             if _get_attr(_r, "fx_source", None) != "Manual Payout":
                 frappe.throw(_("Existing payout event settlement FX source does not match; refusing to reprocess."))
@@ -879,7 +931,7 @@ def record_manual_payout(settlement=None, **kwargs):
                     frappe.throw(_("Existing payout event commission-to-company rate does not match; refusing to reprocess."))
             else:
                 frappe.throw(_("Existing payout event commission-to-company rate is missing; refusing to reprocess."))
-            if _get_attr(_r, "commission_fx_date", None) != payment_date:
+            if _get_attr(_r, "commission_fx_date", None) is None or str(getdate(_get_attr(_r, "commission_fx_date", None))) != payment_date:
                 frappe.throw(_("Existing payout event commission FX date does not match; refusing to reprocess."))
             if _get_attr(_r, "commission_fx_source", None) != "Manual Payout target_exchange_rate":
                 frappe.throw(_("Existing payout event commission FX source does not match; refusing to reprocess."))
@@ -894,7 +946,7 @@ def record_manual_payout(settlement=None, **kwargs):
                     frappe.throw(_("Existing payout event payment FX rate is missing; refusing to reprocess."))
                 if abs(flt(_get_attr(_r, "payment_fx_rate", 0)) - flt(bank_fx_rate)) > (10 ** (-6)):
                     frappe.throw(_("Existing payout event payment FX rate does not match; refusing to reprocess."))
-                if _get_attr(_r, "payment_fx_date", None) != payment_date:
+                if _get_attr(_r, "payment_fx_date", None) is None or str(getdate(_get_attr(_r, "payment_fx_date", None))) != payment_date:
                     frappe.throw(_("Existing payout event payment FX date does not match; refusing to reprocess."))
                 if _get_attr(_r, "payment_fx_source", None) != "Payment Entry source_exchange_rate":
                     frappe.throw(_("Existing payout event payment FX source does not match; refusing to reprocess."))
@@ -940,6 +992,7 @@ def record_manual_payout(settlement=None, **kwargs):
     # Bank-side (paid_from) snapshot for Payment Entry evidence.
     bank_fx_from = None
     bank_fx_rate = None
+    pe_company = None
     if source_doctype == "Payment Entry":
         try:
             pe_doc = frappe.get_doc("Payment Entry", source_name)
@@ -948,12 +1001,18 @@ def record_manual_payout(settlement=None, **kwargs):
             paid_from_account = getattr(pe_doc, "paid_from", None)
             paid_amount = flt(getattr(pe_doc, "paid_amount", 0) or 0)
             base_paid_amount = flt(getattr(pe_doc, "base_paid_amount", 0) or 0)
+            pe_company = getattr(pe_doc, "company", None)
         except Exception:
             bank_fx_from = None
             bank_fx_rate = None
             paid_from_account = None
             paid_amount = 0.0
             base_paid_amount = 0.0
+            pe_company = None
+        if not pe_company:
+            frappe.throw(_("Payment Entry company could not be resolved."))
+        if pe_company != sett.company:
+            frappe.throw(_("Payment Entry company must match the settlement company."))
         if not paid_from_account:
             frappe.throw(_("Payment Entry paid_from is required."))
         try:
@@ -974,7 +1033,9 @@ def record_manual_payout(settlement=None, **kwargs):
         )
         if not _account:
             frappe.throw(_("Bank account does not exist."))
-        if pe_company and _account.company != pe_company:
+        if not _account.company:
+            frappe.throw(_("Bank account company could not be resolved."))
+        if _account.company != pe_company:
             frappe.throw(_("Bank account company does not match Payment Entry."))
         if _account.account_type not in ("Cash", "Bank"):
             frappe.throw(_("paid_from must be a Cash or Bank account."))
@@ -996,13 +1057,16 @@ def record_manual_payout(settlement=None, **kwargs):
                 )
             if not _is_finite(bank_fx_rate) or bank_fx_rate <= 0:
                 frappe.throw(_("Invalid bank-side exchange rate."))
-            expected_base = flt(paid_amount * bank_fx_rate, _cp(company_currency))
-            prec = _cp(company_currency)
-            tolerance = 10 ** (-prec) if prec is not None and prec >= 0 else 0.005
-            if abs(expected_base - base_paid_amount) > tolerance:
-                frappe.throw(_("Payment Entry bank-side amount does not reconcile."))
         else:
             bank_fx_rate = 1.0
+        # Reconcile base_paid = paid * source_exchange_rate for all currencies.
+        if not _is_finite(bank_fx_rate) or bank_fx_rate <= 0:
+            frappe.throw(_("Invalid bank-side exchange rate."))
+        expected_base = flt(paid_amount * bank_fx_rate, _cp(company_currency))
+        prec = _cp(company_currency)
+        tolerance = 10 ** (-prec) if prec is not None and prec >= 0 else 0.005
+        if abs(expected_base - base_paid_amount) > tolerance:
+            frappe.throw(_("Payment Entry bank-side amount does not reconcile."))
 
     # Voucher-total reconciliation: the sum of all event company amounts must
     # match the voucher's company-currency total.  This is the multi-item
