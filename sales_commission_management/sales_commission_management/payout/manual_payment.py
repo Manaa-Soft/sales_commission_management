@@ -494,6 +494,21 @@ def _validate_payment_entry_evidence(ev, sett, amount, commission_currency, comp
         frappe.throw(_("Payment Entry paid_to account currency is required."))
     if paid_to_currency != commission_currency:
         frappe.throw(_("Payment Entry paid_to account currency must match commission currency."))
+    # Independently verify the underlying Account record's currency.
+    paid_to = getattr(ev, "paid_to", None)
+    if not paid_to:
+        frappe.throw(_("Payment Entry paid_to account is required."))
+    actual_paid_to_currency = None
+    try:
+        actual_paid_to_currency = frappe.get_cached_value("Account", paid_to, "account_currency")
+    except Exception:
+        actual_paid_to_currency = None
+    if not actual_paid_to_currency:
+        frappe.throw(_("Cannot resolve Commission Payable account currency."))
+    if actual_paid_to_currency != paid_to_currency:
+        frappe.throw(_("Payment Entry beneficiary account currency does not match its Account."))
+    if actual_paid_to_currency != commission_currency:
+        frappe.throw(_("Commission Payable account currency must match commission currency."))
 
 
 def record_manual_payout(settlement=None, **kwargs):
@@ -715,9 +730,12 @@ def record_manual_payout(settlement=None, **kwargs):
             "settlement, commission_entry, source_doctype, source_name, "
             "source_currency, settlement_currency, commission_currency, "
             "company_currency, fx_from_currency, fx_to_currency, fx_rate, "
+            "fx_date, fx_source, "
             "payment_fx_from_currency, payment_fx_to_currency, payment_fx_rate, "
+            "payment_fx_date, payment_fx_source, "
+            "commission_to_company_rate, "
             "commission_fx_from_currency, commission_fx_to_currency, "
-            "commission_fx_rate "
+            "commission_fx_rate, commission_fx_date, commission_fx_source "
             "FROM `tabCommission Payout Event` "
             "WHERE source_doctype = %s AND source_name = %s "
             "  AND settlement = %s AND docstatus = 1 "
@@ -804,33 +822,82 @@ def record_manual_payout(settlement=None, **kwargs):
                 frappe.throw(_("Existing payout event company amount does not match; refusing to reprocess."))
             if not _cmp("source_amount", _get_attr(_r, "source_amount", 0), exp.get("source_amount", 0), prec_src):
                 frappe.throw(_("Existing payout event source amount does not match; refusing to reprocess."))
-            # Currencies.
-            if _get_attr(_r, "source_currency", None) and _get_attr(_r, "source_currency", None) != commission_currency:
+            # Currencies (fail closed: missing does not match).
+            if _get_attr(_r, "source_currency", None) != commission_currency:
                 frappe.throw(_("Existing payout event source currency does not match; refusing to reprocess."))
-            if _get_attr(_r, "settlement_currency", None) and _get_attr(_r, "settlement_currency", None) != settlement_currency:
+            if _get_attr(_r, "settlement_currency", None) != settlement_currency:
                 frappe.throw(_("Existing payout event settlement currency does not match; refusing to reprocess."))
-            if _get_attr(_r, "commission_currency", None) and _get_attr(_r, "commission_currency", None) != commission_currency:
+            if _get_attr(_r, "commission_currency", None) != commission_currency:
                 frappe.throw(_("Existing payout event commission currency does not match; refusing to reprocess."))
-            if _get_attr(_r, "company_currency", None) and _get_attr(_r, "company_currency", None) != company_currency:
+            if _get_attr(_r, "company_currency", None) != company_currency:
                 frappe.throw(_("Existing payout event company currency does not match; refusing to reprocess."))
-            # Source voucher / settlement / commission entry.
-            if _get_attr(_r, "source_doctype", None) and _get_attr(_r, "source_doctype", None) != source_doctype:
+            # Source voucher / settlement / commission entry (fail closed).
+            if _get_attr(_r, "source_doctype", None) != source_doctype:
                 frappe.throw(_("Existing payout event source DocType does not match; refusing to reprocess."))
-            if _get_attr(_r, "source_name", None) and _get_attr(_r, "source_name", None) != source_name:
+            if _get_attr(_r, "source_name", None) != source_name:
                 frappe.throw(_("Existing payout event source document does not match; refusing to reprocess."))
-            if _get_attr(_r, "settlement", None) and _get_attr(_r, "settlement", None) != sett_name:
+            if _get_attr(_r, "settlement", None) != sett_name:
                 frappe.throw(_("Existing payout event settlement does not match; refusing to reprocess."))
             ce_name = item_to_entry.get(si)
-            if ce_name and _get_attr(_r, "commission_entry", None) and _get_attr(_r, "commission_entry", None) != ce_name:
+            if ce_name and _get_attr(_r, "commission_entry", None) != ce_name:
                 frappe.throw(_("Existing payout event commission entry does not match; refusing to reprocess."))
-            # FX snapshots.
-            if _get_attr(_r, "fx_from_currency", None) and _get_attr(_r, "fx_from_currency", None) != settlement_currency:
+            # FX snapshots — fail closed: a missing historical value does not
+            # match a populated requested value.
+            def _req_equal(field, got, exp):
+                if exp is None:
+                    # Requested missing: accept only if historical also missing.
+                    return got in (None, "", 0, 0.0)
+                if got is None or got == "":
+                    return False
+                return True
+
+            # Settlement FX.
+            if not _req_equal("fx_from_currency", _get_attr(_r, "fx_from_currency", None), settlement_currency) or _get_attr(_r, "fx_from_currency", None) != settlement_currency:
                 frappe.throw(_("Existing payout event settlement FX from currency does not match; refusing to reprocess."))
-            if _get_attr(_r, "fx_to_currency", None) and _get_attr(_r, "fx_to_currency", None) != company_currency:
+            if not _req_equal("fx_to_currency", _get_attr(_r, "fx_to_currency", None), company_currency) or _get_attr(_r, "fx_to_currency", None) != company_currency:
                 frappe.throw(_("Existing payout event settlement FX to currency does not match; refusing to reprocess."))
-            if _get_attr(_r, "fx_rate", None) is not None:
-                if abs(flt(_get_attr(_r, "fx_rate", 0)) - flt(settlement_fx_rate)) > (10 ** (-6)):
-                    frappe.throw(_("Existing payout event settlement FX rate does not match; refusing to reprocess."))
+            if _get_attr(_r, "fx_rate", None) is None:
+                frappe.throw(_("Existing payout event settlement FX rate is missing; refusing to reprocess."))
+            if abs(flt(_get_attr(_r, "fx_rate", 0)) - flt(settlement_fx_rate)) > (10 ** (-6)):
+                frappe.throw(_("Existing payout event settlement FX rate does not match; refusing to reprocess."))
+            if _get_attr(_r, "fx_date", None) != payment_date:
+                frappe.throw(_("Existing payout event settlement FX date does not match; refusing to reprocess."))
+            if _get_attr(_r, "fx_source", None) != "Manual Payout":
+                frappe.throw(_("Existing payout event settlement FX source does not match; refusing to reprocess."))
+
+            # Commission FX.
+            if _get_attr(_r, "commission_fx_from_currency", None) != commission_currency:
+                frappe.throw(_("Existing payout event commission FX from currency does not match; refusing to reprocess."))
+            if _get_attr(_r, "commission_fx_to_currency", None) != company_currency:
+                frappe.throw(_("Existing payout event commission FX to currency does not match; refusing to reprocess."))
+            if _get_attr(_r, "commission_fx_rate", None) is None:
+                frappe.throw(_("Existing payout event commission FX rate is missing; refusing to reprocess."))
+            if abs(flt(_get_attr(_r, "commission_fx_rate", 0)) - flt(target_exchange_rate)) > (10 ** (-6)):
+                frappe.throw(_("Existing payout event commission FX rate does not match; refusing to reprocess."))
+            if _get_attr(_r, "commission_to_company_rate", None) is not None:
+                if abs(flt(_get_attr(_r, "commission_to_company_rate", 0)) - flt(target_exchange_rate)) > (10 ** (-6)):
+                    frappe.throw(_("Existing payout event commission-to-company rate does not match; refusing to reprocess."))
+            else:
+                frappe.throw(_("Existing payout event commission-to-company rate is missing; refusing to reprocess."))
+            if _get_attr(_r, "commission_fx_date", None) != payment_date:
+                frappe.throw(_("Existing payout event commission FX date does not match; refusing to reprocess."))
+            if _get_attr(_r, "commission_fx_source", None) != "Manual Payout target_exchange_rate":
+                frappe.throw(_("Existing payout event commission FX source does not match; refusing to reprocess."))
+
+            # Payment FX (Payment Entry evidence only).
+            if source_doctype == "Payment Entry":
+                if _get_attr(_r, "payment_fx_from_currency", None) != bank_fx_from:
+                    frappe.throw(_("Existing payout event payment FX from currency does not match; refusing to reprocess."))
+                if _get_attr(_r, "payment_fx_to_currency", None) != company_currency:
+                    frappe.throw(_("Existing payout event payment FX to currency does not match; refusing to reprocess."))
+                if _get_attr(_r, "payment_fx_rate", None) is None:
+                    frappe.throw(_("Existing payout event payment FX rate is missing; refusing to reprocess."))
+                if abs(flt(_get_attr(_r, "payment_fx_rate", 0)) - flt(bank_fx_rate)) > (10 ** (-6)):
+                    frappe.throw(_("Existing payout event payment FX rate does not match; refusing to reprocess."))
+                if _get_attr(_r, "payment_fx_date", None) != payment_date:
+                    frappe.throw(_("Existing payout event payment FX date does not match; refusing to reprocess."))
+                if _get_attr(_r, "payment_fx_source", None) != "Payment Entry source_exchange_rate":
+                    frappe.throw(_("Existing payout event payment FX source does not match; refusing to reprocess."))
         # Exact retry: ensure the complete expected allocation is present.
         if seen_items != set(_expected_map):
             frappe.throw(
@@ -887,20 +954,39 @@ def record_manual_payout(settlement=None, **kwargs):
             paid_from_account = None
             paid_amount = 0.0
             base_paid_amount = 0.0
-        if paid_from_account:
-            try:
-                actual_currency = frappe.get_cached_value("Account", paid_from_account, "account_currency")
-            except Exception:
-                actual_currency = None
-            if actual_currency and bank_fx_from and actual_currency != bank_fx_from:
-                frappe.throw(_("Payment Entry paid_from account currency does not match the Account record."))
-        if not bank_fx_from and paid_from_account:
-            try:
-                bank_fx_from = frappe.get_cached_value("Account", paid_from_account, "account_currency")
-            except Exception:
-                bank_fx_from = None
+        if not paid_from_account:
+            frappe.throw(_("Payment Entry paid_from is required."))
+        try:
+            actual_currency = frappe.get_cached_value("Account", paid_from_account, "account_currency")
+        except Exception:
+            actual_currency = None
+        if not actual_currency:
+            frappe.throw(_("Cannot resolve bank account currency."))
+        if bank_fx_from and actual_currency != bank_fx_from:
+            frappe.throw(_("Payment Entry paid_from account currency does not match the Account record."))
+        if not bank_fx_from:
+            bank_fx_from = actual_currency
         if not bank_fx_from:
             frappe.throw(_("Cannot resolve the Payment Entry paid_from account currency."))
+        _account = frappe.db.get_value(
+            "Account", paid_from_account,
+            ["company", "account_currency", "account_type"], as_dict=True,
+        )
+        if not _account:
+            frappe.throw(_("Bank account does not exist."))
+        if pe_company and _account.company != pe_company:
+            frappe.throw(_("Bank account company does not match Payment Entry."))
+        if _account.account_type not in ("Cash", "Bank"):
+            frappe.throw(_("paid_from must be a Cash or Bank account."))
+        if not _account.account_currency:
+            frappe.throw(_("Cannot resolve bank account currency."))
+        if _account.account_currency != bank_fx_from:
+            frappe.throw(_("Payment Entry bank currency does not match its account."))
+        # Mandatory amount positivity (always).
+        if not _is_finite(paid_amount) or paid_amount <= 0:
+            frappe.throw(_("Payment Entry paid amount must be positive."))
+        if not _is_finite(base_paid_amount) or base_paid_amount <= 0:
+            frappe.throw(_("Payment Entry base paid amount must be positive."))
         # Fail closed: if bank and company currencies differ, a valid rate is
         # required. Do not silently substitute None.
         if bank_fx_from != company_currency:
@@ -908,13 +994,13 @@ def record_manual_payout(settlement=None, **kwargs):
                 frappe.throw(
                     _("Missing or invalid source exchange rate on Payment Entry {0}.").format(source_name)
                 )
-            # Reconcile base_paid = paid * source_exchange_rate.
-            if paid_amount > 0 and base_paid_amount > 0:
-                expected_base = flt(paid_amount * float(bank_fx_rate), _cp(company_currency))
-                prec = _cp(company_currency)
-                tol = (10 ** (-prec)) if prec and prec > 0 else 0.005
-                if abs(expected_base - base_paid_amount) > tol:
-                    frappe.throw(_("Payment Entry bank-side amount does not reconcile."))
+            if not _is_finite(bank_fx_rate) or bank_fx_rate <= 0:
+                frappe.throw(_("Invalid bank-side exchange rate."))
+            expected_base = flt(paid_amount * bank_fx_rate, _cp(company_currency))
+            prec = _cp(company_currency)
+            tolerance = 10 ** (-prec) if prec is not None and prec >= 0 else 0.005
+            if abs(expected_base - base_paid_amount) > tolerance:
+                frappe.throw(_("Payment Entry bank-side amount does not reconcile."))
         else:
             bank_fx_rate = 1.0
 
