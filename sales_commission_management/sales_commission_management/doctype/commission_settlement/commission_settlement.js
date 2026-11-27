@@ -1,6 +1,5 @@
 frappe.ui.form.on("Commission Settlement", {
     refresh: function (frm) {
-        frm.clear_custom_buttons();
         if (frm.doc.docstatus === 0) {
             frm.add_custom_button(__("Fetch Eligible Entries"), function () {
                 fetch_eligible_entries(frm);
@@ -45,8 +44,9 @@ frappe.ui.form.on("Commission Settlement", {
             frm.add_custom_button(__("Record Manual Payout"), function () {
                 record_manual_payout_dialog(frm);
             }, __("Create"));
+
+            frm.page.set_inner_btn_group_as_primary(__("Create"));
         }
-        frm.page.set_inner_btn_group_as_primary(__("Create"));
 
         // Actions group.
         if (frm.doc.docstatus === 1) {
@@ -247,7 +247,9 @@ function _set_payout_indicator(frm) {
     };
     var color = color_map[status] || "gray";
     if (frm.doc.docstatus === 1) {
-        frm.page.set_indicator(status, color);
+        // Preserve the native document lifecycle status alongside the payout
+        // status so the submitted state is not hidden by the payout state.
+        frm.page.set_indicator(__("Submitted") + " · " + __(status), color);
     }
 }
 

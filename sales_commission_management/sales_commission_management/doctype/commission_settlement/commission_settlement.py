@@ -1208,7 +1208,7 @@ def record_manual_payout(*args, **kwargs):
     return _impl(*args, **kwargs)
 
 
-@frappe.whitelist(methods=["GET", "POST"])
+@frappe.whitelist(methods=["POST"])
 def refresh_settlement_payout_status(settlement=None, **kwargs):
     """Whitelisted wrapper to refresh derived payout fields on a settlement."""
     if frappe.session.user == "Guest":
@@ -1223,7 +1223,16 @@ def refresh_settlement_payout_status(settlement=None, **kwargs):
     sett_name = str(settlement)
     if not frappe.db.exists("Commission Settlement", sett_name):
         frappe.throw(_("Commission Settlement {0} does not exist.").format(sett_name))
-    if not frappe.has_permission("Commission Settlement", "write", sett_name):
+    # Independently enforce lifecycle and permissions on the server.
+    sett_doc = frappe.get_doc("Commission Settlement", sett_name)
+    if sett_doc.docstatus != 1:
+        frappe.throw(
+            _("Only submitted settlements can have payout status refreshed."),
+            frappe.ValidationError,
+        )
+    if not frappe.has_permission(
+        "Commission Settlement", "write", doc=sett_doc
+    ):
         frappe.throw(
             _("Insufficient permissions to refresh this settlement."),
             frappe.PermissionError,
