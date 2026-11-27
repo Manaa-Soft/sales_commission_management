@@ -545,7 +545,7 @@ class CommissionPayoutEvent(Document):
                 except Exception:
                     acct_type = None
                     acct_company = None
-                if acct_type in ("Cash", "Bank") and (not self.company or acct_company == self.company):
+                if self.company and acct_type in ("Cash", "Bank") and acct_company == self.company:
                     has_cash_bank = True
                     break
             if not has_cash_bank:

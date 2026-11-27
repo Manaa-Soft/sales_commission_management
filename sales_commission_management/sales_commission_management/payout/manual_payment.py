@@ -389,7 +389,7 @@ def _validate_journal_entry_evidence(ev, sett, amount, commission_currency, comp
         except Exception:
             acct_type = None
             acct_company = None
-        if acct_type in ("Cash", "Bank") and (not company or acct_company == company):
+        if company and acct_type in ("Cash", "Bank") and acct_company == company:
             has_cash_bank = True
             break
     if not has_cash_bank:
@@ -1024,9 +1024,9 @@ def record_manual_payout(settlement=None, **kwargs):
         if bank_fx_from and actual_currency != bank_fx_from:
             frappe.throw(_("Payment Entry paid_from account currency does not match the Account record."))
         if not bank_fx_from:
-            bank_fx_from = actual_currency
-        if not bank_fx_from:
-            frappe.throw(_("Cannot resolve the Payment Entry paid_from account currency."))
+            frappe.throw(_("Payment Entry is missing paid_from_account_currency."))
+        if bank_fx_from != actual_currency:
+            frappe.throw(_("Payment Entry paid_from account currency does not match the Account record."))
         _account = frappe.db.get_value(
             "Account", paid_from_account,
             ["company", "account_currency", "account_type"], as_dict=True,
