@@ -33,11 +33,15 @@ doc_events = {
     },
     "Payment Entry": {
         "before_submit": "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.lock_referenced_invoices",
-        "before_cancel": "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.lock_referenced_invoices",
+        "before_cancel": [
+            "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.lock_referenced_invoices",
+            "sales_commission_management.sales_commission_management.payout.manual_payment.reverse_payment_entry_payouts",
+        ],
         "on_submit": [
             "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.generate_commission_on_payment",
             "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.update_commission_payment_status",
             "sales_commission_management.sales_commission_management.payout.supplier_payment.process_supplier_payment_entry",
+            "sales_commission_management.sales_commission_management.payout.manual_payment.process_payment_entry_for_commission",
         ],
         "on_cancel": "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.update_commission_payment_status",
     },
@@ -50,9 +54,11 @@ scheduler_events = {
 }
 
 after_migrate = [
-    "sales_commission_management.patches.migrate_commission_settings_legacy_data.ensure"
+    "sales_commission_management.patches.migrate_commission_settings_legacy_data.ensure",
+    "sales_commission_management.patches.ensure_commission_settlement_link_fields.execute",
 ]
 
 after_install = [
-    "sales_commission_management.patches.migrate_commission_settings_legacy_data.ensure"
+    "sales_commission_management.patches.migrate_commission_settings_legacy_data.ensure",
+    "sales_commission_management.patches.ensure_commission_settlement_link_fields.execute",
 ]

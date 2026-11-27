@@ -392,6 +392,26 @@
       "group": "Payout",
       "link_doctype": "Commission Payout Event",
       "link_fieldname": "settlement"
+    },
+    {
+      "group": "Payout",
+      "link_doctype": "Payment Entry",
+      "link_fieldname": "commission_settlement"
+    },
+    {
+      "group": "Accounting & Settlement",
+      "link_doctype": "Journal Entry",
+      "link_fieldname": "commission_settlement"
+    },
+    {
+      "group": "Accounting & Settlement",
+      "link_doctype": "Purchase Invoice",
+      "link_fieldname": "commission_settlement"
+    },
+    {
+      "group": "Accounting & Settlement",
+      "link_doctype": "Additional Salary",
+      "link_fieldname": "commission_settlement"
     }
   ],
   "modified": "2026-01-01 00:00:00.000000",

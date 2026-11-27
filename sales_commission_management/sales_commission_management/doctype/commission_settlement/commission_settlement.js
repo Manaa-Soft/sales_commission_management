@@ -29,8 +29,28 @@ frappe.ui.form.on("Commission Settlement", {
             }, __("View"));
         }
 
-        // Create group.
-        var can_record_manual_payout =
+        // Create group — native ERPNext-style Payment action.
+        var can_make_payment =
+            frm.doc.docstatus === 1 &&
+            frm.doc.settlement_method === "Manual Approved Route" &&
+            flt(frm.doc.outstanding_payout_amount) > 0 &&
+            frappe.model.can_create("Payment Entry") &&
+            (frappe.session.user === "Administrator" ||
+                frappe.user.has_role([
+                    "System Manager",
+                    "Accounts Manager",
+                    "Commission Manager",
+                ]));
+        if (can_make_payment) {
+            frm.add_custom_button(__("Payment"), function () {
+                make_commission_payment_entry(frm);
+            }, __("Create"));
+            frm.page.set_inner_btn_group_as_primary(__("Create"));
+        }
+
+        // Backward-compat secondary action for vouchers created before this
+        // implementation (register an already-submitted Payment Entry / JE).
+        var can_register_existing =
             frm.doc.docstatus === 1 &&
             frm.doc.settlement_method === "Manual Approved Route" &&
             flt(frm.doc.outstanding_payout_amount) > 0 &&
@@ -40,12 +60,10 @@ frappe.ui.form.on("Commission Settlement", {
                     "Accounts Manager",
                     "Commission Manager",
                 ]));
-        if (can_record_manual_payout) {
-            frm.add_custom_button(__("Record Manual Payout"), function () {
+        if (can_register_existing) {
+            frm.add_custom_button(__("Register Existing Payment"), function () {
                 record_manual_payout_dialog(frm);
-            }, __("Create"));
-
-            frm.page.set_inner_btn_group_as_primary(__("Create"));
+            }, __("Actions"));
         }
 
         // Actions group.
@@ -200,6 +218,13 @@ function _recompute_settlement_totals(frm) {
     frm.set_value("total_reserved", flt(total_reserved, 2));
     frm.set_value("total_paid", flt(total_paid, 2));
     frm.set_value("outstanding", flt(total_payable - total_paid, 2));
+}
+
+function make_commission_payment_entry(frm) {
+    frappe.model.open_mapped_doc({
+        method: "sales_commission_management.sales_commission_management.doctype.commission_settlement.commission_settlement.make_commission_payment_entry",
+        frm: frm,
+    });
 }
 
 function record_manual_payout_dialog(frm) {

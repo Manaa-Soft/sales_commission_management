@@ -476,6 +476,7 @@ class CommissionSettlement(Document):
                 "voucher_type": "Journal Entry",
                 "company": self.company,
                 "posting_date": frappe.utils.nowdate(),
+                "commission_settlement": self.name,
                 "accounts": [
                     {
                         "account": accrued_account,
@@ -683,6 +684,7 @@ class CommissionSettlement(Document):
                 "company": self.company,
                 "ref_doctype": "Commission Settlement",
                 "ref_docname": self.name,
+                "commission_settlement": self.name,
             }
         )
         doc.insert(ignore_permissions=True)
@@ -813,6 +815,7 @@ class CommissionSettlement(Document):
                 "posting_date": frappe.utils.nowdate(),
                 "items": [item_row],
                 "remarks": f"Commission settlement {self.name}",
+                "commission_settlement": self.name,
             }
         )
         doc.insert(ignore_permissions=True)
@@ -1296,3 +1299,102 @@ def manual_payment(*args, **kwargs):
     )
 
     return _impl(*args, **kwargs)
+
+
+@frappe.whitelist()
+def make_commission_payment_entry(source_name=None, *args, **kwargs):
+    """Create a draft Payment Entry for a Commission Settlement's outstanding
+    payout (Manual Approved Route). Commission-specific mapper: beneficiary
+    resolves to Employee/Supplier, paid_to is the Commission Payable account.
+    """
+    # Resolve settlement name.
+    sett_name = source_name
+    if not sett_name and kwargs:
+        sett_name = kwargs.get("source_name") or kwargs.get("name")
+    if not sett_name:
+        frappe.throw(_("Commission Settlement is required."))
+
+    if not frappe.db.exists("Commission Settlement", sett_name):
+        frappe.throw(_("Commission Settlement {0} does not exist.").format(sett_name))
+
+    frappe.has_permission("Payment Entry", ptype="create", throw=True)
+
+    sett = frappe.get_doc("Commission Settlement", sett_name)
+
+    # Validations.
+    if sett.docstatus != 1:
+        frappe.throw(_("Commission Settlement {0} is not submitted.").format(sett_name))
+    if getattr(sett, "settlement_method", None) != "Manual Approved Route":
+        frappe.throw(
+            _("Payment is only available for settlements using the Manual Approved Route method.")
+        )
+
+    from sales_commission_management.sales_commission_management.payout.manual_payment import (
+        resolve_commission_accounting_beneficiary,
+    )
+    # _resolve_settlement_accounts is defined in this module; call directly.
+    from sales_commission_management.sales_commission_management.payout.status import (
+        compute_payout_status,
+    )
+
+    # Permission check.
+    user = frappe.session.user
+    if user != "Administrator":
+        roles = set(frappe.get_roles(user))
+        if not ({"System Manager", "Accounts Manager", "Commission Manager"} & roles):
+            frappe.throw(_("Insufficient permissions to create a payment."), frappe.PermissionError)
+
+    # Outstanding from ledger.
+    try:
+        ps = compute_payout_status(sett)
+        outstanding = flt(ps.get("outstanding_payout_amount", 0))
+    except Exception:
+        frappe.throw(_("Unable to compute authoritative payout status."))
+    if outstanding <= 0:
+        frappe.throw(_("No outstanding payout amount remaining."))
+
+    resolved = resolve_commission_accounting_beneficiary(sett)
+    party_type = resolved["party_type"]
+    party = resolved["party"]
+
+    company = sett.company
+    payable = None
+    try:
+        res = _resolve_settlement_accounts(company)
+        if isinstance(res, (tuple, list)) and len(res) >= 2:
+            payable = res[1]
+        elif isinstance(res, dict):
+            payable = res.get("payable") or res.get("commission_payable_account")
+    except Exception:
+        frappe.throw(_("Commission payable account could not be resolved."))
+
+    if not payable:
+        frappe.throw(_("Commission payable account could not be resolved for company {0}.").format(company))
+
+    commission_currency = sett.commission_currency or _company_currency(company)
+
+    # Build draft Payment Entry.
+    pe = frappe.new_doc("Payment Entry")
+    pe.payment_type = "Pay"
+    pe.company = company
+    pe.party_type = party_type
+    pe.party = party
+    pe.paid_to = payable
+    pe.paid_to_account_currency = commission_currency
+    pe.paid_to_account_type = frappe.db.get_value("Account", payable, "account_type")
+    pe.received_amount = outstanding
+    pe.posting_date = frappe.utils.nowdate()
+
+    # Link to settlement (if the custom field is installed).
+    try:
+        if frappe.get_meta("Payment Entry").has_field("commission_settlement"):
+            pe.commission_settlement = sett_name
+    except Exception:
+        pass
+
+    # Let ERPNext calculate bank-side amounts; leave paid_from unset for user selection.
+    pe.paid_amount = 0
+    pe.paid_from = None
+    pe.paid_from_account_currency = None
+
+    return pe
