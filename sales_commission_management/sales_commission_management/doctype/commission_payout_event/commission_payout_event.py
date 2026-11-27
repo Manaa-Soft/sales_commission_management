@@ -337,34 +337,23 @@ class CommissionPayoutEvent(Document):
                     _acct_type = None
                 if _acct_type not in ("Cash", "Bank"):
                     frappe.throw(_("Payment Entry paid_from must be a Cash or Bank account."))
-                # Beneficiary mapping: party, when present, must resolve.
-                valid_parties = set()
-                ben = getattr(sett, "beneficiary", None)
-                if ben and ben != "(group)":
-                    valid_parties.add(ben)
-                sp = getattr(sett, "sales_person", None)
-                if sp:
-                    valid_parties.add(sp)
-                    try:
-                        emp = frappe.get_cached_value("Sales Person", sp, "employee")
-                        if emp:
-                            valid_parties.add(emp)
-                    except Exception:
-                        pass
-                emp = getattr(sett, "employee", None)
-                if emp:
-                    valid_parties.add(emp)
-                supplier = getattr(sett, "supplier", None)
-                if supplier:
-                    valid_parties.add(supplier)
+                # Canonical beneficiary enforcement (no legacy alias fallback).
+                from sales_commission_management.sales_commission_management.payout.manual_payment import (
+                    resolve_commission_accounting_beneficiary,
+                )
+                resolved = resolve_commission_accounting_beneficiary(sett)
+                expected_party = resolved["party"]
+                expected_party_type = resolved["party_type"]
                 party = getattr(pe, "party", None)
                 party_type = getattr(pe, "party_type", None)
                 if not party:
                     frappe.throw(_("Payment Entry must identify the beneficiary."))
-                if valid_parties and party not in valid_parties:
-                    frappe.throw(_("Payment Entry party does not match settlement beneficiary."))
+                if party != expected_party:
+                    frappe.throw(_("Incorrect accounting beneficiary."))
                 if not party_type:
                     frappe.throw(_("Party type is required when a party is referenced."))
+                if party_type != expected_party_type:
+                    frappe.throw(_("Incorrect accounting party type."))
 
                 # source_row must match settlement_item (Manual Approved Route).
                 if self.source_row and self.settlement_item and self.source_row != self.settlement_item:
@@ -523,16 +512,22 @@ class CommissionPayoutEvent(Document):
                     break
             if not has_cash_bank:
                 frappe.throw(_("Journal Entry must include a cash or bank account."))
-            valid_parties = set()
+            from sales_commission_management.sales_commission_management.payout.manual_payment import (
+                resolve_commission_accounting_beneficiary,
+            )
+            expected_party = None
+            expected_party_type = None
             if self.settlement:
                 try:
-                    from sales_commission_management.sales_commission_management.payout.manual_payment import _resolve_valid_parties
                     sett_doc = frappe.get_doc("Commission Settlement", self.settlement)
-                    valid_parties = _resolve_valid_parties(sett_doc)
+                    resolved = resolve_commission_accounting_beneficiary(sett_doc)
+                    expected_party = resolved["party"]
+                    expected_party_type = resolved["party_type"]
                 except Exception:
-                    valid_parties = set()
-            if self.beneficiary:
-                valid_parties.add(self.beneficiary)
+                    expected_party = None
+                    expected_party_type = None
+            if expected_party is None and self.beneficiary:
+                expected_party = self.beneficiary
             payable_debit = 0.0
             payable_credit = 0.0
             cash_credit = 0.0
@@ -548,13 +543,12 @@ class CommissionPayoutEvent(Document):
                     party_type = getattr(row, "party_type", None)
                     if not party:
                         frappe.throw(_("Commission payable account row must identify the beneficiary."))
-                    if valid_parties and party not in valid_parties:
-                        frappe.throw(_("Journal Entry party does not match settlement beneficiary."))
+                    if expected_party is not None and party != expected_party:
+                        frappe.throw(_("Incorrect accounting beneficiary."))
                     if not party_type:
                         frappe.throw(_("Party type is required when a party is referenced."))
-                    _exp = _expected_party_type(party)
-                    if _exp is None or party_type != _exp:
-                        frappe.throw(_("Journal Entry party type does not match the referenced party."))
+                    if expected_party_type is not None and party_type != expected_party_type:
+                        frappe.throw(_("Incorrect accounting party type."))
                 else:
                     try:
                         acct_type = frappe.get_cached_value("Account", acct, "account_type")
@@ -597,6 +591,21 @@ class CommissionPayoutEvent(Document):
                 if self.payment_fx_rate and self.payment_fx_rate != 1.0:
                     frappe.throw(_("Payment FX rate must be 1.0 when from and to currencies are the same."))
 
+        # Commission FX (commission -> company) snapshot consistency.
+        if self.commission_fx_from_currency or self.commission_fx_to_currency or self.commission_fx_rate or self.commission_to_company_rate:
+            if not self.commission_fx_from_currency or not self.commission_fx_to_currency:
+                frappe.throw(_("Both commission FX from and to currencies are required."))
+            if not self.commission_fx_rate:
+                frappe.throw(_("Commission FX rate is required when commission FX currencies are set."))
+            if not math.isfinite(self.commission_fx_rate) or self.commission_fx_rate <= 0:
+                frappe.throw(_("Commission FX rate must be a finite positive number."))
+            if self.commission_fx_from_currency == self.commission_fx_to_currency:
+                if self.commission_fx_rate and self.commission_fx_rate != 1.0:
+                    frappe.throw(_("Commission FX rate must be 1.0 when from and to currencies are the same."))
+            if self.commission_to_company_rate is not None and self.commission_to_company_rate != 0:
+                if not math.isfinite(self.commission_to_company_rate) or self.commission_to_company_rate <= 0:
+                    frappe.throw(_("Commission to company rate must be a finite positive number."))
+
     def _verify_no_field_changes(self):
         """Verify that no fields changed during submission."""
         db_values = frappe.db.get_value(
@@ -616,7 +625,9 @@ class CommissionPayoutEvent(Document):
                 "naming_series",
                 "payment_fx_from_currency", "payment_fx_to_currency",
                 "payment_fx_rate", "payment_fx_date", "payment_fx_source",
-                "payout_batch", "payout_batch_item",
+                "commission_to_company_rate", "commission_fx_from_currency",
+                "commission_fx_to_currency", "commission_fx_rate",
+                "commission_fx_date", "commission_fx_source",
             ],
             as_dict=True,
         )

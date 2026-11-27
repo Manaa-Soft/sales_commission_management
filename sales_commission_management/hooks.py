@@ -1,10 +1,10 @@
 app_name = "sales_commission_management"
 app_title = "Sales Commission Management for ERPNext"
-app_publisher = "ECOSIRE"
+app_publisher = "Manaa-Soft"
 app_description = "Advanced multi-tier commission engine for ERPNext v15/v16"
 app_icon = "fa fa-percent"
 app_color = "#2980b9"
-app_email = "support@ecosire.com"
+app_email = "manaamnaa2018@gmail.com"
 app_license = "mit"
 
 add_to_apps_screen = [

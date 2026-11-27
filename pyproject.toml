@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Advanced multi-tier commission engine for ERPNext v15/v16"
 readme = "README.md"
 license = { text = "MIT" }
-authors = [{ name = "ECOSIRE", email = "support@ecosire.com" }]
+authors = [{ name = "Manaa-Soft", email = "manaamnaa2018@gmail.com" }]
 requires-python = ">=3.10"
 
 [tool.setuptools.packages.find]

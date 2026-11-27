@@ -51,6 +51,12 @@
     "payment_fx_rate",
     "payment_fx_date",
     "payment_fx_source",
+    "commission_to_company_rate",
+    "commission_fx_from_currency",
+    "commission_fx_to_currency",
+    "commission_fx_rate",
+    "commission_fx_date",
+    "commission_fx_source",
     "section_audit",
     "remarks",
     "evidence_attachment"
@@ -117,32 +123,6 @@
       "fieldname": "settlement_item",
       "fieldtype": "Data",
       "label": "Settlement Item Row",
-      "read_only": 1
-    },
-    {
-      "fieldname": "payout_batch",
-      "fieldtype": "Link",
-      "label": "Payout Batch",
-      "options": "Commission Payout Batch",
-      "read_only": 1
-    },
-    {
-      "fieldname": "payout_batch_item",
-      "fieldtype": "Data",
-      "label": "Payout Batch Item",
-      "read_only": 1
-    },
-    {
-      "fieldname": "payout_batch",
-      "fieldtype": "Link",
-      "label": "Payout Batch",
-      "options": "Commission Payout Batch",
-      "read_only": 1
-    },
-    {
-      "fieldname": "payout_batch_item",
-      "fieldtype": "Data",
-      "label": "Payout Batch Item",
       "read_only": 1
     },
     {
@@ -366,6 +346,46 @@
       "fieldname": "payment_fx_source",
       "fieldtype": "Data",
       "label": "Payment FX Source",
+      "read_only": 1
+    },
+    {
+      "fieldname": "commission_to_company_rate",
+      "fieldtype": "Float",
+      "label": "Commission to Company Rate",
+      "read_only": 1,
+      "precision": "6"
+    },
+    {
+      "fieldname": "commission_fx_from_currency",
+      "fieldtype": "Link",
+      "label": "Commission FX From Currency",
+      "options": "Currency",
+      "read_only": 1
+    },
+    {
+      "fieldname": "commission_fx_to_currency",
+      "fieldtype": "Link",
+      "label": "Commission FX To Currency",
+      "options": "Currency",
+      "read_only": 1
+    },
+    {
+      "fieldname": "commission_fx_rate",
+      "fieldtype": "Float",
+      "label": "Commission FX Rate",
+      "read_only": 1,
+      "precision": "6"
+    },
+    {
+      "fieldname": "commission_fx_date",
+      "fieldtype": "Date",
+      "label": "Commission FX Date",
+      "read_only": 1
+    },
+    {
+      "fieldname": "commission_fx_source",
+      "fieldtype": "Data",
+      "label": "Commission FX Source",
       "read_only": 1
     },
     {

@@ -406,12 +406,6 @@ def _validate_journal_entry_evidence(ev, sett, amount, commission_currency, comp
     resolved = resolve_commission_accounting_beneficiary(sett)
     expected_party = resolved["party"]
     expected_party_type = resolved["party_type"]
-    valid_parties = {expected_party}
-    # Keep legacy valid parties for compatibility, but require canonical match.
-    try:
-        valid_parties |= _resolve_valid_parties(sett)
-    except Exception:
-        pass
     payable_party_found = False
     for row in accounts or []:
         acct = getattr(row, "account", None) if not isinstance(row, dict) else row.get("account")
@@ -421,12 +415,12 @@ def _validate_journal_entry_evidence(ev, sett, amount, commission_currency, comp
         party_type = getattr(row, "party_type", None) if not isinstance(row, dict) else row.get("party_type")
         if not party:
             frappe.throw(_("Commission payable account row must identify the beneficiary."))
-        if party != expected_party and party not in valid_parties:
-            frappe.throw(_("Journal Entry party does not match settlement beneficiary."))
+        if party != expected_party:
+            frappe.throw(_("Incorrect accounting beneficiary."))
         if not party_type:
             frappe.throw(_("Party type is required when a party is referenced."))
         if party_type != expected_party_type:
-            frappe.throw(_("Journal Entry party type does not match the referenced party."))
+            frappe.throw(_("Incorrect accounting party type."))
         payable_party_found = True
     if not payable_party_found:
         frappe.throw(_("Commission payable account row must identify the beneficiary."))
@@ -683,12 +677,34 @@ def record_manual_payout(settlement=None, **kwargs):
     if not items:
         frappe.throw(_("Commission Settlement {0} has no eligible items.").format(sett_name))
 
+    # Build the expected per-item allocation map up front so the idempotency
+    # check can compare each existing event against its expected allocation
+    # (aggregate totals alone cannot detect a changed per-item distribution).
+    try:
+        _expected_allocations = allocate_supplier_payment_across_items(
+            payment_allocation=settlement_amount_total,
+            source_allocation=commission_amount_total,
+            target_exchange_rate=target_exchange_rate,
+            settlement_fx_rate=settlement_fx_rate,
+            items=items,
+        ) if allocate_supplier_payment_across_items else []
+    except Exception:
+        _expected_allocations = []
+    _expected_map = {a.get("item"): a for a in (_expected_allocations or [])}
+
     # Idempotency: check for existing payout events from this exact payment
     # BEFORE outstanding-balance validation, so retries return the already
     # created events instead of being rejected with "no outstanding".
     try:
         _raw_existing = frappe.db.sql(
-            "SELECT name, event_type, commission_amount, source_row, settlement_item "
+            "SELECT name, event_type, commission_amount, settlement_amount, "
+            "company_amount, source_amount, source_row, settlement_item, "
+            "settlement, commission_entry, source_doctype, source_name, "
+            "source_currency, settlement_currency, commission_currency, "
+            "company_currency, fx_from_currency, fx_to_currency, fx_rate, "
+            "payment_fx_from_currency, payment_fx_to_currency, payment_fx_rate, "
+            "commission_fx_from_currency, commission_fx_to_currency, "
+            "commission_fx_rate "
             "FROM `tabCommission Payout Event` "
             "WHERE source_doctype = %s AND source_name = %s "
             "  AND settlement = %s AND docstatus = 1 "
@@ -747,6 +763,61 @@ def record_manual_payout(settlement=None, **kwargs):
                     _("Duplicate existing payout event for a settlement item; refusing to reprocess.")
                 )
             seen_items.add(si)
+            # Exact per-item allocation comparison: amounts, currencies, source
+            # voucher, settlement, commission entry and FX snapshots must all
+            # match the expected allocation for this item.
+            exp = _expected_map.get(si)
+            if exp is None:
+                frappe.throw(
+                    _("Existing payout event has no matching expected allocation; refusing to reprocess.")
+                )
+            prec_comm = _cp(commission_currency)
+            prec_sett = _cp(settlement_currency)
+            prec_comp = _cp(company_currency)
+            prec_src = _cp(commission_currency)
+            tol = 0.005
+            def _cmp(field, got, expv, prec):
+                try:
+                    if abs(flt(got, prec) - flt(expv, prec)) > ((10 ** (-prec)) if prec and prec > 0 else tol):
+                        return False
+                except Exception:
+                    return False
+                return True
+            if not _cmp("commission_amount", _get_attr(_r, "commission_amount", 0), exp.get("commission_amount", 0), prec_comm):
+                frappe.throw(_("Existing payout event commission amount does not match; refusing to reprocess."))
+            if not _cmp("settlement_amount", _get_attr(_r, "settlement_amount", 0), exp.get("settlement_amount", 0), prec_sett):
+                frappe.throw(_("Existing payout event settlement amount does not match; refusing to reprocess."))
+            if not _cmp("company_amount", _get_attr(_r, "company_amount", 0), exp.get("company_amount", 0), prec_comp):
+                frappe.throw(_("Existing payout event company amount does not match; refusing to reprocess."))
+            if not _cmp("source_amount", _get_attr(_r, "source_amount", 0), exp.get("source_amount", 0), prec_src):
+                frappe.throw(_("Existing payout event source amount does not match; refusing to reprocess."))
+            # Currencies.
+            if _get_attr(_r, "source_currency", None) and _get_attr(_r, "source_currency", None) != commission_currency:
+                frappe.throw(_("Existing payout event source currency does not match; refusing to reprocess."))
+            if _get_attr(_r, "settlement_currency", None) and _get_attr(_r, "settlement_currency", None) != settlement_currency:
+                frappe.throw(_("Existing payout event settlement currency does not match; refusing to reprocess."))
+            if _get_attr(_r, "commission_currency", None) and _get_attr(_r, "commission_currency", None) != commission_currency:
+                frappe.throw(_("Existing payout event commission currency does not match; refusing to reprocess."))
+            if _get_attr(_r, "company_currency", None) and _get_attr(_r, "company_currency", None) != company_currency:
+                frappe.throw(_("Existing payout event company currency does not match; refusing to reprocess."))
+            # Source voucher / settlement / commission entry.
+            if _get_attr(_r, "source_doctype", None) and _get_attr(_r, "source_doctype", None) != source_doctype:
+                frappe.throw(_("Existing payout event source DocType does not match; refusing to reprocess."))
+            if _get_attr(_r, "source_name", None) and _get_attr(_r, "source_name", None) != source_name:
+                frappe.throw(_("Existing payout event source document does not match; refusing to reprocess."))
+            if _get_attr(_r, "settlement", None) and _get_attr(_r, "settlement", None) != sett_name:
+                frappe.throw(_("Existing payout event settlement does not match; refusing to reprocess."))
+            ce_name = item_to_entry.get(si)
+            if ce_name and _get_attr(_r, "commission_entry", None) and _get_attr(_r, "commission_entry", None) != ce_name:
+                frappe.throw(_("Existing payout event commission entry does not match; refusing to reprocess."))
+            # FX snapshots.
+            if _get_attr(_r, "fx_from_currency", None) and _get_attr(_r, "fx_from_currency", None) != settlement_currency:
+                frappe.throw(_("Existing payout event settlement FX from currency does not match; refusing to reprocess."))
+            if _get_attr(_r, "fx_to_currency", None) and _get_attr(_r, "fx_to_currency", None) != company_currency:
+                frappe.throw(_("Existing payout event settlement FX to currency does not match; refusing to reprocess."))
+            if _get_attr(_r, "fx_rate", None) is not None:
+                if abs(flt(_get_attr(_r, "fx_rate", 0)) - flt(settlement_fx_rate)) > (10 ** (-6)):
+                    frappe.throw(_("Existing payout event settlement FX rate does not match; refusing to reprocess."))
         # Exact retry: return existing events without reallocating.
         if refresh_settlement_payout_status is not None:
             try:
@@ -772,7 +843,7 @@ def record_manual_payout(settlement=None, **kwargs):
             _("Payment amount {0} exceeds outstanding payout {1}.").format(amount, outstanding)
         )
 
-    allocations = allocate_supplier_payment_across_items(
+    allocations = _expected_allocations if _expected_allocations else allocate_supplier_payment_across_items(
         payment_allocation=settlement_amount_total,
         source_allocation=commission_amount_total,
         target_exchange_rate=target_exchange_rate,
@@ -895,6 +966,12 @@ def record_manual_payout(settlement=None, **kwargs):
             "fx_rate": settlement_fx_rate,
             "fx_date": payment_date,
             "fx_source": "Manual Payout",
+            "commission_to_company_rate": target_exchange_rate,
+            "commission_fx_from_currency": commission_currency,
+            "commission_fx_to_currency": company_currency,
+            "commission_fx_rate": target_exchange_rate,
+            "commission_fx_date": payment_date,
+            "commission_fx_source": "Manual Payout target_exchange_rate",
             "remarks": remarks,
             "evidence_attachment": evidence_attachment,
             "payment_fx_from_currency": bank_fx_from if source_doctype == "Payment Entry" else None,

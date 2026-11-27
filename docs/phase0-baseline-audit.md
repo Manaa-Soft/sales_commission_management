@@ -12,7 +12,7 @@
 
 ### Application identity
 - **App name:** sales_commission_management
-- **Publisher:** ECOSIRE
+- **Publisher:** Manaa-Soft
 - **Version:** 0.0.1
 - **Supported versions:** ERPNext/Frappe v15 and v16
 - **License:** MIT
