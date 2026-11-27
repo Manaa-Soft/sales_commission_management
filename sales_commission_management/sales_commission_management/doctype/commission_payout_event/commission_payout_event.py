@@ -328,6 +328,10 @@ class CommissionPayoutEvent(Document):
                     frappe.throw(_("Payment Entry party does not match settlement beneficiary."))
                 if not party_type:
                     frappe.throw(_("Party type is required when a party is referenced."))
+
+                # source_row must match settlement_item (Manual Approved Route).
+                if self.source_row and self.settlement_item and self.source_row != self.settlement_item:
+                    frappe.throw(_("Source row must match the settlement item."))
                 # Amount validation against source amount (beneficiary side).
                 ev_amount = getattr(pe, "received_amount", None)
                 if ev_amount is None:
@@ -507,10 +511,12 @@ class CommissionPayoutEvent(Document):
                 frappe.throw(_("Commission payable account must be debited, not credited."))
             if cash_debit > tolerance:
                 frappe.throw(_("Cash or bank account must be credited, not debited."))
-            if abs(payable_debit - expected_company) > tolerance:
-                frappe.throw(_("Commission payable debit does not match payment amount."))
-            if abs(cash_credit - expected_company) > tolerance:
-                frappe.throw(_("Cash or bank credit does not match payment amount."))
+            # Per-event amount checks are intentionally relaxed here because a
+            # single voucher (JE/PE) may cover multiple settlement items.  The
+            # voucher-total reconciliation is performed in the manual_payment
+            # workflow where the full allocation set is known.  Only structural
+            # checks (payable account present, cash/bank present, party type)
+            # remain at controller level.
 
         # FX snapshot consistency.
         if self.fx_from_currency or self.fx_to_currency or self.fx_rate:

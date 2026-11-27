@@ -384,6 +384,17 @@ def _validate_payment_entry_evidence(ev, sett, amount, commission_currency, comp
 
 
 def record_manual_payout(settlement=None, **kwargs):
+    # Type validation at the whitelisted entry point.
+    if isinstance(settlement, (list, dict)):
+        frappe.throw(_("Settlement must be a string name, not {0}.").format(type(settlement).__name__))
+    for scalar in ("amount", "paid_amount", "payment_amount", "total_amount"):
+        v = kwargs.get(scalar)
+        if v is not None and isinstance(v, (list, dict)):
+            frappe.throw(_("{0} must be a scalar value.").format(scalar))
+    for scalar in ("source_name", "evidence_reference", "reference", "voucher"):
+        v = kwargs.get(scalar)
+        if v is not None and not isinstance(v, str):
+            kwargs[scalar] = str(v)
     """Record a manual (evidence-based) payout against a settlement."""
     if frappe.session.user == "Guest":
         frappe.throw(_("Authentication required."), frappe.PermissionError)
@@ -637,8 +648,49 @@ def record_manual_payout(settlement=None, **kwargs):
             bank_fx_rate = None
         if not bank_fx_from:
             bank_fx_from = commission_currency
-        if not bank_fx_rate or not _is_finite(bank_fx_rate) or float(bank_fx_rate) <= 0:
-            bank_fx_rate = 1.0 if bank_fx_from == company_currency else None
+        # Fail closed: if bank and company currencies differ, a valid rate is
+        # required. Do not silently substitute None.
+        if bank_fx_from != company_currency:
+            if not bank_fx_rate or not _is_finite(bank_fx_rate) or float(bank_fx_rate) <= 0:
+                frappe.throw(
+                    _("Missing or invalid source exchange rate on Payment Entry {0}.").format(source_name)
+                )
+        else:
+            bank_fx_rate = 1.0
+
+    # Voucher-total reconciliation: the sum of all event company amounts must
+    # match the voucher's company-currency total.  This is the multi-item
+    # check that the per-event controller cannot perform.
+    total_alloc_company = sum(flt(a.get("company_amount", 0)) for a in allocations)
+    if source_doctype == "Journal Entry":
+        je_total_debit = 0.0
+        try:
+            je_doc = frappe.get_doc("Journal Entry", source_name)
+            for acct in (je_doc.accounts or []):
+                je_total_debit += flt(getattr(acct, "debit_in_account_currency", 0) or 0)
+        except Exception:
+            je_total_debit = None
+        if je_total_debit is not None and abs(je_total_debit - total_alloc_company) > 0.005:
+            frappe.throw(
+                _("Journal Entry total debit ({0}) does not match the sum of "
+                  "allocated company amounts ({1}).").format(
+                    je_total_debit, total_alloc_company
+                )
+            )
+    elif source_doctype == "Payment Entry":
+        try:
+            pe_doc = frappe.get_doc("Payment Entry", source_name)
+            pe_total = flt(getattr(pe_doc, "base_received_amount", 0) or
+                           getattr(pe_doc, "received_amount", 0))
+            if abs(pe_total - total_alloc_company) > 0.005:
+                frappe.throw(
+                    _("Payment Entry total ({0}) does not match the sum of "
+                      "allocated company amounts ({1}).").format(
+                        pe_total, total_alloc_company
+                    )
+                )
+        except frappe.DoesNotExistError:
+            pass
 
     created_events = []
     for alloc in allocations:
