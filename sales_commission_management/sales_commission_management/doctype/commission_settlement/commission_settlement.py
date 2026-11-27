@@ -377,6 +377,60 @@ class CommissionSettlement(Document):
         # In Subledger Until Settlement mode there is no prior accrual posting,
         # so no reclassification Journal Entry should be created.
         accounting_mode = _get_accounting_mode()
+
+        # Subledger Until Settlement: there is no prior accrual posting, so
+        # recognise the commission expense and the Commission Payable liability
+        # now, for Manual Approved Route settlements (which have no settlement
+        # document of their own). This makes the subsequent Payment Entry
+        # (which debits Commission Payable) valid.
+        if accounting_mode == "Subledger Until Settlement" and getattr(
+            self, "settlement_method", None
+        ) == "Manual Approved Route":
+            _acc, payable_account, expense_account, _cc, _payroll = (
+                _resolve_settlement_accounts(self.company)
+            )
+            if not expense_account or not payable_account:
+                frappe.throw(
+                    _(
+                        "Commission expense and commission payable accounts must be "
+                        "configured in Commission Settings (account mappings) before "
+                        "settlement."
+                    )
+                )
+            total_company_amount = 0.0
+            for row in (self.entries or []):
+                total_company_amount += flt(getattr(row, "base_currency_amount", 0) or 0)
+            if total_company_amount <= 0.005:
+                total_company_amount = flt(self.total_payable)
+            if total_company_amount <= 0.005:
+                return
+            company_currency = self.company_currency or _company_currency(self.company)
+            precision = _cp(company_currency)
+            je = frappe.get_doc(
+                {
+                    "doctype": "Journal Entry",
+                    "voucher_type": "Journal Entry",
+                    "company": self.company,
+                    "posting_date": frappe.utils.nowdate(),
+                    "commission_settlement": self.name,
+                    "accounts": [
+                        {
+                            "account": expense_account,
+                            "debit_in_account_currency": flt(total_company_amount, precision),
+                        },
+                        {
+                            "account": payable_account,
+                            "credit_in_account_currency": flt(total_company_amount, precision),
+                        },
+                    ],
+                    "user_remark": f"Recognise commission expense for settlement {self.name}",
+                }
+            )
+            je.insert(ignore_permissions=True)
+            je.submit()
+            self.settlement_journal_entry = je.name
+            return
+
         if accounting_mode != "Periodic Accrual":
             return
 
@@ -1385,12 +1439,13 @@ def make_commission_payment_entry(source_name=None, *args, **kwargs):
     pe.received_amount = outstanding
     pe.posting_date = frappe.utils.nowdate()
 
-    # Link to settlement (if the custom field is installed).
-    try:
-        if frappe.get_meta("Payment Entry").has_field("commission_settlement"):
-            pe.commission_settlement = sett_name
-    except Exception:
-        pass
+    # Link to settlement (mandatory custom field).
+    if not frappe.get_meta("Payment Entry").has_field("commission_settlement"):
+        frappe.throw(
+            _("The commission_settlement field is not installed on Payment Entry. "
+              "Run the migration patch first.")
+        )
+    pe.commission_settlement = sett_name
 
     # Let ERPNext calculate bank-side amounts; leave paid_from unset for user selection.
     pe.paid_amount = 0

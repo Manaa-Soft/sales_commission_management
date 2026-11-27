@@ -55,4 +55,5 @@ from sales_commission_management.sales_commission_management.payout.manual_payme
     record_manual_payout_for,
     process_payment_entry_for_commission,
     reverse_payment_entry_payouts,
+    reverse_journal_entry_payouts,
 )

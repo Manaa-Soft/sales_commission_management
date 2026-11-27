@@ -625,6 +625,26 @@ def record_manual_payout(settlement=None, **kwargs):
         frappe.throw(_("Settlement locking is unavailable."))
     lock_commission_settlement(sett_name)
 
+    # Link the source voucher to this settlement (conflict validation).
+    if source_doctype in ("Payment Entry", "Journal Entry") and source_name:
+        try:
+            voucher = frappe.get_doc(source_doctype, source_name)
+        except Exception:
+            frappe.throw(_("{0} {1} does not exist.").format(source_doctype, source_name))
+        existing_link = getattr(voucher, "commission_settlement", None)
+        if existing_link and existing_link != sett_name:
+            frappe.throw(
+                _("{0} {1} is already linked to settlement {2}.").format(
+                    source_doctype, source_name, existing_link
+                )
+            )
+        if not existing_link:
+            frappe.db.set_value(
+                source_doctype, source_name, "commission_settlement", sett_name,
+                update_modified=False,
+            )
+            frappe.clear_cache(doctype=source_doctype)
+
     if generate_event_key is None or create_and_submit_payout_event is None:
         frappe.throw(_("Payout event factory is unavailable."))
 
@@ -1133,7 +1153,7 @@ def record_manual_payout(settlement=None, **kwargs):
             "event_key": event_key,
             "event_type": "Payout",
             "posting_date": payment_date,
-            "evidence_level": "Manual Evidence",
+            "evidence_level": "ERP Payment Voucher" if source_doctype in ("Payment Entry", "Journal Entry") else "Manual Evidence",
             "settlement": sett_name,
             "settlement_item": item_name,
             "commission_entry": ce_name,
@@ -1242,6 +1262,7 @@ def reverse_payment_entry_payouts(payment_entry=None, *args, **kwargs):
         except Exception:
             return
 
+    source_doctype = getattr(pe, "doctype", None) or "Payment Entry"
     settlement_name = getattr(pe, "commission_settlement", None)
     if not settlement_name:
         return
@@ -1249,11 +1270,18 @@ def reverse_payment_entry_payouts(payment_entry=None, *args, **kwargs):
     if not pe_name:
         return
 
+    # Acquire the settlement lock before reading payout events / creating
+    # reversals, so concurrent cancellations cannot race.
+    frappe.db.sql(
+        "SELECT name FROM `tabCommission Settlement` WHERE name = %s FOR UPDATE",
+        (settlement_name,),
+    )
+
     # Find Payout events originating from this Payment Entry.
     events = frappe.get_all(
         "Commission Payout Event",
         filters={
-            "source_doctype": "Payment Entry",
+            "source_doctype": source_doctype,
             "source_name": pe_name,
             "event_type": "Payout",
             "docstatus": 1,
@@ -1271,68 +1299,71 @@ def reverse_payment_entry_payouts(payment_entry=None, *args, **kwargs):
         submit_payout_event,
     )
 
+    _prev_ignore = getattr(frappe.flags, "ignore_permissions", False)
     frappe.flags.ignore_permissions = True
-    for ev_row in events:
-        orig = frappe.get_doc("Commission Payout Event", ev_row["name"])
-        # Build reversal payload by negating amounts.
-        reversal_key = generate_event_key(
-            "Payment Entry",
-            pe_name,
-            getattr(orig, "source_row", None),
-            getattr(orig, "settlement", None),
-            getattr(orig, "settlement_item", None),
-            getattr(orig, "commission_entry", None),
-            "Payout Reversal",
-            reversal_of=orig.name,
-        )
-        # Check if reversal already exists (idempotency).
-        existing = frappe.db.get_value(
-            "Commission Payout Event", {"event_key": reversal_key}, "name"
-        )
-        if existing:
-            continue
-
-        payload = {
-            "event_key": reversal_key,
-            "event_type": "Payout Reversal",
-            "posting_date": frappe.utils.nowdate(),
-            "evidence_level": getattr(orig, "evidence_level", "ERP Payment Voucher"),
-            "settlement": getattr(orig, "settlement", None),
-            "settlement_item": getattr(orig, "settlement_item", None),
-            "commission_entry": getattr(orig, "commission_entry", None),
-            "company": getattr(orig, "company", None),
-            "beneficiary_type": getattr(orig, "beneficiary_type", None),
-            "beneficiary": getattr(orig, "beneficiary", None),
-            "source_doctype": "Payment Entry",
-            "source_name": pe_name,
-            "source_row": getattr(orig, "source_row", None),
-            "source_currency": getattr(orig, "source_currency", None),
-            "source_amount": flt(getattr(orig, "source_amount", 0)),
-            "settlement_currency": getattr(orig, "settlement_currency", None),
-            "settlement_amount": flt(getattr(orig, "settlement_amount", 0)),
-            "commission_currency": getattr(orig, "commission_currency", None),
-            "commission_amount": flt(getattr(orig, "commission_amount", 0)),
-            "company_currency": getattr(orig, "company_currency", None),
-            "company_amount": flt(getattr(orig, "company_amount", 0)),
-            "reversal_of": orig.name,
-        }
-        # Reversal events carry the same (positive) amounts as the original
-        # payout; the status calculator subtracts them. Keep amounts positive.
-
-        get_or_create_payout_event(payload)
-        # Submit the reversal.
-        rev_name = frappe.db.get_value("Commission Payout Event", {"event_key": reversal_key}, "name")
-        if rev_name:
-            submit_payout_event(rev_name)
-
-    # Refresh settlement payout status after reversals.
     try:
-        from sales_commission_management.sales_commission_management.payout.status import (
-            refresh_settlement_payout_status,
-        )
-        refresh_settlement_payout_status(settlement_name)
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "reverse_payment_entry_payouts refresh")
+        for ev_row in events:
+            orig = frappe.get_doc("Commission Payout Event", ev_row["name"])
+            # Build reversal payload by negating amounts.
+            reversal_key = generate_event_key(
+                "Payment Entry",
+                pe_name,
+                getattr(orig, "source_row", None),
+                getattr(orig, "settlement", None),
+                getattr(orig, "settlement_item", None),
+                getattr(orig, "commission_entry", None),
+                "Payout Reversal",
+                reversal_of=orig.name,
+            )
+            # Check if reversal already exists (idempotency).
+            existing = frappe.db.get_value(
+                "Commission Payout Event", {"event_key": reversal_key}, "name"
+            )
+            if existing:
+                continue
+
+            payload = {
+                "event_key": reversal_key,
+                "event_type": "Payout Reversal",
+                "posting_date": frappe.utils.nowdate(),
+                "evidence_level": getattr(orig, "evidence_level", "ERP Payment Voucher"),
+                "settlement": getattr(orig, "settlement", None),
+                "settlement_item": getattr(orig, "settlement_item", None),
+                "commission_entry": getattr(orig, "commission_entry", None),
+                "company": getattr(orig, "company", None),
+                "beneficiary_type": getattr(orig, "beneficiary_type", None),
+                "beneficiary": getattr(orig, "beneficiary", None),
+                "source_doctype": source_doctype,
+                "source_name": pe_name,
+                "source_row": getattr(orig, "source_row", None),
+                "source_currency": getattr(orig, "source_currency", None),
+                "source_amount": flt(getattr(orig, "source_amount", 0)),
+                "settlement_currency": getattr(orig, "settlement_currency", None),
+                "settlement_amount": flt(getattr(orig, "settlement_amount", 0)),
+                "commission_currency": getattr(orig, "commission_currency", None),
+                "commission_amount": flt(getattr(orig, "commission_amount", 0)),
+                "company_currency": getattr(orig, "company_currency", None),
+                "company_amount": flt(getattr(orig, "company_amount", 0)),
+                "reversal_of": orig.name,
+            }
+            # Reversal events carry the same (positive) amounts as the original
+            # payout; the status calculator subtracts them. Keep amounts positive.
+
+            get_or_create_payout_event(payload)
+            # Submit the reversal.
+            rev_name = frappe.db.get_value("Commission Payout Event", {"event_key": reversal_key}, "name")
+            if rev_name:
+                submit_payout_event(rev_name)
+
+    finally:
+        frappe.flags.ignore_permissions = _prev_ignore
+
+    # Refresh settlement payout status after reversals. Failures propagate so
+    # cancellation aborts instead of leaving stale status.
+    from sales_commission_management.sales_commission_management.payout.status import (
+        refresh_settlement_payout_status,
+    )
+    refresh_settlement_payout_status(settlement_name)
 
 
 def process_payment_entry_for_commission(payment_entry=None, *args, **kwargs):
@@ -1364,20 +1395,31 @@ def process_payment_entry_for_commission(payment_entry=None, *args, **kwargs):
         return
     settlement_name = getattr(pe, "commission_settlement", None)
     if not settlement_name:
+        # Only Payment Entries without a settlement link are ignored.
         return
 
-    try:
-        if not frappe.db.exists("Commission Settlement", settlement_name):
-            return
-        sett = frappe.get_doc("Commission Settlement", settlement_name)
-        if sett.docstatus != 1:
-            return
-        if getattr(sett, "settlement_method", None) != "Manual Approved Route":
-            return
+    # Fail closed: once a settlement link is present it must be valid.
+    if not frappe.db.exists("Commission Settlement", settlement_name):
+        frappe.throw(
+            _("Commission Settlement {0} does not exist.").format(settlement_name)
+        )
+    sett = frappe.get_doc("Commission Settlement", settlement_name)
+    if sett.docstatus != 1:
+        frappe.throw(
+            _("Commission Settlement {0} is not submitted.").format(settlement_name)
+        )
+    if getattr(sett, "settlement_method", None) != "Manual Approved Route":
+        frappe.throw(
+            _("Commission Settlement {0} does not use the Manual Approved Route method.").format(
+                settlement_name
+            )
+        )
 
-        amount = flt(getattr(pe, "received_amount", 0) or getattr(pe, "paid_amount", 0))
-        if amount <= 0:
-            return
+    amount = flt(getattr(pe, "received_amount", 0) or getattr(pe, "paid_amount", 0))
+    if amount <= 0:
+        frappe.throw(_("Payment Entry amount must be greater than zero."))
+
+    try:
 
         payment_entry_name = getattr(pe, "name", None)
         record_manual_payout(
@@ -1407,3 +1449,5 @@ process_manual_payout = _whitelist(process_manual_payout)
 manual_payment = _whitelist(manual_payment)
 create_manual_payment = _whitelist(create_manual_payment)
 record_manual_payout_for = _whitelist(record_manual_payout_for)
+
+reverse_journal_entry_payouts = reverse_payment_entry_payouts
