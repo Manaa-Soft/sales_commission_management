@@ -52,6 +52,7 @@ MAPPING_FIELDS = [
     "commission_recovery_receivable_account",
     "enabled",
     "cost_center",
+    "default_supplier_payment_term",
 ]
 
 CHILD_DOCTYPE = "Commission Account Mapping"
@@ -73,8 +74,7 @@ def _read_legacy_rows():
         return []
 
     rows = frappe.db.sql(
-        "SELECT * FROM `tabCommission Settings` WHERE name != %s",
-        (SINGLE_NAME,),
+        "SELECT * FROM `tabCommission Settings`",
         as_dict=True,
     ) or []
 
@@ -103,10 +103,7 @@ def _read_singleton_mappings():
 
 
 def _persisted_singleton_dict():
-    try:
-        return frappe.db.get_singles_dict("Commission Settings", cast=True) or {}
-    except Exception:
-        return {}
+    return frappe.db.get_singles_dict("Commission Settings", cast=True) or {}
 
 
 def _scalar_value(row, field):
@@ -118,8 +115,12 @@ def _scalar_value(row, field):
 def _mapping_payload(mapping_row):
     payload = {}
     for f in MAPPING_FIELDS:
-        if f in mapping_row:
-            payload[f] = mapping_row.get(f)
+        if isinstance(mapping_row, dict):
+            if f in mapping_row:
+                payload[f] = mapping_row.get(f)
+        else:
+            if hasattr(mapping_row, f):
+                payload[f] = getattr(mapping_row, f)
     return payload
 
 
@@ -160,10 +161,7 @@ def ensure():
     selected_legacy = None
     if legacy_rows:
         # legacy_rows already in DB order (modified desc not guaranteed); sort.
-        try:
-            legacy_rows.sort(key=lambda r: r["row"].get("modified") or "", reverse=True)
-        except Exception:
-            pass
+        legacy_rows.sort(key=lambda r: r["row"].get("modified") or "", reverse=True)
         selected_legacy = legacy_rows[0]["row"]
 
     # 2. Flip issingle on the DocType row.
@@ -182,6 +180,9 @@ def ensure():
 
     single_doc = frappe.get_single(doctype)
 
+    # Track expected final scalar values for verification (field -> value).
+    expected_scalars = {}
+
     # 4. Apply scalar fields per conflict policy.
     if not has_persisted_singleton:
         # No persisted singleton: take legacy values, including 0/False.
@@ -190,59 +191,94 @@ def ensure():
                 leg_val = _scalar_value(selected_legacy, field)
                 if leg_val is not None:
                     single_doc.set(field, leg_val)
+                    expected_scalars[field] = leg_val
     else:
         # Persisted singleton authoritative; only fill genuinely missing fields.
         for field in SCALAR_FIELDS:
             if persisted.get(field) in (None, ""):
                 if selected_legacy is not None:
                     leg_val = _scalar_value(selected_legacy, field)
-                    if leg_val is not None and leg_val not in ("",):
+                    if leg_val not in (None, ""):
                         single_doc.set(field, leg_val)
+                        expected_scalars[field] = leg_val
+            else:
+                expected_scalars[field] = persisted.get(field)
 
-    # 5. Merge account mappings (dedupe by company + expense account).
-    mapping_keys = {_mapping_key(m) for m in existing_singleton_mappings}
-    # Also consider mappings already on single_doc (defensive).
-    for m in (getattr(single_doc, "account_mappings", None) or []):
-        mapping_keys.add(
-            (
-                getattr(m, "company", None),
-                getattr(m, "commission_expense_account", None),
-            )
-        )
+    # 5. Merge account mappings (dedupe by company + expense account); merge
+    #    missing values instead of skipping conflicting mappings.
+    expected_mappings = [
+        _mapping_payload(m) for m in (getattr(single_doc, "account_mappings", None) or [])
+    ]
+    mapping_keys = {_mapping_key(m) for m in expected_mappings}
 
     for legacy in legacy_rows:
         for row in (legacy.get("mappings") or []):
             key = _mapping_key(row)
-            if key in mapping_keys:
-                continue
             payload = _mapping_payload(row)
-            single_doc.append("account_mappings", payload)
-            mapping_keys.add(key)
-
-    # Preserve existing singleton mappings if not already present (they are
-    # already on single_doc after get_single, so nothing extra needed).
+            existing = None
+            for em in expected_mappings:
+                if _mapping_key(em) == key:
+                    existing = em
+                    break
+            if existing is not None:
+                # Merge missing values from legacy into the existing mapping.
+                for f in MAPPING_FIELDS:
+                    if existing.get(f) in (None, "") and payload.get(f) not in (None, ""):
+                        existing[f] = payload.get(f)
+                # Also update the live child doc on single_doc.
+                for m in (getattr(single_doc, "account_mappings", None) or []):
+                    if _mapping_key(m) == key:
+                        for f in MAPPING_FIELDS:
+                            if getattr(m, f, None) in (None, "") and payload.get(f) not in (None, ""):
+                                try:
+                                    setattr(m, f, payload.get(f))
+                                except Exception:
+                                    pass
+                        break
+            else:
+                single_doc.append("account_mappings", payload)
+                expected_mappings.append(dict(payload))
+                mapping_keys.add(key)
 
     single_doc.save(ignore_permissions=True)
 
-    # 6. Verify persisted values and mapping counts.
+    # 6. Verify persisted values and mapping field values.
     persisted_after = _persisted_singleton_dict()
-    # Verify a sample of scalars that were migrated.
-    if not has_persisted_singleton and selected_legacy is not None:
-        for field in SCALAR_FIELDS:
-            leg_val = _scalar_value(selected_legacy, field)
-            if leg_val is not None:
-                if persisted_after.get(field) != leg_val:
+    for field, exp in expected_scalars.items():
+        if persisted_after.get(field) != exp:
+            frappe.throw(
+                "Commission Settings migration verification failed for "
+                "field '{0}': expected {1}, got {2}.".format(
+                    field, exp, persisted_after.get(field)
+                )
+            )
+
+    persisted_mappings = _read_singleton_mappings()
+    # Verify each expected mapping is present with all non-empty field values.
+    for exp in expected_mappings:
+        key = _mapping_key(exp)
+        match = None
+        for pm in persisted_mappings:
+            if _mapping_key(pm) == key:
+                match = pm
+                break
+        if match is None:
+            frappe.throw(
+                "Commission Settings migration verification failed: account "
+                "mapping {0} not found after migration.".format(key)
+            )
+        for f in MAPPING_FIELDS:
+            if exp.get(f) not in (None, ""):
+                if match.get(f) != exp.get(f):
                     frappe.throw(
                         "Commission Settings migration verification failed for "
-                        "field '{0}': expected {1}, got {2}.".format(
-                            field, leg_val, persisted_after.get(field)
+                        "account mapping {0} field '{1}': expected {2}, got {3}.".format(
+                            key, f, exp.get(f), match.get(f)
                         )
                     )
 
-    expected_mapping_count = len(mapping_keys)
-    actual_mapping_count = frappe.db.count(
-        CHILD_DOCTYPE, {"parent": SINGLE_NAME}
-    )
+    expected_mapping_count = len(expected_mappings)
+    actual_mapping_count = len(persisted_mappings)
     if actual_mapping_count != expected_mapping_count:
         frappe.throw(
             "Commission Settings migration verification failed: expected "

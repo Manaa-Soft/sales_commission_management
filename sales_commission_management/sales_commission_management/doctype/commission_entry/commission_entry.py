@@ -2,7 +2,7 @@ import frappe
 from frappe import _
 from sales_commission_management.sales_commission_management.utils import currency_precision as _cp
 from frappe.model.document import Document
-from frappe.utils import flt, getdate
+from frappe.utils import cint, flt, getdate
 
 
 class CommissionEntry(Document):
@@ -361,7 +361,7 @@ def _match_rule(plan, item_code, item_group):
 
     Within same specificity, higher priority wins. Ambiguous ties raise.
     """
-    rules = [r for r in (plan.get("rules") or []) if getattr(r, "enabled", 1)]
+    rules = [r for r in (plan.get("rules") or []) if cint(getattr(r, "enabled", 1))]
     if not rules:
         return None
 
@@ -732,7 +732,7 @@ def _native_overlap_guard(doc):
         settings = frappe.get_single("Commission Settings")
     except Exception:
         return
-    if not getattr(settings, "block_native_hrms_overlap", 0):
+    if not cint(getattr(settings, "block_native_hrms_overlap", 0)):
         return
     native_found = False
     for row in getattr(doc, "sales_team", None) or []:
@@ -766,7 +766,7 @@ def neutralize_native_commission(doc, method=None):
         settings = frappe.get_single("Commission Settings")
     except Exception:
         return
-    if not getattr(settings, "block_native_hrms_overlap", 0):
+    if not cint(getattr(settings, "block_native_hrms_overlap", 0)):
         return
     for row in getattr(doc, "sales_team", None) or []:
         try:
@@ -791,7 +791,7 @@ def neutralize_native_commission_on_update(doc, method=None):
         settings = frappe.get_single("Commission Settings")
     except Exception:
         return
-    if not getattr(settings, "block_native_hrms_overlap", 0):
+    if not cint(getattr(settings, "block_native_hrms_overlap", 0)):
         return
     for row in getattr(doc, "sales_team", None) or []:
         try:
@@ -811,12 +811,12 @@ def _source_enabled(doc):
     if not frappe.db.exists("DocType", "Commission Settings"):
         return True
     settings = frappe.get_single("Commission Settings")
-    if not getattr(settings, "enabled", 1):
+    if not cint(getattr(settings, "enabled", 1)):
         return False
     dt = getattr(doc, "doctype", None)
-    if dt == "Sales Invoice" and not getattr(settings, "enable_sales_invoice", 1):
+    if dt == "Sales Invoice" and not cint(getattr(settings, "enable_sales_invoice", 1)):
         return False
-    if dt == "POS Invoice" and not getattr(settings, "enable_pos_invoice", 1):
+    if dt == "POS Invoice" and not cint(getattr(settings, "enable_pos_invoice", 1)):
         return False
     return True
 
@@ -1276,9 +1276,9 @@ def generate_commission_on_payment(payment_entry, method=None):
     # Check settings.
     if frappe.db.exists("DocType", "Commission Settings"):
         settings = frappe.get_single("Commission Settings")
-        if not getattr(settings, "enabled", 1):
+        if not cint(getattr(settings, "enabled", 1)):
             return
-        if not getattr(settings, "enable_payment_entry", 1):
+        if not cint(getattr(settings, "enable_payment_entry", 1)):
             return
 
     references = payment_entry.get("references") or []
@@ -2376,7 +2376,7 @@ def reverse_commission_entries(doc, method=None):
                 cost_center = None
                 if settings:
                     for row in (getattr(settings, "account_mappings", None) or []):
-                        if getattr(row, "company", None) == original.company and getattr(row, "enabled", 1):
+                        if getattr(row, "company", None) == original.company and cint(getattr(row, "enabled", 1)):
                             accrued_account = getattr(row, "accrued_commission_payable_account", None)
                             expense_account = getattr(row, "commission_expense_account", None)
                             cost_center = getattr(row, "cost_center", None)
@@ -2703,9 +2703,9 @@ def update_commission_payment_status(payment_entry, method=None):
         return
     if frappe.db.exists("DocType", "Commission Settings"):
         settings = frappe.get_single("Commission Settings")
-        if not getattr(settings, "enabled", 1):
+        if not cint(getattr(settings, "enabled", 1)):
             return
-        if not getattr(settings, "enable_payment_entry", 1):
+        if not cint(getattr(settings, "enable_payment_entry", 1)):
             return
     references = payment_entry.get("references") or []
     invoices = set()

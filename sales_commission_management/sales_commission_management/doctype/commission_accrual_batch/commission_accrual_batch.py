@@ -1,7 +1,7 @@
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import flt, nowdate
+from frappe.utils import cint, flt, nowdate
 
 
 def _company_currency(company):
@@ -160,7 +160,7 @@ class CommissionAccrualBatch(Document):
             settings = None
         if settings:
             for row in (getattr(settings, "account_mappings", None) or []):
-                if getattr(row, "company", None) == self.company and getattr(row, "enabled", 1):
+                if getattr(row, "company", None) == self.company and cint(getattr(row, "enabled", 1)):
                     accrued = getattr(row, "accrued_commission_payable_account", None) or accrued
                     expense = getattr(row, "commission_expense_account", None) or expense
                     cost_center = getattr(row, "cost_center", None) or cost_center
