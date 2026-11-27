@@ -153,7 +153,7 @@ class CommissionAccrualBatch(Document):
         try:
             settings = (
                 frappe.get_single("Commission Settings")
-                if frappe.db.exists("Commission Settings")
+                if frappe.db.exists("DocType", "Commission Settings")
                 else None
             )
         except Exception:

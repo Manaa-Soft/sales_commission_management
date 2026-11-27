@@ -727,7 +727,7 @@ def _native_overlap_guard(doc):
     """Warn when native ERPNext commission rates are set on the invoice's sales team
     while the custom engine is configured to block native overlap."""
     try:
-        if not frappe.db.exists("Commission Settings"):
+        if not frappe.db.exists("DocType", "Commission Settings"):
             return
         settings = frappe.get_single("Commission Settings")
     except Exception:
@@ -761,7 +761,7 @@ def neutralize_native_commission(doc, method=None):
     commission fields are not persisted when block_native_hrms_overlap is set.
     Runs as before_submit; Frappe persists the modified values."""
     try:
-        if not frappe.db.exists("Commission Settings"):
+        if not frappe.db.exists("DocType", "Commission Settings"):
             return
         settings = frappe.get_single("Commission Settings")
     except Exception:
@@ -786,7 +786,7 @@ def neutralize_native_commission_on_update(doc, method=None):
     commission fields are not recalculated when the Sales Team is edited after
     submission. Runs as before_update_after_submit."""
     try:
-        if not frappe.db.exists("Commission Settings"):
+        if not frappe.db.exists("DocType", "Commission Settings"):
             return
         settings = frappe.get_single("Commission Settings")
     except Exception:
@@ -808,7 +808,7 @@ def neutralize_native_commission_on_update(doc, method=None):
 
 def _source_enabled(doc):
     """Check if commission generation is enabled for the given source document."""
-    if not frappe.db.exists("Commission Settings"):
+    if not frappe.db.exists("DocType", "Commission Settings"):
         return True
     settings = frappe.get_single("Commission Settings")
     if not getattr(settings, "enabled", 1):
@@ -1274,7 +1274,7 @@ def generate_commission_on_payment(payment_entry, method=None):
     if getattr(payment_entry, "docstatus", 0) != 1:
         return
     # Check settings.
-    if frappe.db.exists("Commission Settings"):
+    if frappe.db.exists("DocType", "Commission Settings"):
         settings = frappe.get_single("Commission Settings")
         if not getattr(settings, "enabled", 1):
             return
@@ -2362,7 +2362,7 @@ def reverse_commission_entries(doc, method=None):
 
         # Reverse the accrual GL if an accrual was posted for this entry.
         if _orig_accrued and abs(_orig_accrued) > 0.005:
-            if not frappe.db.exists("Commission Settings"):
+            if not frappe.db.exists("DocType", "Commission Settings"):
                 frappe.throw(
                     _("Commission Settings must be configured before invoice cancellation.")
                 )
@@ -2701,7 +2701,7 @@ def update_commission_payment_status(payment_entry, method=None):
         return
     if getattr(payment_entry, "party_type", None) != "Customer":
         return
-    if frappe.db.exists("Commission Settings"):
+    if frappe.db.exists("DocType", "Commission Settings"):
         settings = frappe.get_single("Commission Settings")
         if not getattr(settings, "enabled", 1):
             return

@@ -1,6 +1,7 @@
 import frappe
 from frappe import _
 from frappe.model.document import Document
+from frappe.utils import cint
 
 
 class CommissionSettings(Document):
@@ -10,7 +11,7 @@ class CommissionSettings(Document):
     def _validate_account_mappings(self):
         seen = set()
         for row in (self.account_mappings or []):
-            if not getattr(row, "enabled", 1):
+            if not cint(getattr(row, "enabled", 1)):
                 continue
             company = getattr(row, "company", None)
             if not company:
