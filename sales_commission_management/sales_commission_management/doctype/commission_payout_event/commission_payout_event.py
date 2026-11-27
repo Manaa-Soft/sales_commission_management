@@ -518,16 +518,10 @@ class CommissionPayoutEvent(Document):
             expected_party = None
             expected_party_type = None
             if self.settlement:
-                try:
-                    sett_doc = frappe.get_doc("Commission Settlement", self.settlement)
-                    resolved = resolve_commission_accounting_beneficiary(sett_doc)
-                    expected_party = resolved["party"]
-                    expected_party_type = resolved["party_type"]
-                except Exception:
-                    expected_party = None
-                    expected_party_type = None
-            if expected_party is None and self.beneficiary:
-                expected_party = self.beneficiary
+                sett_doc = frappe.get_doc("Commission Settlement", self.settlement)
+                resolved = resolve_commission_accounting_beneficiary(sett_doc)
+                expected_party = resolved["party"]
+                expected_party_type = resolved["party_type"]
             payable_debit = 0.0
             payable_credit = 0.0
             cash_credit = 0.0
@@ -557,6 +551,15 @@ class CommissionPayoutEvent(Document):
                     if acct_type in ("Cash", "Bank"):
                         cash_credit += credit
                         cash_debit += debit
+            company_currency = self.company_currency
+            if not company_currency:
+                frappe.throw(_("Company currency is required."))
+            company_precision = _currency_precision(company_currency)
+            tolerance = (
+                10 ** (-company_precision)
+                if company_precision is not None and company_precision >= 0
+                else 0.005
+            )
             if payable_credit > tolerance:
                 frappe.throw(_("Commission payable account must be debited, not credited."))
             if cash_debit > tolerance:

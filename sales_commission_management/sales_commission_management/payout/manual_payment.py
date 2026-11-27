@@ -429,7 +429,7 @@ def _validate_journal_entry_evidence(ev, sett, amount, commission_currency, comp
 def _validate_payment_entry_evidence(ev, sett, amount, commission_currency, company, company_amount=None, company_currency=None):
     """Validate a Payment Entry as evidence for the Manual Approved Route."""
     # Manual payout only creates Payout events, so the evidence must be a Pay entry.
-    if getattr(ev, "payment_type", None) not in (None, "Pay"):
+    if getattr(ev, "payment_type", None) != "Pay":
         frappe.throw(_("Payment Entry must be a Pay type for manual payout evidence."))
 
     # Beneficiary-side amount: received_amount in paid_to (party) account currency.
@@ -446,8 +446,8 @@ def _validate_payment_entry_evidence(ev, sett, amount, commission_currency, comp
     # Beneficiary-side currency must match commission currency.
     ev_currency = getattr(ev, "paid_to_account_currency", None)
     if not ev_currency:
-        ev_currency = getattr(ev, "currency", None)
-    if ev_currency and commission_currency and ev_currency != commission_currency:
+        frappe.throw(_("Payment Entry paid_to account currency is required."))
+    if ev_currency != commission_currency:
         frappe.throw(_("Payment Entry currency does not match commission currency."))
 
     # Company check (also done by caller, but enforce here too).
@@ -490,7 +490,9 @@ def _validate_payment_entry_evidence(ev, sett, amount, commission_currency, comp
 
     # Beneficiary-side account currency must match commission currency.
     paid_to_currency = getattr(ev, "paid_to_account_currency", None)
-    if paid_to_currency and commission_currency and paid_to_currency != commission_currency:
+    if not paid_to_currency:
+        frappe.throw(_("Payment Entry paid_to account currency is required."))
+    if paid_to_currency != commission_currency:
         frappe.throw(_("Payment Entry paid_to account currency must match commission currency."))
 
 
@@ -585,51 +587,53 @@ def record_manual_payout(settlement=None, **kwargs):
             frappe.throw(_("Invalid or missing settlement FX rate."))
     settlement_fx_rate = flt(settlement_fx_rate)
 
-    # Target (commission -> company) rate.
-    if company_currency == commission_currency:
-        target_exchange_rate = 1.0
-    else:
-        target_exchange_rate = None
-        try:
-            from frappe.utils import get_exchange_rate
-            r = get_exchange_rate(commission_currency, company_currency, payment_date)
-            if r and _is_finite(r) and float(r) > 0:
-                target_exchange_rate = r
-        except Exception:
-            pass
-        if not target_exchange_rate or not _is_finite(target_exchange_rate) or float(target_exchange_rate) <= 0:
-            frappe.throw(_("Invalid or missing company exchange rate."))
-    target_exchange_rate = flt(target_exchange_rate)
-
-    # For Payment Entry evidence, the beneficiary-side (commission -> company)
-    # conversion must use the submitted Payment Entry's actual target_exchange_rate.
-    # Fail closed: do not retain an independently resolved rate.
+    # Target (commission -> company) rate, resolved by evidence type first.
     if source_doctype == "Payment Entry":
         try:
             pe_doc = frappe.get_doc("Payment Entry", source_name)
         except Exception:
             frappe.throw(_("Payment Entry {0} does not exist.").format(source_name))
-        pe_rate = getattr(pe_doc, "target_exchange_rate", None)
-        if not pe_rate or not _is_finite(pe_rate) or float(pe_rate) <= 0:
-            # Same-currency transactions use a rate of 1.0.
-            if company_currency == commission_currency:
-                pe_rate = 1.0
-            else:
+        if getattr(pe_doc, "docstatus", 0) != 1:
+            frappe.throw(_("Payment Entry must be submitted."))
+        if getattr(pe_doc, "payment_type", None) not in (None, "Pay"):
+            frappe.throw(_("Payment Entry must be a Pay transaction."))
+        if getattr(pe_doc, "company", None) and getattr(pe_doc, "company", None) != sett.company:
+            frappe.throw(_("Payment Entry company does not match settlement."))
+        if company_currency == commission_currency:
+            target_exchange_rate = 1.0
+        else:
+            pe_rate = getattr(pe_doc, "target_exchange_rate", None)
+            if not pe_rate or not _is_finite(pe_rate) or float(pe_rate) <= 0:
                 frappe.throw(_("Invalid or missing Payment Entry target exchange rate."))
-        target_exchange_rate = flt(pe_rate)
+            target_exchange_rate = flt(pe_rate)
         # Verify beneficiary-side reconciliation: base_received = received * rate.
         pe_received = flt(getattr(pe_doc, "received_amount", 0) or 0)
         pe_base_received = flt(getattr(pe_doc, "base_received_amount", 0) or 0)
-        if pe_received > 0 and pe_base_received > 0:
-            expected_base = flt(pe_received * float(pe_rate), _cp(company_currency))
+        if company_currency != commission_currency:
+            if pe_base_received <= 0:
+                frappe.throw(_("Payment Entry base received amount is required for foreign currency."))
+            expected_base = flt(pe_received * float(target_exchange_rate), _cp(company_currency))
             prec = _cp(company_currency)
             tolerance = (10 ** (-prec)) if prec and prec > 0 else 0.005
             if abs(expected_base - pe_base_received) > tolerance:
                 frappe.throw(_("Payment Entry beneficiary-side amount does not reconcile."))
-        elif pe_base_received <= 0 and company_currency != commission_currency:
-            frappe.throw(_("Payment Entry base received amount is required for foreign currency."))
+        else:
+            target_exchange_rate = 1.0
+    else:
         if company_currency == commission_currency:
             target_exchange_rate = 1.0
+        else:
+            target_exchange_rate = None
+            try:
+                from frappe.utils import get_exchange_rate
+                r = get_exchange_rate(commission_currency, company_currency, payment_date)
+                if r and _is_finite(r) and float(r) > 0:
+                    target_exchange_rate = r
+            except Exception:
+                pass
+            if not target_exchange_rate or not _is_finite(target_exchange_rate) or float(target_exchange_rate) <= 0:
+                frappe.throw(_("Invalid or missing company exchange rate."))
+        target_exchange_rate = flt(target_exchange_rate)
 
     # Amounts: input amount is commission currency.
     commission_amount_total = flt(amount, _cp(commission_currency))
@@ -662,7 +666,15 @@ def record_manual_payout(settlement=None, **kwargs):
         comm_balance = flt(_get_attr(si, "amount_included", 0))
         company_balance = flt(_get_attr(si, "base_currency_amount", 0))
         c2c_rate = flt(_get_attr(si, "commission_to_company_rate", 0))
-        prev_paid = _previously_paid_for_item(si_name) if _previously_paid_for_item else 0.0
+        prev_paid = (
+            _previously_paid_for_item(
+                si_name,
+                exclude_source_doctype=source_doctype,
+                exclude_source_name=source_name,
+            )
+            if _previously_paid_for_item
+            else 0.0
+        )
         items.append(
             {
                 "item": si_name,
@@ -680,16 +692,17 @@ def record_manual_payout(settlement=None, **kwargs):
     # Build the expected per-item allocation map up front so the idempotency
     # check can compare each existing event against its expected allocation
     # (aggregate totals alone cannot detect a changed per-item distribution).
-    try:
-        _expected_allocations = allocate_supplier_payment_across_items(
+    _expected_allocations = (
+        allocate_supplier_payment_across_items(
             payment_allocation=settlement_amount_total,
             source_allocation=commission_amount_total,
             target_exchange_rate=target_exchange_rate,
             settlement_fx_rate=settlement_fx_rate,
             items=items,
-        ) if allocate_supplier_payment_across_items else []
-    except Exception:
-        _expected_allocations = []
+        )
+        if allocate_supplier_payment_across_items
+        else []
+    )
     _expected_map = {a.get("item"): a for a in (_expected_allocations or [])}
 
     # Idempotency: check for existing payout events from this exact payment
@@ -818,12 +831,14 @@ def record_manual_payout(settlement=None, **kwargs):
             if _get_attr(_r, "fx_rate", None) is not None:
                 if abs(flt(_get_attr(_r, "fx_rate", 0)) - flt(settlement_fx_rate)) > (10 ** (-6)):
                     frappe.throw(_("Existing payout event settlement FX rate does not match; refusing to reprocess."))
+        # Exact retry: ensure the complete expected allocation is present.
+        if seen_items != set(_expected_map):
+            frappe.throw(
+                _("Existing payout events do not match the complete expected allocation.")
+            )
         # Exact retry: return existing events without reallocating.
         if refresh_settlement_payout_status is not None:
-            try:
-                refresh_settlement_payout_status(sett_name)
-            except Exception:
-                pass
+            refresh_settlement_payout_status(sett_name)
         return existing_event_names
 
     # Outstanding check (fail closed).
@@ -863,11 +878,29 @@ def record_manual_payout(settlement=None, **kwargs):
             pe_doc = frappe.get_doc("Payment Entry", source_name)
             bank_fx_from = getattr(pe_doc, "paid_from_account_currency", None)
             bank_fx_rate = getattr(pe_doc, "source_exchange_rate", None)
+            paid_from_account = getattr(pe_doc, "paid_from", None)
+            paid_amount = flt(getattr(pe_doc, "paid_amount", 0) or 0)
+            base_paid_amount = flt(getattr(pe_doc, "base_paid_amount", 0) or 0)
         except Exception:
             bank_fx_from = None
             bank_fx_rate = None
+            paid_from_account = None
+            paid_amount = 0.0
+            base_paid_amount = 0.0
+        if paid_from_account:
+            try:
+                actual_currency = frappe.get_cached_value("Account", paid_from_account, "account_currency")
+            except Exception:
+                actual_currency = None
+            if actual_currency and bank_fx_from and actual_currency != bank_fx_from:
+                frappe.throw(_("Payment Entry paid_from account currency does not match the Account record."))
+        if not bank_fx_from and paid_from_account:
+            try:
+                bank_fx_from = frappe.get_cached_value("Account", paid_from_account, "account_currency")
+            except Exception:
+                bank_fx_from = None
         if not bank_fx_from:
-            bank_fx_from = commission_currency
+            frappe.throw(_("Cannot resolve the Payment Entry paid_from account currency."))
         # Fail closed: if bank and company currencies differ, a valid rate is
         # required. Do not silently substitute None.
         if bank_fx_from != company_currency:
@@ -875,6 +908,13 @@ def record_manual_payout(settlement=None, **kwargs):
                 frappe.throw(
                     _("Missing or invalid source exchange rate on Payment Entry {0}.").format(source_name)
                 )
+            # Reconcile base_paid = paid * source_exchange_rate.
+            if paid_amount > 0 and base_paid_amount > 0:
+                expected_base = flt(paid_amount * float(bank_fx_rate), _cp(company_currency))
+                prec = _cp(company_currency)
+                tol = (10 ** (-prec)) if prec and prec > 0 else 0.005
+                if abs(expected_base - base_paid_amount) > tol:
+                    frappe.throw(_("Payment Entry bank-side amount does not reconcile."))
         else:
             bank_fx_rate = 1.0
 
@@ -984,13 +1024,7 @@ def record_manual_payout(settlement=None, **kwargs):
         created_events.append(name)
 
     if refresh_settlement_payout_status is not None:
-        try:
-            refresh_settlement_payout_status(sett_name)
-        except Exception:
-            frappe.log_error(
-                frappe.get_traceback(),
-                "Manual payout status refresh failed for {0}".format(sett_name),
-            )
+        refresh_settlement_payout_status(sett_name)
 
     return created_events
 

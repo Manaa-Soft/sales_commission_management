@@ -830,7 +830,11 @@ def allocate_supplier_payment_across_items(*args, **kwargs):
 # ---------------------------------------------------------------------------
 
 
-def _previously_paid_for_item(settlement_item_name):
+def _previously_paid_for_item(
+    settlement_item_name,
+    exclude_source_doctype=None,
+    exclude_source_name=None,
+):
     """Derive the net previously paid amount (in settlement currency) for a
     settlement item from submitted Payout events, including reversals.
 
@@ -846,16 +850,24 @@ def _previously_paid_for_item(settlement_item_name):
     # no payout events exist. Use a locking (FOR UPDATE) read so that, once
     # the caller holds the settlement lock, this query observes the latest
     # committed payout events rather than a stale REPEATABLE READ snapshot.
-    _raw = frappe.db.sql(
+    sql = (
         "SELECT event_type, settlement_amount "
         "FROM `tabCommission Payout Event` "
         "WHERE settlement_item = %s "
         "  AND docstatus = %s "
         "  AND event_type IN ('Payout', 'Payout Reversal') "
-        "FOR UPDATE",
-        (settlement_item_name, 1),
-        as_dict=True,
     )
+    params = [settlement_item_name, 1]
+    if exclude_source_doctype and exclude_source_name:
+        sql += (
+            "  AND NOT ("
+            "    COALESCE(source_doctype, '') = %s "
+            "    AND COALESCE(source_name, '') = %s"
+            "  ) "
+        )
+        params.extend([exclude_source_doctype, exclude_source_name])
+    sql += "FOR UPDATE"
+    _raw = frappe.db.sql(sql, tuple(params), as_dict=True)
     rows = []
     for _r in (_raw or []):
         if isinstance(_r, dict):
@@ -1176,7 +1188,11 @@ def process_supplier_payment_entry(payment_entry):
             comm_balance = flt(_get_attr(si, "amount_included", 0))
             company_balance = flt(_get_attr(si, "base_currency_amount", 0))
             c2c_rate = flt(_get_attr(si, "commission_to_company_rate", 0))
-            prev_paid = _previously_paid_for_item(si_name)
+            prev_paid = _previously_paid_for_item(
+                si_name,
+                exclude_source_doctype="Payment Entry",
+                exclude_source_name=_get_attr(pe, "name", None),
+            )
             items.append(
                 {
                     "item": si_name,
