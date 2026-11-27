@@ -1,7 +1,7 @@
 """Data patch: migrate legacy (non-single) Commission Settings rows into the
 single record and ensure ``tabDocType.issingle = 1``.
 
-Sites created before ``is_single`` was set (or where a manual/migration drift
+Sites created before ``issingle`` was set (or where a manual/migration drift
 left ``tabDocType.issingle = 0``) end up with one or more rows in
 ``tabCommission Settings`` whose ``name`` is not ``Commission Settings``. The
 single DocType, however, is addressed by the name ``Commission Settings``. As a
@@ -11,8 +11,13 @@ empty record, losing the configured accounts, mappings and defaults.
 Schema sync does not reliably flip ``issingle`` on an already-existing DocType
 row and does not move data between rows, so we do both explicitly and
 idempotently here. This patch is safe to re-run.
-"""
 
+Important ordering: legacy rows MUST be read while the DocType is still
+table-backed, i.e. BEFORE ``issingle`` is flipped. Once ``issingle = 1`` Frappe
+loads the DocType through its Single mechanism and ``Document.load_from_db()``
+reads from ``tabSingles`` instead of the requested legacy row, so
+``frappe.get_doc(doctype, legacy_name)`` no longer retrieves the original row.
+"""
 
 import frappe
 
@@ -49,6 +54,81 @@ MAPPING_FIELDS = [
     "cost_center",
 ]
 
+CHILD_DOCTYPE = "Commission Account Mapping"
+SINGLE_NAME = "Commission Settings"
+
+
+def _table_exists(table_name):
+    try:
+        return bool(frappe.db.table_exists(table_name))
+    except Exception:
+        return frappe.db.exists("DocType", table_name.lstrip("tab")) is not None
+
+
+def _read_legacy_rows():
+    """Read all legacy (non-single) Commission Settings rows while the DocType
+    is still table-backed. Returns a list of dicts (each row plus its child
+    mapping rows under ``account_mappings``)."""
+    if not frappe.db.table_exists("Commission Settings"):
+        return []
+
+    rows = frappe.db.sql(
+        "SELECT * FROM `tabCommission Settings` WHERE name != %s",
+        (SINGLE_NAME,),
+        as_dict=True,
+    ) or []
+
+    legacy = []
+    for row in rows:
+        name = row.get("name")
+        mappings = []
+        if name and frappe.db.table_exists(CHILD_DOCTYPE):
+            mappings = frappe.db.sql(
+                "SELECT * FROM `tabCommission Account Mapping` WHERE parent = %s",
+                (name,),
+                as_dict=True,
+            ) or []
+        legacy.append({"row": row, "mappings": mappings})
+    return legacy
+
+
+def _read_singleton_mappings():
+    if not frappe.db.table_exists(CHILD_DOCTYPE):
+        return []
+    return frappe.db.sql(
+        "SELECT * FROM `tabCommission Account Mapping` WHERE parent = %s",
+        (SINGLE_NAME,),
+        as_dict=True,
+    ) or []
+
+
+def _persisted_singleton_dict():
+    try:
+        return frappe.db.get_singles_dict("Commission Settings", cast=True) or {}
+    except Exception:
+        return {}
+
+
+def _scalar_value(row, field):
+    if not row:
+        return None
+    return row.get(field)
+
+
+def _mapping_payload(mapping_row):
+    payload = {}
+    for f in MAPPING_FIELDS:
+        if f in mapping_row:
+            payload[f] = mapping_row.get(f)
+    return payload
+
+
+def _mapping_key(mapping_row):
+    return (
+        mapping_row.get("company"),
+        mapping_row.get("commission_expense_account"),
+    )
+
 
 def ensure():
     """Idempotent: ensure single + migrate legacy data. Callable from patches
@@ -57,16 +137,43 @@ def ensure():
         return
 
     doctype = "Commission Settings"
-    single_name = doctype
 
-    # 1. Flip issingle on the DocType row.
+    # 1. Read legacy rows and their child mappings BEFORE flipping issingle.
+    #    (See module docstring for why this ordering is mandatory.)
+    legacy_rows = _read_legacy_rows()
+    persisted = _persisted_singleton_dict()
+    has_persisted_singleton = bool(persisted)
+
+    # Existing singleton child mappings (if any).
+    existing_singleton_mappings = _read_singleton_mappings()
+
+    # Conflict policy:
+    # - Scalars: if a persisted singleton exists, it is authoritative; legacy
+    #   values only fill fields that are truly absent (None/""), so an
+    #   intentionally persisted 0/False is preserved. If no persisted singleton
+    #   exists, legacy values (including intentional 0/False) take precedence
+    #   over DocType defaults.
+    # - When multiple legacy rows exist, scalars come from the most recently
+    #   modified legacy row; mappings are merged (union, deduped) from ALL
+    #   legacy rows plus any existing singleton mappings.
+    # - Mappings are deduped by (company, commission_expense_account).
+    selected_legacy = None
+    if legacy_rows:
+        # legacy_rows already in DB order (modified desc not guaranteed); sort.
+        try:
+            legacy_rows.sort(key=lambda r: r["row"].get("modified") or "", reverse=True)
+        except Exception:
+            pass
+        selected_legacy = legacy_rows[0]["row"]
+
+    # 2. Flip issingle on the DocType row.
     frappe.db.set_value("DocType", doctype, "issingle", 1, update_modified=False)
     frappe.clear_cache(doctype=doctype)
 
-    # 2. Make sure the single row exists.
-    if not frappe.db.exists(doctype, single_name):
+    # 3. Make sure the single row exists.
+    if not frappe.db.exists(doctype, SINGLE_NAME):
         try:
-            frappe.get_doc({"doctype": doctype, "name": single_name}).insert(
+            frappe.get_doc({"doctype": doctype, "name": SINGLE_NAME}).insert(
                 ignore_permissions=True
             )
         except Exception:
@@ -75,52 +182,106 @@ def ensure():
 
     single_doc = frappe.get_single(doctype)
 
-    # 3. Find legacy rows (name != single_name).
-    legacy_names = frappe.get_all(
-        doctype, filters=[["name", "!=", single_name]], pluck="name"
-    )
-
-    mapping_keys = {
-        (getattr(m, "company", None), getattr(m, "commission_expense_account", None))
-        for m in (getattr(single_doc, "account_mappings", None) or [])
-    }
-
-    for lname in legacy_names:
-        try:
-            ldoc = frappe.get_doc(doctype, lname)
-        except Exception:
-            continue
-
-        # Copy scalar fields only when the single record is empty.
+    # 4. Apply scalar fields per conflict policy.
+    if not has_persisted_singleton:
+        # No persisted singleton: take legacy values, including 0/False.
         for field in SCALAR_FIELDS:
-            if getattr(single_doc, field, None) in (None, "", 0) and getattr(
-                ldoc, field, None
-            ) not in (None, ""):
-                single_doc.set(field, ldoc.get(field))
+            if selected_legacy is not None:
+                leg_val = _scalar_value(selected_legacy, field)
+                if leg_val is not None:
+                    single_doc.set(field, leg_val)
+    else:
+        # Persisted singleton authoritative; only fill genuinely missing fields.
+        for field in SCALAR_FIELDS:
+            if persisted.get(field) in (None, ""):
+                if selected_legacy is not None:
+                    leg_val = _scalar_value(selected_legacy, field)
+                    if leg_val is not None and leg_val not in ("",):
+                        single_doc.set(field, leg_val)
 
-        # Merge account mappings (dedupe by company + expense account).
-        for row in (getattr(ldoc, "account_mappings", None) or []):
-            key = (
-                getattr(row, "company", None),
-                getattr(row, "commission_expense_account", None),
+    # 5. Merge account mappings (dedupe by company + expense account).
+    mapping_keys = {_mapping_key(m) for m in existing_singleton_mappings}
+    # Also consider mappings already on single_doc (defensive).
+    for m in (getattr(single_doc, "account_mappings", None) or []):
+        mapping_keys.add(
+            (
+                getattr(m, "company", None),
+                getattr(m, "commission_expense_account", None),
             )
+        )
+
+    for legacy in legacy_rows:
+        for row in (legacy.get("mappings") or []):
+            key = _mapping_key(row)
             if key in mapping_keys:
                 continue
-            payload = {}
-            for f in MAPPING_FIELDS:
-                if hasattr(row, f):
-                    payload[f] = getattr(row, f)
+            payload = _mapping_payload(row)
             single_doc.append("account_mappings", payload)
             mapping_keys.add(key)
 
-        # Remove the legacy row now that its data has been merged.
-        try:
-            frappe.delete_doc(doctype, lname, ignore_permissions=True, force=True)
-        except Exception:
-            pass
+    # Preserve existing singleton mappings if not already present (they are
+    # already on single_doc after get_single, so nothing extra needed).
 
     single_doc.save(ignore_permissions=True)
-    frappe.db.commit()
+
+    # 6. Verify persisted values and mapping counts.
+    persisted_after = _persisted_singleton_dict()
+    # Verify a sample of scalars that were migrated.
+    if not has_persisted_singleton and selected_legacy is not None:
+        for field in SCALAR_FIELDS:
+            leg_val = _scalar_value(selected_legacy, field)
+            if leg_val is not None:
+                if persisted_after.get(field) != leg_val:
+                    frappe.throw(
+                        "Commission Settings migration verification failed for "
+                        "field '{0}': expected {1}, got {2}.".format(
+                            field, leg_val, persisted_after.get(field)
+                        )
+                    )
+
+    expected_mapping_count = len(mapping_keys)
+    actual_mapping_count = frappe.db.count(
+        CHILD_DOCTYPE, {"parent": SINGLE_NAME}
+    )
+    if actual_mapping_count != expected_mapping_count:
+        frappe.throw(
+            "Commission Settings migration verification failed: expected "
+            "{0} account mappings, found {1}.".format(
+                expected_mapping_count, actual_mapping_count
+            )
+        )
+
+    # 7. Remove legacy records only after successful migration+verification.
+    #    Use raw SQL because the DocType is now Single and frappe.delete_doc
+    #    would route through the Single mechanism, making deletion unreliable.
+    #    Failures propagate via the remaining-count check below.
+    for legacy in legacy_rows:
+        lname = legacy["row"].get("name")
+        if not lname or lname == SINGLE_NAME:
+            continue
+        if frappe.db.table_exists(CHILD_DOCTYPE):
+            frappe.db.sql(
+                "DELETE FROM `tabCommission Account Mapping` WHERE parent = %s",
+                (lname,),
+            )
+        frappe.db.sql(
+            "DELETE FROM `tabCommission Settings` WHERE name = %s",
+            (lname,),
+        )
+
+    # Verify no legacy rows remain.
+    remaining = frappe.db.sql(
+        "SELECT COUNT(*) AS c FROM `tabCommission Settings` WHERE name != %s",
+        (SINGLE_NAME,),
+    )
+    remaining_count = (remaining[0][0] if remaining else 0)
+    if remaining_count:
+        frappe.throw(
+            "Commission Settings migration failed to remove {0} legacy row(s).".format(
+                remaining_count
+            )
+        )
+
     frappe.clear_cache(doctype=doctype)
 
 

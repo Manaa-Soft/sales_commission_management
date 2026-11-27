@@ -352,6 +352,21 @@ class CommissionPayoutEvent(Document):
                     frappe.throw(_("Payment Entry paid_from account does not belong to the company."))
                 if _acct_type not in ("Cash", "Bank"):
                     frappe.throw(_("Payment Entry paid_from must be a Cash or Bank account."))
+                # Independently verify the paid_from (bank) account currency.
+                paid_from_currency = getattr(pe, "paid_from_account_currency", None)
+                if not paid_from_currency:
+                    frappe.throw(
+                        _("Payment Entry paid_from account currency is required.")
+                    )
+                actual_paid_from_currency = frappe.get_cached_value(
+                    "Account", pe.paid_from, "account_currency"
+                )
+                if not actual_paid_from_currency:
+                    frappe.throw(_("Cannot resolve bank account currency."))
+                if paid_from_currency != actual_paid_from_currency:
+                    frappe.throw(
+                        _("Payment Entry bank currency does not match its Account.")
+                    )
                 # Independently verify the Commission Payable account currency.
                 actual_paid_to_currency = None
                 try:
@@ -361,7 +376,11 @@ class CommissionPayoutEvent(Document):
                 if not actual_paid_to_currency:
                     frappe.throw(_("Cannot resolve Commission Payable account currency."))
                 paid_to_currency = getattr(pe, "paid_to_account_currency", None)
-                if paid_to_currency and actual_paid_to_currency != paid_to_currency:
+                if not paid_to_currency:
+                    frappe.throw(
+                        _("Payment Entry paid_to account currency is required.")
+                    )
+                if paid_to_currency != actual_paid_to_currency:
                     frappe.throw(_("Payment Entry beneficiary account currency does not match its Account."))
                 _comm_curr = self.commission_currency or self.source_currency
                 if _comm_curr and actual_paid_to_currency != _comm_curr:
