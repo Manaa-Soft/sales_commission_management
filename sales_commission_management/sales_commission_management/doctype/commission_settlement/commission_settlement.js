@@ -174,6 +174,12 @@ function _filter_settlement_methods(frm) {
 }
 
 function _recompute_settlement_totals(frm) {
+    // Submitted settlement totals are controlled by the server.
+    // The payout-event ledger is authoritative for paid amounts.
+    if (frm.doc.docstatus !== 0) {
+        return;
+    }
+
     let total_earned = 0;
     let total_payable = 0;
     let total_reserved = 0;
