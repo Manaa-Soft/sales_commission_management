@@ -1208,6 +1208,33 @@ def record_manual_payout(*args, **kwargs):
     return _impl(*args, **kwargs)
 
 
+@frappe.whitelist(methods=["GET", "POST"])
+def refresh_settlement_payout_status(settlement=None, **kwargs):
+    """Whitelisted wrapper to refresh derived payout fields on a settlement."""
+    if frappe.session.user == "Guest":
+        frappe.throw(_("Authentication required."), frappe.PermissionError)
+    if settlement is None:
+        settlement = kwargs.get("settlement") or kwargs.get("name")
+    if not settlement:
+        frappe.throw(_("Commission Settlement is required."), frappe.ValidationError)
+    # Resolve name safely.
+    if isinstance(settlement, (list, dict)):
+        frappe.throw(_("Settlement must be a string name."), frappe.ValidationError)
+    sett_name = str(settlement)
+    if not frappe.db.exists("Commission Settlement", sett_name):
+        frappe.throw(_("Commission Settlement {0} does not exist.").format(sett_name))
+    if not frappe.has_permission("Commission Settlement", "write", sett_name):
+        frappe.throw(
+            _("Insufficient permissions to refresh this settlement."),
+            frappe.PermissionError,
+        )
+    from sales_commission_management.sales_commission_management.payout.status import (
+        refresh_settlement_payout_status as _impl,
+    )
+
+    return _impl(sett_name)
+
+
 @frappe.whitelist()
 def record_manual_payout_event(*args, **kwargs):
     from sales_commission_management.sales_commission_management.payout.manual_payment import (

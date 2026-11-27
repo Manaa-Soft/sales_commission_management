@@ -1,15 +1,61 @@
 frappe.ui.form.on("Commission Settlement", {
     refresh: function (frm) {
+        frm.clear_custom_buttons();
         if (frm.doc.docstatus === 0) {
             frm.add_custom_button(__("Fetch Eligible Entries"), function () {
                 fetch_eligible_entries(frm);
             });
         }
-        if (frm.doc.docstatus === 1 && frm.doc.settlement_method === "Manual Approved Route") {
+
+        // View group: only documents that actually exist and are related.
+        frm.add_custom_button(__("Commission Payout Events"), function () {
+            frappe.set_route("List", "Commission Payout Event", {
+                settlement: frm.doc.name,
+            });
+        }, __("View"));
+
+        if (frm.doc.settlement_document_type && frm.doc.settlement_document) {
+            frm.add_custom_button(__(frm.doc.settlement_document_type), function () {
+                frappe.set_route(
+                    "Form",
+                    frm.doc.settlement_document_type,
+                    frm.doc.settlement_document
+                );
+            }, __("View"));
+        }
+
+        if (frm.doc.settlement_journal_entry) {
+            frm.add_custom_button(__("Settlement Journal Entry"), function () {
+                frappe.set_route("Form", "Journal Entry", frm.doc.settlement_journal_entry);
+            }, __("View"));
+        }
+
+        // Create group.
+        var can_record_manual_payout =
+            frm.doc.docstatus === 1 &&
+            frm.doc.settlement_method === "Manual Approved Route" &&
+            flt(frm.doc.outstanding_payout_amount) > 0 &&
+            (frappe.session.user === "Administrator" ||
+                frappe.user.has_role([
+                    "System Manager",
+                    "Accounts Manager",
+                    "Commission Manager",
+                ]));
+        if (can_record_manual_payout) {
             frm.add_custom_button(__("Record Manual Payout"), function () {
                 record_manual_payout_dialog(frm);
-            });
+            }, __("Create"));
         }
+        frm.page.set_inner_btn_group_as_primary(__("Create"));
+
+        // Actions group.
+        if (frm.doc.docstatus === 1) {
+            frm.add_custom_button(__("Refresh Payout Status"), function () {
+                refresh_payout_status(frm);
+            }, __("Actions"));
+        }
+
+        _set_payout_indicator(frm);
         _filter_settlement_methods(frm);
         _recompute_settlement_totals(frm);
     },
@@ -185,4 +231,38 @@ function record_manual_payout_dialog(frm) {
         },
     });
     d.show();
+}
+
+function _set_payout_indicator(frm) {
+    var status = frm.doc.payout_status || "Not Paid";
+    var color_map = {
+        "Not Paid": "red",
+        "Payroll Accrued": "orange",
+        "Disbursement Recorded": "blue",
+        "Partially Paid": "orange",
+        "Paid": "green",
+        "Recovery Due": "red",
+        "Recovered": "green",
+        "Cancelled": "gray",
+    };
+    var color = color_map[status] || "gray";
+    if (frm.doc.docstatus === 1) {
+        frm.page.set_indicator(status, color);
+    }
+}
+
+function refresh_payout_status(frm) {
+    frappe.call({
+        method: "sales_commission_management.sales_commission_management.doctype.commission_settlement.commission_settlement.refresh_settlement_payout_status",
+        args: { settlement: frm.doc.name },
+        freeze: true,
+        freeze_message: __("Refreshing payout status..."),
+        callback: function () {
+            frm.reload_doc();
+            frappe.show_alert({
+                message: __("Payout status refreshed."),
+                indicator: "green",
+            });
+        },
+    });
 }
