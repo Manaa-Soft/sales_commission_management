@@ -321,12 +321,15 @@ class CommissionPayoutEvent(Document):
                 if supplier:
                     valid_parties.add(supplier)
                 party = getattr(pe, "party", None)
-                if party and valid_parties and party not in valid_parties:
+                party_type = getattr(pe, "party_type", None)
+                if not party:
+                    frappe.throw(_("Payment Entry must identify the beneficiary."))
+                if valid_parties and party not in valid_parties:
                     frappe.throw(_("Payment Entry party does not match settlement beneficiary."))
-                # Amount validation against source amount.
-                ev_amount = getattr(pe, "paid_amount", None)
-                if ev_amount is None:
-                    ev_amount = getattr(pe, "received_amount", None)
+                if not party_type:
+                    frappe.throw(_("Party type is required when a party is referenced."))
+                # Amount validation against source amount (beneficiary side).
+                ev_amount = getattr(pe, "received_amount", None)
                 if ev_amount is None:
                     ev_amount = getattr(pe, "amount", None)
                 if ev_amount is None:
@@ -342,8 +345,10 @@ class CommissionPayoutEvent(Document):
                 # Require source amount positive.
                 if self.source_amount is not None and flt(self.source_amount, prec) <= 0:
                     frappe.throw(_("Source amount must be positive."))
-                # Currency alignment.
-                ev_currency = getattr(pe, "currency", None) or getattr(pe, "paid_to_account_currency", None) or getattr(pe, "paid_from_account_currency", None)
+                # Currency alignment (beneficiary side).
+                ev_currency = getattr(pe, "paid_to_account_currency", None)
+                if not ev_currency:
+                    ev_currency = getattr(pe, "currency", None)
                 if ev_currency and self.source_currency and ev_currency != self.source_currency:
                     frappe.throw(
                         _("Source currency ({0}) must match the Payment Entry currency ({1}).").format(
@@ -423,6 +428,90 @@ class CommissionPayoutEvent(Document):
                             self.source_amount, allocated_amount
                         )
                     )
+        # Source document validation for Journal Entry evidence.
+        if self.source_doctype == "Journal Entry":
+            if not self.source_name:
+                frappe.throw(_("Source document is required for Journal Entry events."))
+            je = frappe.get_doc("Journal Entry", self.source_name)
+            if je.docstatus != 1:
+                frappe.throw(_("Journal Entry must be submitted."))
+            if self.company and je.company != self.company:
+                frappe.throw(_("Journal Entry company must match event company."))
+            if self.posting_date and getattr(je, "posting_date", None) and str(je.posting_date) != str(self.posting_date):
+                frappe.throw(_("Journal Entry date does not match posting date."))
+            total_debit = flt(je.total_debit)
+            total_credit = flt(je.total_credit)
+            if total_debit <= 0 or total_credit <= 0:
+                frappe.throw(_("Journal Entry must contain debit and credit lines."))
+            if abs(total_debit - total_credit) > 0.005:
+                frappe.throw(_("Journal Entry debits and credits do not balance."))
+            expected_company = flt(self.company_amount)
+            prec = _currency_precision(self.company_currency or "USD")
+            tolerance = (10 ** (-prec)) if prec and prec > 0 else 0.005
+            if abs(total_debit - expected_company) > tolerance and abs(total_credit - expected_company) > tolerance:
+                frappe.throw(_("Journal Entry amount does not match payment amount."))
+            from sales_commission_management.sales_commission_management.payout.manual_payment import _resolve_payable_account
+            payable = _resolve_payable_account(self.company)
+            account_names = [getattr(r, "account", None) for r in (je.accounts or [])]
+            if payable not in account_names:
+                frappe.throw(_("Journal Entry does not include the commission payable account."))
+            has_cash_bank = False
+            for acct in account_names:
+                try:
+                    acct_type = frappe.get_cached_value("Account", acct, "account_type")
+                except Exception:
+                    acct_type = None
+                if acct_type in ("Cash", "Bank"):
+                    has_cash_bank = True
+                    break
+            if not has_cash_bank:
+                frappe.throw(_("Journal Entry must include a cash or bank account."))
+            valid_parties = set()
+            if self.settlement:
+                try:
+                    from sales_commission_management.sales_commission_management.payout.manual_payment import _resolve_valid_parties
+                    sett_doc = frappe.get_doc("Commission Settlement", self.settlement)
+                    valid_parties = _resolve_valid_parties(sett_doc)
+                except Exception:
+                    valid_parties = set()
+            if self.beneficiary:
+                valid_parties.add(self.beneficiary)
+            payable_debit = 0.0
+            payable_credit = 0.0
+            cash_credit = 0.0
+            cash_debit = 0.0
+            for row in (je.accounts or []):
+                acct = getattr(row, "account", None)
+                debit = flt(getattr(row, "debit", 0))
+                credit = flt(getattr(row, "credit", 0))
+                if acct == payable:
+                    payable_debit += debit
+                    payable_credit += credit
+                    party = getattr(row, "party", None)
+                    party_type = getattr(row, "party_type", None)
+                    if not party:
+                        frappe.throw(_("Commission payable account row must identify the beneficiary."))
+                    if valid_parties and party not in valid_parties:
+                        frappe.throw(_("Journal Entry party does not match settlement beneficiary."))
+                    if not party_type:
+                        frappe.throw(_("Party type is required when a party is referenced."))
+                else:
+                    try:
+                        acct_type = frappe.get_cached_value("Account", acct, "account_type")
+                    except Exception:
+                        acct_type = None
+                    if acct_type in ("Cash", "Bank"):
+                        cash_credit += credit
+                        cash_debit += debit
+            if payable_credit > tolerance:
+                frappe.throw(_("Commission payable account must be debited, not credited."))
+            if cash_debit > tolerance:
+                frappe.throw(_("Cash or bank account must be credited, not debited."))
+            if abs(payable_debit - expected_company) > tolerance:
+                frappe.throw(_("Commission payable debit does not match payment amount."))
+            if abs(cash_credit - expected_company) > tolerance:
+                frappe.throw(_("Cash or bank credit does not match payment amount."))
+
         # FX snapshot consistency.
         if self.fx_from_currency or self.fx_to_currency or self.fx_rate:
             if not self.fx_from_currency or not self.fx_to_currency:
