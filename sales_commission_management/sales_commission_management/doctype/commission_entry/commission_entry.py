@@ -726,12 +726,9 @@ def _insert_entry(
 def _native_overlap_guard(doc):
     """Warn when native ERPNext commission rates are set on the invoice's sales team
     while the custom engine is configured to block native overlap."""
-    try:
-        if not frappe.db.exists("DocType", "Commission Settings"):
-            return
-        settings = frappe.get_single("Commission Settings")
-    except Exception:
+    if not frappe.db.exists("DocType", "Commission Settings"):
         return
+    settings = frappe.get_single("Commission Settings")
     if not cint(getattr(settings, "block_native_hrms_overlap", 0)):
         return
     native_found = False
@@ -760,12 +757,9 @@ def neutralize_native_commission(doc, method=None):
     """Mutate the (not-yet-submitted) Sales Invoice in memory so native ERPNext
     commission fields are not persisted when block_native_hrms_overlap is set.
     Runs as before_submit; Frappe persists the modified values."""
-    try:
-        if not frappe.db.exists("DocType", "Commission Settings"):
-            return
-        settings = frappe.get_single("Commission Settings")
-    except Exception:
+    if not frappe.db.exists("DocType", "Commission Settings"):
         return
+    settings = frappe.get_single("Commission Settings")
     if not cint(getattr(settings, "block_native_hrms_overlap", 0)):
         return
     for row in getattr(doc, "sales_team", None) or []:
@@ -785,12 +779,9 @@ def neutralize_native_commission_on_update(doc, method=None):
     """Mutate an already-submitted Sales Invoice in memory so native ERPNext
     commission fields are not recalculated when the Sales Team is edited after
     submission. Runs as before_update_after_submit."""
-    try:
-        if not frappe.db.exists("DocType", "Commission Settings"):
-            return
-        settings = frappe.get_single("Commission Settings")
-    except Exception:
+    if not frappe.db.exists("DocType", "Commission Settings"):
         return
+    settings = frappe.get_single("Commission Settings")
     if not cint(getattr(settings, "block_native_hrms_overlap", 0)):
         return
     for row in getattr(doc, "sales_team", None) or []:

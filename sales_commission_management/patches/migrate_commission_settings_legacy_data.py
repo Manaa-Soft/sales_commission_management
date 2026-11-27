@@ -293,7 +293,16 @@ def ensure():
     #    Failures propagate via the remaining-count check below.
     for legacy in legacy_rows:
         lname = legacy["row"].get("name")
-        if not lname or lname == SINGLE_NAME:
+        if not lname:
+            continue
+        if lname == SINGLE_NAME:
+            # Preserve child mapping rows: they now belong to the Single DocType.
+            # Only delete the stale same-name parent row so it is not re-read as
+            # legacy data on a subsequent migration run.
+            frappe.db.sql(
+                "DELETE FROM `tabCommission Settings` WHERE name = %s",
+                (lname,),
+            )
             continue
         if frappe.db.table_exists(CHILD_DOCTYPE):
             frappe.db.sql(
@@ -305,10 +314,9 @@ def ensure():
             (lname,),
         )
 
-    # Verify no legacy rows remain.
+    # Verify no rows remain in the legacy parent table at all.
     remaining = frappe.db.sql(
-        "SELECT COUNT(*) AS c FROM `tabCommission Settings` WHERE name != %s",
-        (SINGLE_NAME,),
+        "SELECT COUNT(*) AS c FROM `tabCommission Settings`"
     )
     remaining_count = (remaining[0][0] if remaining else 0)
     if remaining_count:
