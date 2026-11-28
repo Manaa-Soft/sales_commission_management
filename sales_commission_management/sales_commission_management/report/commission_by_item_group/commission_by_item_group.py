@@ -78,6 +78,9 @@ def get_data(filters):
         filters=flt_filters,
         fields=[
             "item_group",
+            "source_name",
+            "source_row",
+            "event_type",
             "source_qty",
             "commission_basis",
             "commission_rate",
@@ -88,6 +91,7 @@ def get_data(filters):
     )
 
     agg = {}
+    seen_sales = set()
     for r in rows:
         key = r.item_group or _("(none)")
         a = agg.setdefault(
@@ -101,8 +105,11 @@ def get_data(filters):
                 "total_commission": 0.0,
             },
         )
-        a["qty"] += flt(r.source_qty)
-        a["total_basis"] += flt(r.company_basis_amount)
+        sales_key = (r.source_name, r.source_row, r.event_type)
+        if sales_key not in seen_sales:
+            seen_sales.add(sales_key)
+            a["qty"] += flt(r.source_qty)
+            a["total_basis"] += flt(r.company_basis_amount)
         a["total_commission"] += flt(r.earned_commission)
 
     grand = sum(a["total_commission"] for a in agg.values()) or 1.0

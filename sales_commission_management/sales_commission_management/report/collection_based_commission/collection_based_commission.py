@@ -43,8 +43,20 @@ def get_columns():
             "width": 110,
         },
         {
+            "fieldname": "collection_eligible_amount",
+            "label": _("Collection Eligible"),
+            "fieldtype": "Currency",
+            "width": 120,
+        },
+        {
+            "fieldname": "payable_amount",
+            "label": _("Payable"),
+            "fieldtype": "Currency",
+            "width": 110,
+        },
+        {
             "fieldname": "paid_amount",
-            "label": _("Collected/Paid"),
+            "label": _("Paid to Beneficiary"),
             "fieldtype": "Currency",
             "width": 120,
         },
@@ -56,7 +68,13 @@ def get_columns():
         },
         {
             "fieldname": "collection_pct",
-            "label": _("Collection %"),
+            "label": _("Collection Eligibility %"),
+            "fieldtype": "Percent",
+            "width": 110,
+        },
+        {
+            "fieldname": "payout_pct",
+            "label": _("Payout %"),
             "fieldtype": "Percent",
             "width": 100,
         },
@@ -101,6 +119,8 @@ def get_data(filters):
             "sales_person",
             "sales_partner",
             "earned_commission",
+            "collection_eligible_amount",
+            "payable_amount",
             "paid_amount",
             "outstanding_amount",
             "status",
@@ -111,17 +131,24 @@ def get_data(filters):
     data = []
     for r in rows:
         earned = flt(r.earned_commission)
+        eligible = flt(r.collection_eligible_amount)
+        payable = flt(r.payable_amount)
         paid = flt(r.paid_amount)
-        pct = (paid / earned * 100.0) if earned else 0.0
+        # Customer collection eligibility is separate from commission payout.
+        collection_pct = (eligible / earned * 100.0) if earned else 0.0
+        payout_pct = (paid / payable * 100.0) if payable else 0.0
         data.append(
             {
                 "sales_invoice": r.sales_invoice,
                 "beneficiary_type": r.beneficiary_type,
                 "beneficiary": r.sales_person or r.sales_partner,
                 "earned_commission": flt(r.earned_commission, 2),
+                "collection_eligible_amount": flt(r.collection_eligible_amount, 2),
+                "payable_amount": flt(r.payable_amount, 2),
                 "paid_amount": flt(r.paid_amount, 2),
                 "outstanding_amount": flt(r.outstanding_amount, 2),
-                "collection_pct": flt(pct, 2),
+                "collection_pct": flt(collection_pct, 2),
+                "payout_pct": flt(payout_pct, 2),
                 "status": r.status,
             }
         )

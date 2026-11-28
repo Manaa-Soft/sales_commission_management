@@ -146,7 +146,9 @@ def get_data(filters):
             },
         )
         a["earned"] += flt(r.earned_commission)
-        a["payable"] += flt(r.payable_amount) or flt(r.earned_commission)
+        # Use the actual payable amount, preserving a legitimate zero. Do not
+        # fall back to earned commission when nothing is payable yet.
+        a["payable"] += flt(r.payable_amount)
         a["paid"] += flt(r.paid_amount)
         a["outstanding"] += flt(r.outstanding_amount)
         age = (today - getdate(r.posting_date)).days if r.posting_date else 0

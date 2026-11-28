@@ -2278,6 +2278,13 @@ def reverse_commission_entries(doc, method=None):
             "source_row",
         ],
     )
+    # Lock the original Commission Entry rows in deterministic order before
+    # processing, so concurrent cancellations cannot both create a reversal.
+    for _locked in sorted(existing_entries, key=lambda r: r.get("name") or ""):
+        frappe.db.sql(
+            "SELECT name FROM `tabCommission Entry` WHERE name = %s FOR UPDATE",
+            _locked.get("name"),
+        )
     for entry in existing_entries:
         original = frappe.get_doc("Commission Entry", entry.name)
         from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import _accrued_for_entry
@@ -2308,6 +2315,14 @@ def reverse_commission_entries(doc, method=None):
         clawback = frappe.copy_doc(original)
         clawback.event_key = ev_key
         clawback.event_type = "Cancellation Reversal"
+        # Use the actual cancellation event date for reporting, not the
+        # original invoice date inherited via copy_doc.
+        clawback.posting_date = frappe.utils.nowdate()
+        # Reverse the signed sales-basis and quantity fields as well.
+        clawback.source_qty = -1 * flt(original.source_qty)
+        clawback.commission_qty = -1 * flt(original.commission_qty)
+        clawback.transaction_basis_amount = -1 * flt(original.transaction_basis_amount)
+        clawback.company_basis_amount = -1 * flt(original.company_basis_amount)
         clawback.earned_commission = -1 * flt(original.earned_commission)
         clawback.commission_basis_amount = -1 * flt(original.commission_basis_amount)
         clawback.earned_delta = -1 * flt(original.earned_delta)
@@ -2388,7 +2403,7 @@ def reverse_commission_entries(doc, method=None):
                             "doctype": "Journal Entry",
                             "voucher_type": "Journal Entry",
                             "company": original.company,
-                            "posting_date": original.posting_date,
+                            "posting_date": frappe.utils.nowdate(),
                             "accounts": [
                                 {
                                     "account": accrued_account,
