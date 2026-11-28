@@ -170,7 +170,11 @@ def _batch_accrued_subledger(company, to_date, mode):
                 if getdate(posting_date) > getdate(to_date):
                     continue
             except Exception:
-                pass
+                frappe.throw(
+                    _("Invalid accounting date on accrual batch {0}: {1}.").format(
+                        b.name, posting_date
+                    )
+                )
         items = frappe.get_all(
             "Commission Accrual Batch Item",
             filters={"parent": b.name},
@@ -190,8 +194,11 @@ def _batch_accrued_subledger(company, to_date, mode):
                 it.get("company_amount")
             )
 
-    # Subtract reclassified amounts through submitted settlements with submitted JE.
-    reclassified_total = 0.0
+    # Subtract reclassified amounts using the actual submitted settlement
+    # Journal Entries. The JE lines are the accounting truth: they tell us
+    # which accrued liability account was debited and by how much. This avoids
+    # aggregating into one arbitrary account and avoids the historical
+    # base_currency_amount fallback (which could overstate reclassification).
     settlements = frappe.get_all(
         "Commission Settlement",
         filters={"company": company, "docstatus": 1},
@@ -199,49 +206,48 @@ def _batch_accrued_subledger(company, to_date, mode):
     )
     for s in settlements or []:
         je = getattr(s, "settlement_journal_entry", None)
-        if not je:
+        if mode == "Periodic Accrual" and not je:
             continue
         try:
             je_status = frappe.get_cached_value("Journal Entry", je, "docstatus")
             je_posting = frappe.get_cached_value("Journal Entry", je, "posting_date")
+            je_company = frappe.get_cached_value("Journal Entry", je, "company")
         except Exception:
             raise
         if je_status != 1:
             continue
+        if je_company and je_company != company:
+            frappe.throw(
+                _("Journal Entry {0} does not belong to company {1}.").format(je, company)
+            )
         cutoff_date = je_posting or getattr(s, "approval_date", None)
         if to_date and cutoff_date:
             try:
                 if getdate(cutoff_date) > getdate(to_date):
                     continue
             except Exception:
-                pass
-        items = frappe.get_all(
-            "Commission Settlement Item",
-            filters={"parent": s.name},
-            fields=["base_currency_amount", "reclassified_company_amount"],
+                frappe.throw(
+                    _("Invalid accounting date on settlement {0}: {1}.").format(
+                        s.name, cutoff_date
+                    )
+                )
+        # Read the JE account lines; debits to accrued accounts are the
+        # reclassified amounts.
+        je_lines = frappe.get_all(
+            "Journal Entry Account",
+            filters={"parent": je},
+            fields=["account", "debit_in_account_currency", "credit_in_account_currency"],
         )
-        for it in items or []:
-            rca = it.get("reclassified_company_amount")
-            if rca is None:
-                rca = it.get("base_currency_amount")
-            if rca is not None and rca != "":
-                reclassified_total += flt(rca)
-    # Resolve configured accrued account.
-    try:
-        _settings_obj = frappe.get_single("Commission Settings") if frappe.db.exists(
-            "DocType", "Commission Settings"
-        ) else None
-    except Exception:
-        _settings_obj = None
-    _accrued_cfg, _ = _resolve_accounts(_settings_obj, company)
-    target_acct = _accrued_cfg if _accrued_cfg in by_account else (
-        next(iter(by_account), None)
-    )
-    if target_acct is not None and reclassified_total:
-        by_account[target_acct] = by_account.get(target_acct, 0.0) - reclassified_total
+        for line in je_lines or []:
+            acct = line.get("account")
+            debit = flt(line.get("debit_in_account_currency"))
+            if acct and debit and debit > 0:
+                # A reclassification JE debits the accrued liability account.
+                by_account[acct] = by_account.get(acct, 0.0) - debit
 
-    # Account for cancellation / accrual-reversal. Use persisted company amount.
-    reversal_total_by_acct = {}
+    # Account for cancellation / accrual-reversal. Use the linked reversal
+    # Journal Entry as the accounting reference when available.
+    seen_reversal_jes = set()
     rev_entries = frappe.get_all(
         "Commission Entry",
         filters={
@@ -250,23 +256,87 @@ def _batch_accrued_subledger(company, to_date, mode):
             "event_type": "Cancellation Reversal",
         },
         fields=[
+            "name",
             "accrued_reversal_company_amount",
             "accrued_amount",
             "commission_to_company_rate",
             "commission_currency",
             "company_currency",
             "posting_date",
+            "reversal_journal_entry",
+            "reverses_entry",
         ],
     )
     for e in rev_entries or []:
-        pd = getattr(e, "posting_date", None)
-        if to_date and pd and getdate(pd) > getdate(to_date):
+        rje = getattr(e, "reversal_journal_entry", None)
+        # Determine posting date for cutoff.
+        if rje:
+            if rje in seen_reversal_jes:
+                continue
+            try:
+                rje_status = frappe.get_cached_value("Journal Entry", rje, "docstatus")
+                rje_posting = frappe.get_cached_value("Journal Entry", rje, "posting_date")
+                rje_company = frappe.get_cached_value("Journal Entry", rje, "company")
+            except Exception:
+                raise
+            if rje_status != 1:
+                # Linked reversal JE cancelled/missing: do not count.
+                continue
+            if rje_company and rje_company != company:
+                frappe.throw(
+                    _("Reversal Journal Entry {0} does not belong to company {1}.").format(
+                        rje, company
+                    )
+                )
+            cutoff_pd = rje_posting
+            if not cutoff_pd:
+                frappe.throw(
+                    _("Reversal Journal Entry {0} has no posting date.").format(rje)
+                )
+            if to_date:
+                try:
+                    if getdate(cutoff_pd) > getdate(to_date):
+                        continue
+                except Exception:
+                    frappe.throw(
+                        _("Invalid accounting date on reversal Journal Entry {0}.").format(rje)
+                    )
+            seen_reversal_jes.add(rje)
+            # Allocate per account from the JE lines (debits to accrued accounts).
+            rje_lines = frappe.get_all(
+                "Journal Entry Account",
+                filters={"parent": rje},
+                fields=["account", "debit_in_account_currency"],
+            )
+            for line in rje_lines or []:
+                acct = line.get("account")
+                debit = flt(line.get("debit_in_account_currency"))
+                if acct and debit and debit > 0:
+                    by_account[acct] = by_account.get(acct, 0.0) - debit
             continue
-        # Prefer persisted company-currency reversal amount.
+
+        # Historical fallback: no reversal_journal_entry. Use persisted amount
+        # allocated by the entry's originating accrual batch accounts. Do not
+        # silently treat base_currency_amount as the reclassified amount.
+        pd = getattr(e, "posting_date", None)
+        if to_date and pd:
+            try:
+                if getdate(pd) > getdate(to_date):
+                    continue
+            except Exception:
+                frappe.throw(
+                    _("Invalid accounting date on cancellation reversal entry {0}.").format(
+                        e.get("name")
+                    )
+                )
         amt = getattr(e, "accrued_reversal_company_amount", None)
         if amt is None:
-            # Fallback for historical rows: old calculation.
-            amt = flt(e.get("accrued_amount"))
+            # Historical rows without persisted amount: reconstruct using the
+            # old calculation, but flag is not possible here; allocate by batch
+            # accounts. If no reliable amount, skip to avoid overstating.
+            amt = getattr(e, "accrued_amount", None)
+            if amt is None:
+                continue
             rate = flt(e.get("commission_to_company_rate") or 0)
             comm = e.get("commission_currency")
             comp = e.get("company_currency") or _company_currency(company)
@@ -278,24 +348,48 @@ def _batch_accrued_subledger(company, to_date, mode):
                         _("Missing commission-to-company rate for cancellation reversal entry.")
                     )
                 rate = 1.0
-            amt = flt(amt * rate)
+            amt = flt(flt(amt) * rate)
         else:
             amt = flt(amt)
-        # amt is negative reversal; add to accrued liability.
-        acct = target_acct if target_acct is not None else (
-            next(iter(by_account), None)
-        )
-        if acct is None:
-            # No batch accounts; nothing to attribute. Skip.
+        # amt is the persisted (negative) reversal amount; magnitude for allocation.
+        magnitude = abs(amt)
+        if magnitude <= 0.005:
             continue
-        by_account[acct] = by_account.get(acct, 0.0) + amt
+        # Determine originating accounts from accrual batches.
+        try:
+            from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import (
+                _accrued_for_entry_by_account as _by_acct,
+            )
+
+            # The reversal entry reverses an original entry; find the original
+            # via reverses_entry if present, else use this entry's batches.
+            orig_name = getattr(e, "reverses_entry", None) or e.get("name")
+            by_acct = _by_acct(orig_name)
+        except Exception:
+            by_acct = {}
+        total_accrued = sum(flt(v) for v in (by_acct or {}).values())
+        if total_accrued <= 0.005:
+            # Cannot attribute; skip to avoid misallocation.
+            continue
+        # amt sign: original persisted value is negative. Preserve sign per account.
+        sign = -1.0 if amt < 0 else 1.0
+        for acct, aamt in (by_acct or {}).items():
+            share = flt(aamt) / total_accrued if total_accrued else 0.0
+            allocated = flt(magnitude * share * sign, 6)
+            if allocated:
+                by_account[acct] = by_account.get(acct, 0.0) + allocated
 
     return by_account
 
 
 def _payable_subledger(company, to_date, mode):
-    """Commission payable subledger in company currency as of to_date."""
-    total = 0.0
+    """Commission payable subledger by account in company currency as of to_date.
+
+    Returns a dict mapping payable account -> amount. Historical settlement
+    accounts are derived from the actual submitted settlement Journal Entries
+    rather than assuming the current configured payable account.
+    """
+    by_account = {}
     settlements = frappe.get_all(
         "Commission Settlement",
         filters={"company": company, "docstatus": 1},
@@ -303,56 +397,117 @@ def _payable_subledger(company, to_date, mode):
     )
     for s in settlements or []:
         je = getattr(s, "settlement_journal_entry", None)
-        if not je:
+        if mode == "Periodic Accrual":
+            if not je:
+                continue
+            try:
+                je_status = frappe.get_cached_value("Journal Entry", je, "docstatus")
+                je_posting = frappe.get_cached_value("Journal Entry", je, "posting_date")
+                je_company = frappe.get_cached_value("Journal Entry", je, "company")
+            except Exception:
+                raise
+            if je_status != 1:
+                continue
+            if je_company and je_company != company:
+                frappe.throw(
+                    _("Journal Entry {0} does not belong to company {1}.").format(je, company)
+                )
+            cutoff_date = je_posting or getattr(s, "approval_date", None)
+            if to_date and cutoff_date:
+                try:
+                    if getdate(cutoff_date) > getdate(to_date):
+                        continue
+                except Exception:
+                    frappe.throw(
+                        _("Invalid accounting date on settlement {0}: {1}.").format(
+                            s.name, cutoff_date
+                        )
+                    )
+            # Use the actual reclassified amount per settlement JE credit lines.
+            je_lines = frappe.get_all(
+                "Journal Entry Account",
+                filters={"parent": je},
+                fields=["account", "debit_in_account_currency", "credit_in_account_currency"],
+            )
+            for line in je_lines or []:
+                acct = line.get("account")
+                credit = flt(line.get("credit_in_account_currency"))
+                if acct and credit and credit > 0:
+                    # A reclassification JE credits the payable account.
+                    by_account[acct] = by_account.get(acct, 0.0) + credit
             continue
-        try:
-            je_status = frappe.get_cached_value("Journal Entry", je, "docstatus")
-            je_posting = frappe.get_cached_value("Journal Entry", je, "posting_date")
-        except Exception:
-            raise
-        if je_status != 1:
-            continue
-        cutoff_date = je_posting or getattr(s, "approval_date", None)
+
+        # Subledger Until Settlement mode: approved settlement amount route.
+        if je:
+            try:
+                je_status = frappe.get_cached_value("Journal Entry", je, "docstatus")
+                je_posting = frappe.get_cached_value("Journal Entry", je, "posting_date")
+            except Exception:
+                raise
+            if je_status != 1:
+                continue
+            cutoff_date = je_posting or getattr(s, "approval_date", None)
+        else:
+            cutoff_date = getattr(s, "approval_date", None)
         if to_date and cutoff_date:
             try:
                 if getdate(cutoff_date) > getdate(to_date):
                     continue
             except Exception:
-                pass
+                frappe.throw(
+                    _("Invalid accounting date on settlement {0}: {1}.").format(
+                        s.name, cutoff_date
+                    )
+                )
         items = frappe.get_all(
             "Commission Settlement Item",
             filters={"parent": s.name},
-            fields=["base_currency_amount", "reclassified_company_amount"],
+            fields=["base_currency_amount"],
         )
+        total = 0.0
         for it in items or []:
-            if mode == "Periodic Accrual":
-                rca = it.get("reclassified_company_amount")
-                if rca is None:
-                    rca = it.get("base_currency_amount")
-                if rca is not None and rca != "":
-                    total += flt(rca)
-            else:
-                # Subledger Until Settlement: approved settlement amount route.
-                ba = it.get("base_currency_amount")
-                if ba is not None and ba != "":
-                    total += flt(ba)
+            ba = it.get("base_currency_amount")
+            if ba is not None and ba != "":
+                total += flt(ba)
+        by_account.setdefault("__subledger_until_settlement__", 0.0)
+        by_account["__subledger_until_settlement__"] += flt(total)
     # Payout events reduce payable; payout reversals increase it.
     events = frappe.get_all(
         "Commission Payout Event",
         filters={"company": company, "docstatus": 1},
         fields=["event_type", "company_amount", "posting_date"],
     )
+    # Resolve configured payable account for payouts / subledger-until-settlement.
+    settings = _settings()
+    _accrued_cfg, payable_cfg = _resolve_accounts(settings, company)
+    payout_account = payable_cfg
+    payout_total = 0.0
     for ev in events or []:
         pd = getattr(ev, "posting_date", None)
-        if to_date and pd and getdate(pd) > getdate(to_date):
-            continue
+        if to_date and pd:
+            try:
+                if getdate(pd) > getdate(to_date):
+                    continue
+            except Exception:
+                frappe.throw(
+                    _("Invalid accounting date on payout event.")
+                )
         amt = flt(ev.get("company_amount"))
         et = ev.get("event_type")
         if et == "Payout":
-            total -= amt
+            payout_total -= amt
         elif et == "Payout Reversal":
-            total += amt
-    return flt(total)
+            payout_total += amt
+    if payout_account:
+        by_account[payout_account] = by_account.get(payout_account, 0.0) + flt(payout_total)
+    # Move subledger-until-settlement accumulated total into configured payable account.
+    sus_total = by_account.pop("__subledger_until_settlement__", 0.0)
+    if sus_total and payout_account:
+        by_account[payout_account] = by_account.get(payout_account, 0.0) + flt(sus_total)
+    elif sus_total:
+        # No configured payable account; leave as unmapped? Store under None.
+        by_account[None] = by_account.get(None, 0.0) + flt(sus_total)
+    return {k: flt(v) for k, v in by_account.items()}
 
 
 def get_data(filters):
@@ -370,7 +525,7 @@ def get_data(filters):
     mode = _accounting_mode(settings)
 
     accrued_by_acct = _batch_accrued_subledger(company, to_date, mode)
-    payable_subledger = _payable_subledger(company, to_date, mode)
+    payable_by_acct = _payable_subledger(company, to_date, mode)
 
     accrued_accounts = set()
     payable_accounts = set()
@@ -379,6 +534,7 @@ def get_data(filters):
     if payable_account:
         payable_accounts.add(payable_account)
     accrued_accounts |= set(accrued_by_acct.keys())
+    payable_accounts |= set((payable_by_acct or {}).keys())
 
     # Accrued liability accounts.
     for acct in sorted(accrued_accounts):
@@ -397,13 +553,14 @@ def get_data(filters):
     # Payable liability accounts.
     for acct in sorted(payable_accounts):
         gl = _gl_balance(acct, company, to_date)
+        sub = flt((payable_by_acct or {}).get(acct, 0.0))
         data.append(
             {
                 "account": acct,
                 "description": _("Commission payable"),
                 "gl_balance": flt(gl, 2),
-                "subledger_amount": flt(payable_subledger, 2),
-                "difference": flt(payable_subledger - gl, 2),
+                "subledger_amount": flt(sub, 2),
+                "difference": flt(sub - gl, 2),
             }
         )
 

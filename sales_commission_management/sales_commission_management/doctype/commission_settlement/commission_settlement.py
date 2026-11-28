@@ -524,6 +524,66 @@ class CommissionSettlement(Document):
                     "in Commission Settings (account mappings) before settlement."
                 )
             )
+
+        # Group reclassified amounts by their originating accrued liability
+        # account, so the GL posting (and therefore reconciliation) is
+        # allocated per source accrual account rather than one aggregate.
+        accrued_accounts_to_debit = {}
+        for row in self.entries or []:
+            entry_name = getattr(row, "commission_ledger_entry", None)
+            if entry_name not in row_reclassified:
+                continue
+            delta_company = flt(row_reclassified_company.get(entry_name, 0), 6)
+            if delta_company <= 0.005:
+                continue
+            try:
+                from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import (
+                    _accrued_for_entry_by_account as _by_acct,
+                )
+
+                by_acct = _by_acct(entry_name)
+            except Exception:
+                by_acct = {}
+            total_accrued = sum(flt(v) for v in (by_acct or {}).values())
+            if total_accrued <= 0.005:
+                # Fall back to the configured accrued account for this entry.
+                accrued_accounts_to_debit[accrued_account] = flt(
+                    accrued_accounts_to_debit.get(accrued_account, 0.0) + delta_company, 6
+                )
+                continue
+            for acct, amt in (by_acct or {}).items():
+                share = flt(amt) / total_accrued if total_accrued else 0.0
+                allocated = flt(delta_company * share, 6)
+                if allocated:
+                    accrued_accounts_to_debit[acct] = flt(
+                        accrued_accounts_to_debit.get(acct, 0.0) + allocated, 6
+                    )
+        # Reconcile rounding: ensure sum of debits equals reclassify_total.
+        if accrued_accounts_to_debit:
+            debit_sum = sum(flt(v) for v in accrued_accounts_to_debit.values())
+            if abs(debit_sum - reclassify_total) > 0.005 and accrued_accounts_to_debit:
+                first_acct = next(iter(accrued_accounts_to_debit))
+                accrued_accounts_to_debit[first_acct] = flt(
+                    accrued_accounts_to_debit[first_acct] + (reclassify_total - debit_sum), 6
+                )
+
+        precision = _cp(self.company_currency or frappe.db.get_value("Company", self.company, "default_currency"))
+        accounts_lines = []
+        for acct, amt in accrued_accounts_to_debit.items():
+            if flt(amt) <= 0.005:
+                continue
+            accounts_lines.append(
+                {
+                    "account": acct,
+                    "debit_in_account_currency": flt(amt, precision),
+                }
+            )
+        accounts_lines.append(
+            {
+                "account": payable_account,
+                "credit_in_account_currency": flt(reclassify_total, precision),
+            }
+        )
         je = frappe.get_doc(
             {
                 "doctype": "Journal Entry",
@@ -531,16 +591,7 @@ class CommissionSettlement(Document):
                 "company": self.company,
                 "posting_date": frappe.utils.nowdate(),
                 "commission_settlement": self.name,
-                "accounts": [
-                    {
-                        "account": accrued_account,
-                        "debit_in_account_currency": flt(reclassify_total, _cp(self.company_currency or frappe.db.get_value("Company", self.company, "default_currency"))),
-                    },
-                    {
-                        "account": payable_account,
-                        "credit_in_account_currency": flt(reclassify_total, _cp(self.company_currency or frappe.db.get_value("Company", self.company, "default_currency"))),
-                    },
-                ],
+                "accounts": accounts_lines,
                 "user_remark": f"Clear accrued commission liability for settlement {self.name}",
             }
         )

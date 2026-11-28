@@ -2276,8 +2276,31 @@ def reverse_commission_entries(doc, method=None):
             "sales_partner",
             "item_code",
             "source_row",
+            "paid_amount",
+            "settled_amount",
         ],
     )
+    # Guard: if commission has already been reclassified to payable or paid,
+    # invoice cancellation cannot be safely auto-reversed. Require resolution
+    # of the commission position first.
+    for entry in existing_entries:
+        try:
+            from sales_commission_management.sales_commission_management.doctype.commission_settlement.commission_settlement import (
+                _reclassified_for_entry as _recl,
+            )
+
+            reclassified = _recl(entry.name, use_company_amount=True)
+        except Exception:
+            reclassified = 0.0
+        paid = flt(entry.get("paid_amount"))
+        if (reclassified and abs(reclassified) > 0.005) or (paid and abs(paid) > 0.005):
+            frappe.throw(
+                _(
+                    "Cannot cancel Sales Invoice {0}: commission entry {1} has "
+                    "reclassified ({2}) or paid ({3}) amounts that require "
+                    "manual resolution before cancellation."
+                ).format(doc.name, entry.name, reclassified, paid)
+            )
     # Lock the original Commission Entry rows in deterministic order before
     # processing, so concurrent cancellations cannot both create a reversal.
     for _locked in sorted(existing_entries, key=lambda r: r.get("name") or ""):
@@ -2378,48 +2401,103 @@ def reverse_commission_entries(doc, method=None):
             if accounting_mode not in ("Subledger Until Settlement", "Periodic Accrual"):
                 frappe.throw(_("Invalid Commission Accounting Mode."))
             if accounting_mode == "Periodic Accrual":
-                accrued_account = None
-                expense_account = None
-                cost_center = None
-                if settings:
-                    for row in (getattr(settings, "account_mappings", None) or []):
-                        if getattr(row, "company", None) == original.company and cint(getattr(row, "enabled", 1)):
-                            accrued_account = getattr(row, "accrued_commission_payable_account", None)
-                            expense_account = getattr(row, "commission_expense_account", None)
-                            cost_center = getattr(row, "cost_center", None)
-                            break
-                    if not accrued_account:
-                        accrued_account = getattr(settings, "default_accrued_liability_account", None)
-                    if not expense_account:
-                        expense_account = getattr(settings, "default_commission_expense_account", None)
-                    if not cost_center:
-                        cost_center = getattr(settings, "default_cost_center", None)
-                if not accrued_account or not expense_account:
-                    frappe.throw(
-                        _("Accrued liability or expense account not configured for company {0}.").format(original.company)
+                # Resolve originating accrued liability account(s) from the
+                # original entry's accrual batches, not the current mapping.
+                try:
+                    from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import (
+                        _accrued_for_entry_by_account as _by_acct,
                     )
+
+                    by_acct = _by_acct(original.name)
+                except Exception:
+                    by_acct = {}
+                total_accrued = sum(flt(v) for v in (by_acct or {}).values())
+                if total_accrued <= 0.005:
+                    # Fall back to configured mapping only if no batch data.
+                    accrued_account = None
+                    expense_account = None
+                    cost_center = None
+                    if settings:
+                        for row in (getattr(settings, "account_mappings", None) or []):
+                            if getattr(row, "company", None) == original.company and cint(getattr(row, "enabled", 1)):
+                                accrued_account = getattr(row, "accrued_commission_payable_account", None)
+                                expense_account = getattr(row, "commission_expense_account", None)
+                                cost_center = getattr(row, "cost_center", None)
+                                break
+                        if not accrued_account:
+                            accrued_account = getattr(settings, "default_accrued_liability_account", None)
+                        if not expense_account:
+                            expense_account = getattr(settings, "default_commission_expense_account", None)
+                        if not cost_center:
+                            cost_center = getattr(settings, "default_cost_center", None)
+                    if not accrued_account or not expense_account:
+                        frappe.throw(
+                            _("Accrued liability or expense account not configured for company {0}.").format(original.company)
+                        )
+                    by_acct = {accrued_account: abs(_orig_accrued)}
+                    total_accrued = abs(_orig_accrued) if abs(_orig_accrued) > 0.005 else 1.0
+                else:
+                    expense_account = None
+                    cost_center = None
+                    if settings:
+                        for row in (getattr(settings, "account_mappings", None) or []):
+                            if getattr(row, "company", None) == original.company and cint(getattr(row, "enabled", 1)):
+                                expense_account = getattr(row, "commission_expense_account", None)
+                                cost_center = getattr(row, "cost_center", None)
+                                break
+                        if not expense_account:
+                            expense_account = getattr(settings, "default_commission_expense_account", None)
+                        if not cost_center:
+                            cost_center = getattr(settings, "default_cost_center", None)
+                    if not expense_account:
+                        frappe.throw(
+                            _("Expense account not configured for company {0}.").format(original.company)
+                        )
                 amt = abs(_orig_accrued)
-                je = frappe.get_doc(
+                # Build debit lines per originating accrued account, proportional.
+                accrued_debit_lines = {}
+                for acct, aamt in (by_acct or {}).items():
+                    share = flt(aamt) / total_accrued if total_accrued else 0.0
+                    allocated = flt(amt * share, _cp(original.company_currency))
+                    if allocated:
+                        accrued_debit_lines[acct] = flt(
+                            accrued_debit_lines.get(acct, 0.0) + allocated, _cp(original.company_currency)
+                        )
+                # Rounding reconcile.
+                if accrued_debit_lines:
+                    dsum = sum(flt(v) for v in accrued_debit_lines.values())
+                    if abs(dsum - flt(amt, _cp(original.company_currency))) > 0.005:
+                        first = next(iter(accrued_debit_lines))
+                        accrued_debit_lines[first] = flt(
+                            accrued_debit_lines[first] + (flt(amt, _cp(original.company_currency)) - dsum),
+                            _cp(original.company_currency),
+                        )
+                je_accounts = []
+                for acct, damt in accrued_debit_lines.items():
+                    je_accounts.append(
                         {
-                            "doctype": "Journal Entry",
-                            "voucher_type": "Journal Entry",
-                            "company": original.company,
-                            "posting_date": frappe.utils.nowdate(),
-                            "accounts": [
-                                {
-                                    "account": accrued_account,
-                                    "debit_in_account_currency": flt(amt, _cp(original.company_currency)),
-                                },
-                                {
-                                    "account": expense_account,
-                                    "credit_in_account_currency": flt(amt, _cp(original.company_currency)),
-                                },
-                            ],
-                            "user_remark": "Reverse accrued commission for cancelled invoice {0}".format(
-                                doc.name
-                            ),
+                            "account": acct,
+                            "debit_in_account_currency": flt(damt, _cp(original.company_currency)),
                         }
                     )
+                je_accounts.append(
+                    {
+                        "account": expense_account,
+                        "credit_in_account_currency": flt(amt, _cp(original.company_currency)),
+                    }
+                )
+                je = frappe.get_doc(
+                    {
+                        "doctype": "Journal Entry",
+                        "voucher_type": "Journal Entry",
+                        "company": original.company,
+                        "posting_date": frappe.utils.nowdate(),
+                        "accounts": je_accounts,
+                        "user_remark": "Reverse accrued commission for cancelled invoice {0}".format(
+                            doc.name
+                        ),
+                    }
+                )
                 if cost_center:
                     for a in je.accounts:
                         a.cost_center = cost_center

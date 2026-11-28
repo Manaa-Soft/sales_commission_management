@@ -60,9 +60,39 @@ def _accrued_for_entry(entry_name, exclude_batch=None, for_update=False, use_com
         for i in items or []:
             if i.get("parent") in submitted_parents:
                 total += flt(i.get(field_name))
-    # If excluding a batch, we already filtered parent != exclude_batch above.
-    return flt(total, 6)
+def _accrued_for_entry_by_account(entry_name, exclude_batch=None, use_company_amount=True):
+    """Return a dict mapping accrued liability account -> amount for an entry.
 
+    Uses submitted Commission Accrual Batch Items, so an entry accrued across
+    multiple batches/accounts is fully represented. Amounts are in company
+    currency when use_company_amount is True.
+    """
+    field_name = "company_amount" if use_company_amount else "accrual_amount"
+    filters = {"commission_ledger_entry": entry_name, "docstatus": 1}
+    if exclude_batch:
+        filters["parent"] = ["!=", exclude_batch]
+    items = frappe.get_all(
+        "Commission Accrual Batch Item",
+        filters=filters,
+        fields=[field_name, "parent", "accrued_liability_account"],
+    )
+    if not items:
+        return {}
+    parents = frappe.get_all(
+        "Commission Accrual Batch",
+        filters={"name": ["in", [i["parent"] for i in items]], "docstatus": 1},
+        pluck="name",
+    )
+    submitted = set(parents or [])
+    result = {}
+    for i in items or []:
+        if i.get("parent") not in submitted:
+            continue
+        acct = i.get("accrued_liability_account")
+        if not acct:
+            continue
+        result[acct] = flt(result.get(acct, 0.0)) + flt(i.get(field_name))
+    return result
 
 def _reclassified_for_entry(entry_name, exclude_settlement=None):
     """Sum of accrued liability already reclassified to payable by other settlements."""
