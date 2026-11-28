@@ -31,6 +31,7 @@
     "default_accrued_liability_account",
     "default_commission_expense_account",
     "default_commission_currency",
+    "default_payout_account",
     "section_mappings",
     "account_mappings"
   ],
@@ -179,6 +180,12 @@
       "label": "Default Commission Currency",
       "options": "Company Currency\nTransaction Currency\nPlan Currency",
       "default": "Company Currency"
+    },
+    {
+      "fieldname": "default_payout_account",
+      "fieldtype": "Link",
+      "label": "Default Payout Cash/Bank Account",
+      "options": "Account"
     },
     {
       "fieldname": "section_mappings",

@@ -639,9 +639,44 @@ class CommissionSettlement(Document):
         elif self.settlement_method == "Supplier Purchase Invoice":
             self._create_purchase_invoice()
         else:
+            # Manual Approved Route: no settlement document is created, but the
+            # settlement FX snapshot must still be initialized (fail closed)
+            # instead of being left at 0/None, which later breaks manual payout.
             self.settlement_document_type = None
             self.settlement_document = None
             self.status = "Approved"
+
+            if not self.company:
+                frappe.throw(_("Company is required for settlement."))
+            company_currency = _company_currency(self.company)
+            commission_currency = self.commission_currency or company_currency
+            if not self.commission_currency:
+                self.commission_currency = commission_currency
+            settlement_currency = getattr(self, "settlement_currency", None)
+            if not settlement_currency:
+                settlement_currency = commission_currency
+                self.settlement_currency = settlement_currency
+            fx_date = self.period_from or frappe.utils.nowdate()
+            if settlement_currency == company_currency:
+                fx_rate = 1.0
+            else:
+                from frappe.utils import get_exchange_rate
+                import math
+                rate = get_exchange_rate(settlement_currency, company_currency, fx_date)
+                if rate and (not math.isfinite(rate) or rate <= 0):
+                    frappe.throw(_("Invalid exchange rate."))
+                if not rate or rate <= 0:
+                    frappe.throw(
+                        _("Missing exchange rate from {0} to {1}.").format(
+                            settlement_currency, company_currency
+                        )
+                    )
+                fx_rate = rate
+            self.settlement_fx_rate = fx_rate
+            self.settlement_fx_date = fx_date
+            self.settlement_fx_from_currency = settlement_currency
+            self.settlement_fx_to_currency = company_currency
+            self.settlement_fx_source = "Manual Approved Route default"
 
     def _create_additional_salary(self):
         if not frappe.db.exists("DocType", "Additional Salary"):
@@ -1461,9 +1496,105 @@ def make_commission_payment_entry(source_name=None, *args, **kwargs):
         )
     pe.commission_settlement = sett_name
 
-    # Let ERPNext calculate bank-side amounts; leave paid_from unset for user selection.
-    pe.paid_amount = 0
-    pe.paid_from = None
-    pe.paid_from_account_currency = None
+    # Resolve a default payout Cash/Bank account so the draft is usable:
+    # prefer Commission Settings.default_payout_account, else the first
+    # Cash/Bank account in the settlement company (prefer company currency).
+    paid_from_account = None
+    try:
+        _settings = _commission_settings()
+        if _settings:
+            paid_from_account = getattr(_settings, "default_payout_account", None)
+    except Exception:
+        paid_from_account = None
+    if not paid_from_account:
+        try:
+            rows = frappe.get_all(
+                "Account",
+                filters={"company": company, "is_group": 0, "account_type": ["in", ["Cash", "Bank"]]},
+                fields=["name", "account_currency"],
+                order_by="account_currency asc",
+                limit=50,
+            )
+            # Prefer an account in company currency, then any.
+            company_currency = _company_currency(company)
+            preferred = [r for r in (rows or []) if r.get("account_currency") == company_currency]
+            pick = (preferred or rows or [None])[0]
+            if pick:
+                paid_from_account = pick.get("name")
+        except Exception:
+            paid_from_account = None
+
+    paid_from_currency = None
+    if paid_from_account:
+        try:
+            paid_from_currency = frappe.get_cached_value("Account", paid_from_account, "account_currency")
+        except Exception:
+            paid_from_currency = None
+        try:
+            acct_company = frappe.get_cached_value("Account", paid_from_account, "company")
+            acct_type = frappe.get_cached_value("Account", paid_from_account, "account_type")
+        except Exception:
+            acct_company = None
+            acct_type = None
+        if not acct_company or acct_company != company:
+            paid_from_account = None
+            paid_from_currency = None
+        elif acct_type not in ("Cash", "Bank"):
+            paid_from_account = None
+            paid_from_currency = None
+
+    pe.paid_from = paid_from_account
+    pe.paid_from_account_currency = paid_from_currency
+
+    # Populate amounts/rates when currencies permit; otherwise leave the
+    # bank-side amount for ERPNext/the user (do not hardcode a cross-currency
+    # amount).
+    company_currency = _company_currency(company)
+    target_rate = None
+    if commission_currency == company_currency:
+        target_rate = 1.0
+    else:
+        try:
+            from frappe.utils import get_exchange_rate
+            r = get_exchange_rate(commission_currency, company_currency, pe.posting_date)
+            import math
+            if r and math.isfinite(r) and float(r) > 0:
+                target_rate = r
+        except Exception:
+            target_rate = None
+    if target_rate is not None:
+        pe.target_exchange_rate = target_rate
+
+    source_rate = None
+    if paid_from_currency:
+        if paid_from_currency == company_currency:
+            source_rate = 1.0
+        else:
+            try:
+                from frappe.utils import get_exchange_rate
+                r = get_exchange_rate(paid_from_currency, company_currency, pe.posting_date)
+                import math
+                if r and math.isfinite(r) and float(r) > 0:
+                    source_rate = r
+            except Exception:
+                source_rate = None
+        if source_rate is not None:
+            pe.source_exchange_rate = source_rate
+
+    if paid_from_currency and paid_from_currency == commission_currency:
+        pe.paid_amount = outstanding
+        if not pe.source_exchange_rate:
+            pe.source_exchange_rate = 1.0
+        if not pe.target_exchange_rate:
+            pe.target_exchange_rate = 1.0
+    elif paid_from_currency and source_rate and target_rate:
+        try:
+            pe.paid_amount = flt(outstanding * float(target_rate) / float(source_rate), _cp(paid_from_currency))
+            pe.source_exchange_rate = source_rate
+            pe.target_exchange_rate = target_rate
+        except Exception:
+            pe.paid_amount = 0
+    else:
+        pe.paid_amount = 0
 
     return pe

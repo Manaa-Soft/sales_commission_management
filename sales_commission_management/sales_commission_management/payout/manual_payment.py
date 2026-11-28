@@ -654,10 +654,39 @@ def record_manual_payout(settlement=None, **kwargs):
     company_currency = _company_currency(sett.company) or commission_currency
 
     # Settlement FX rate = company currency per settlement currency (existing convention).
+    # Resolution order (Manual Approved Route):
+    #   1. Use the persisted settlement FX snapshot when valid.
+    #   2. For Payment Entry evidence, prefer the Payment Entry's own exchange
+    #      rates when their account currencies match the required settlement
+    #      conversion (source_exchange_rate for paid_from, target for paid_to).
+    #   3. If settlement currency == company currency -> 1.
+    #   4. Fall back to ERPNext Currency Exchange (get_exchange_rate).
     settlement_fx_rate = getattr(sett, "settlement_fx_rate", None)
     if not settlement_fx_rate or not _is_finite(settlement_fx_rate) or float(settlement_fx_rate) <= 0:
         settlement_fx_rate = None
-        if settlement_currency != company_currency:
+        # Payment Entry evidence: try its source/target rates first.
+        if source_doctype == "Payment Entry" and settlement_currency != company_currency:
+            try:
+                pe_doc = frappe.get_doc("Payment Entry", source_name)
+                paid_from_currency = getattr(pe_doc, "paid_from_account_currency", None)
+                paid_to_currency = getattr(pe_doc, "paid_to_account_currency", None)
+                if settlement_currency == paid_from_currency:
+                    r = getattr(pe_doc, "source_exchange_rate", None)
+                    if r and _is_finite(r) and float(r) > 0:
+                        settlement_fx_rate = r
+                elif settlement_currency == paid_to_currency:
+                    r = getattr(pe_doc, "target_exchange_rate", None)
+                    if r and _is_finite(r) and float(r) > 0:
+                        settlement_fx_rate = r
+                elif settlement_currency == company_currency:
+                    settlement_fx_rate = 1.0
+            except Exception:
+                pass
+        # Company currency shortcut.
+        if not settlement_fx_rate and settlement_currency == company_currency:
+            settlement_fx_rate = 1.0
+        # ERPNext Currency Exchange fallback.
+        if not settlement_fx_rate and settlement_currency != company_currency:
             try:
                 from frappe.utils import get_exchange_rate
                 r = get_exchange_rate(settlement_currency, company_currency, payment_date)
@@ -690,6 +719,15 @@ def record_manual_payout(settlement=None, **kwargs):
             target_exchange_rate = 1.0
         else:
             pe_rate = getattr(pe_doc, "target_exchange_rate", None)
+            if not pe_rate or not _is_finite(pe_rate) or float(pe_rate) <= 0:
+                # Fallback to ERPNext Currency Exchange.
+                try:
+                    from frappe.utils import get_exchange_rate
+                    r = get_exchange_rate(commission_currency, company_currency, payment_date)
+                    if r and _is_finite(r) and float(r) > 0:
+                        pe_rate = r
+                except Exception:
+                    pe_rate = None
             if not pe_rate or not _is_finite(pe_rate) or float(pe_rate) <= 0:
                 frappe.throw(_("Invalid or missing Payment Entry target exchange rate."))
             target_exchange_rate = flt(pe_rate)
@@ -1071,6 +1109,15 @@ def record_manual_payout(settlement=None, **kwargs):
         # Fail closed: if bank and company currencies differ, a valid rate is
         # required. Do not silently substitute None.
         if bank_fx_from != company_currency:
+            if not bank_fx_rate or not _is_finite(bank_fx_rate) or float(bank_fx_rate) <= 0:
+                # Fallback to ERPNext Currency Exchange for the bank currency.
+                try:
+                    from frappe.utils import get_exchange_rate
+                    r = get_exchange_rate(bank_fx_from, company_currency, payment_date)
+                    if r and _is_finite(r) and float(r) > 0:
+                        bank_fx_rate = r
+                except Exception:
+                    pass
             if not bank_fx_rate or not _is_finite(bank_fx_rate) or float(bank_fx_rate) <= 0:
                 frappe.throw(
                     _("Missing or invalid source exchange rate on Payment Entry {0}.").format(source_name)
