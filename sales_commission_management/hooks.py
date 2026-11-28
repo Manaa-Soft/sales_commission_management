@@ -34,7 +34,12 @@ doc_events = {
     "Payment Entry": {
         "before_submit": "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.lock_referenced_invoices",
         "on_submit": [
+            "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.generate_commission_on_payment",
+            "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.update_commission_payment_status",
             "sales_commission_management.sales_commission_management.payout.manual_payment.process_payment_entry_for_commission",
+        ],
+        "on_cancel": [
+            "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.update_commission_payment_status",
         ],
         "before_cancel": [
             "sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry.lock_referenced_invoices",
