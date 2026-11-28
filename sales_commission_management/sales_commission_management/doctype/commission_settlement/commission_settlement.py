@@ -1433,6 +1433,20 @@ def make_commission_payment_entry(source_name=None, *args, **kwargs):
     pe.company = company
     pe.party_type = party_type
     pe.party = party
+    # Mirror ERPNext invoice-payment behaviour: populate party_name so the
+    # Payment Entry shows the beneficiary name like a normal payment.
+    try:
+        name_field = {
+            "Employee": "employee_name",
+            "Supplier": "supplier_name",
+            "Customer": "customer_name",
+        }.get(party_type)
+        if name_field and frappe.db.exists(party_type, party):
+            pe.party_name = frappe.db.get_value(party_type, party, name_field) or party
+        else:
+            pe.party_name = party
+    except Exception:
+        pe.party_name = party
     pe.paid_to = payable
     pe.paid_to_account_currency = commission_currency
     pe.paid_to_account_type = frappe.db.get_value("Account", payable, "account_type")
