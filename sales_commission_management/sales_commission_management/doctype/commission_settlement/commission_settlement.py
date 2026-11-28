@@ -546,11 +546,12 @@ class CommissionSettlement(Document):
                 raise
             total_accrued = sum(flt(v) for v in (by_acct or {}).values())
             if total_accrued <= 0.005:
-                # Fall back to the configured accrued account for this entry.
-                accrued_accounts_to_debit[accrued_account] = flt(
-                    accrued_accounts_to_debit.get(accrued_account, 0.0) + delta_company, 6
+                frappe.throw(
+                    _(
+                        "Cannot establish accrued liability account allocation for "
+                        "entry {0}: no valid posted accrual found."
+                    ).format(entry_name)
                 )
-                continue
             for acct, amt in (by_acct or {}).items():
                 share = flt(amt) / total_accrued if total_accrued else 0.0
                 allocated = flt(delta_company * share, 6)

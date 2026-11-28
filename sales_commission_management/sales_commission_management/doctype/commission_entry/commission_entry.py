@@ -2262,8 +2262,6 @@ def handle_return_invoice(doc, method=None):
         entry.submit()
 def reverse_commission_entries(doc, method=None):
     """Triggered on Sales Invoice cancellation: full clawback of all entries."""
-def reverse_commission_entries(doc, method=None):
-    """Triggered on Sales Invoice cancellation: full clawback of all entries."""
     existing_entries = frappe.get_all(
         "Commission Entry",
         filters={"sales_invoice": doc.name, "docstatus": 1},
@@ -2325,19 +2323,25 @@ def reverse_commission_entries(doc, method=None):
             fields=["event_type", "commission_amount"],
         )
         paid = 0.0
+        has_recovery_activity = False
         for ev in payout_events or []:
             et = ev.get("event_type")
             if et == "Payout":
                 paid += flt(ev.get("commission_amount"))
             elif et == "Payout Reversal":
                 paid -= flt(ev.get("commission_amount"))
-        if paid == 0:
+            elif et in ("Recovery", "Recovery Reversal"):
+                # Recovery lifecycle implies funds were previously disbursed;
+                # treat as blocking activity even when net payout is zero.
+                has_recovery_activity = True
+        if paid == 0 and not has_recovery_activity:
             paid = flt(entry.get("paid_amount"))
-        if (reclassified and abs(reclassified) > 0.005) or (paid and abs(paid) > 0.005):
+        disbursed = has_recovery_activity or (paid and abs(paid) > 0.005)
+        if (reclassified and abs(reclassified) > 0.005) or disbursed:
             frappe.throw(
                 _(
                     "Cannot cancel Sales Invoice {0}: commission entry {1} has "
-                    "reclassified ({2}) or paid ({3}) amounts that require "
+                    "reclassified ({2}) or paid/recovered ({3}) amounts that require "
                     "manual resolution before cancellation."
                 ).format(doc.name, entry.name, reclassified, paid)
             )

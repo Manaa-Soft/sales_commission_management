@@ -366,11 +366,15 @@ def _batch_accrued_subledger(company, to_date, mode):
             orig_name = getattr(e, "reverses_entry", None) or e.get("name")
             by_acct = _by_acct(orig_name)
         except Exception:
-            by_acct = {}
+            raise
         total_accrued = sum(flt(v) for v in (by_acct or {}).values())
         if total_accrued <= 0.005:
-            # Cannot attribute; skip to avoid misallocation.
-            continue
+            frappe.throw(
+                _(
+                    "Cannot establish accrued liability account allocation for "
+                    "cancellation reversal entry {0}."
+                ).format(e.get("name"))
+            )
         # amt sign: original persisted value is negative. Preserve sign per account.
         sign = -1.0 if amt < 0 else 1.0
         for acct, aamt in (by_acct or {}).items():
@@ -393,11 +397,15 @@ def _payable_subledger(company, to_date, mode):
     settlements = frappe.get_all(
         "Commission Settlement",
         filters={"company": company, "docstatus": 1},
-        fields=["name", "approval_date", "settlement_journal_entry"],
+        fields=["name", "approval_date", "settlement_journal_entry", "settlement_method", "settlement_document_type"],
     )
     for s in settlements or []:
         je = getattr(s, "settlement_journal_entry", None)
         if mode == "Periodic Accrual":
+            if getattr(s, "settlement_document_type", None) == "Additional Salary" or getattr(
+                s, "settlement_method", None
+            ) == "Additional Salary":
+                continue
             if not je:
                 continue
             try:
@@ -435,9 +443,48 @@ def _payable_subledger(company, to_date, mode):
                 if acct and credit and credit > 0:
                     # A reclassification JE credits the payable account.
                     by_account[acct] = by_account.get(acct, 0.0) + credit
+            # For Supplier Purchase Invoice settlements, the Purchase Invoice
+            # subsequently debits the Commission Payable account (Periodic Accrual
+            # mode). Subtract those debits so the subledger matches GL.
+            sd_type = getattr(s, "settlement_document_type", None)
+            sd_name = getattr(s, "settlement_document", None)
+            if sd_type == "Purchase Invoice" and sd_name:
+                try:
+                    pi_status = frappe.get_cached_value(
+                        "Purchase Invoice", sd_name, "docstatus"
+                    )
+                except Exception:
+                    pi_status = None
+                if pi_status == 1:
+                    pi_lines = frappe.get_all(
+                        "GL Entry",
+                        filters={
+                            "voucher_type": "Purchase Invoice",
+                            "voucher_no": sd_name,
+                            "company": company,
+                            "is_cancelled": 0,
+                        },
+                        fields=["account", "debit", "credit"],
+                    )
+                    for pl in pi_lines or []:
+                        acct = pl.get("account")
+                        debit = flt(pl.get("debit"))
+                        if acct and debit and debit > 0 and acct in by_account:
+                            by_account[acct] = by_account.get(acct, 0.0) - debit
             continue
 
         # Subledger Until Settlement mode: approved settlement amount route.
+        # For Supplier Purchase Invoice settlements, do not fabricate a
+        # Commission Payable balance: the Purchase Invoice posts to the expense
+        # and Accounts Payable accounts, not Commission Payable.
+        if getattr(s, "settlement_document_type", None) == "Purchase Invoice" or getattr(
+            s, "settlement_method", None
+        ) == "Supplier Purchase Invoice":
+            continue
+        if getattr(s, "settlement_document_type", None) == "Additional Salary" or getattr(
+            s, "settlement_method", None
+        ) == "Additional Salary":
+            continue
         if je:
             try:
                 je_status = frappe.get_cached_value("Journal Entry", je, "docstatus")

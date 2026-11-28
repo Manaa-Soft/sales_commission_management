@@ -20,10 +20,14 @@ def _accrued_for_entry(entry_name, exclude_batch=None, for_update=False, use_com
 
     If use_company_amount is True, sums company_amount (company currency)
     instead of accrual_amount (commission currency). Used for GL reversals.
+
+    A valid posted accrual requires a submitted parent batch whose linked
+    Journal Entry is submitted and belongs to the same company. Missing,
+    cancelled or mismatched vouchers raise rather than being silently skipped.
     """
     total = 0.0
+    field_name = "company_amount" if use_company_amount else "accrual_amount"
     if for_update:
-        field_name = "company_amount" if use_company_amount else "accrual_amount"
         q = frappe.qb.from_("Commission Accrual Batch Item").select(
             field_name, "parent"
         )
@@ -36,7 +40,6 @@ def _accrued_for_entry(entry_name, exclude_batch=None, for_update=False, use_com
         filters = {"commission_ledger_entry": entry_name, "docstatus": 1}
         if exclude_batch:
             filters["parent"] = ["!=", exclude_batch]
-        field_name = "company_amount" if use_company_amount else "accrual_amount"
         items = frappe.get_all(
             "Commission Accrual Batch Item",
             filters=filters,
@@ -44,22 +47,51 @@ def _accrued_for_entry(entry_name, exclude_batch=None, for_update=False, use_com
         )
     if not items:
         return flt(total, 6)
-    if for_update:
-        # Under locking reads, Frappe syncs parent docstatus into child rows,
-        # so the docstatus=1 filter on child rows is sufficient. Sum directly.
-        for i in items or []:
+    # Validate each parent batch is a validly posted accrual.
+    parents = list({i.get("parent") for i in items if i.get("parent")})
+    batches = frappe.get_all(
+        "Commission Accrual Batch",
+        filters={"name": ["in", parents]},
+        fields=["name", "docstatus", "journal_entry", "company"],
+    )
+    batch_map = {b.get("name"): b for b in (batches or [])}
+    valid_parents = set()
+    for pname in parents:
+        b = batch_map.get(pname)
+        if not b:
+            frappe.throw(
+                _("Commission Accrual Batch {0} not found.").format(pname)
+            )
+        if flt(b.get("docstatus")) != 1:
+            frappe.throw(
+                _("Commission Accrual Batch {0} is not submitted.").format(pname)
+            )
+        je_name = b.get("journal_entry")
+        if not je_name:
+            frappe.throw(
+                _("Submitted Commission Accrual Batch {0} has no linked Journal Entry.").format(
+                    pname
+                )
+            )
+        je_status = frappe.get_cached_value("Journal Entry", je_name, "docstatus")
+        if je_status != 1:
+            frappe.throw(
+                _("Journal Entry {0} linked to batch {1} is not submitted.").format(
+                    je_name, pname
+                )
+            )
+        je_company = frappe.get_cached_value("Journal Entry", je_name, "company")
+        b_company = b.get("company")
+        if je_company and b_company and je_company != b_company:
+            frappe.throw(
+                _("Journal Entry {0} does not belong to company {1}.").format(
+                    je_name, b_company
+                )
+            )
+        valid_parents.add(pname)
+    for i in items or []:
+        if i.get("parent") in valid_parents:
             total += flt(i.get(field_name))
-    else:
-        # Non-locking preview path: verify parent batch is submitted.
-        parents = frappe.get_all(
-            "Commission Accrual Batch",
-            filters={"name": ["in", [i["parent"] for i in items]], "docstatus": 1},
-            pluck="name",
-        )
-        submitted_parents = set(parents or [])
-        for i in items or []:
-            if i.get("parent") in submitted_parents:
-                total += flt(i.get(field_name))
     return flt(total, 6)
 
 
@@ -69,6 +101,14 @@ def _accrued_for_entry_by_account(entry_name, exclude_batch=None, use_company_am
     Uses submitted Commission Accrual Batch Items, so an entry accrued across
     multiple batches/accounts is fully represented. Amounts are in company
     currency when use_company_amount is True.
+
+    A valid posted accrual requires a submitted parent batch whose linked
+    Journal Entry is submitted and belongs to the same company. Missing,
+    cancelled or mismatched vouchers raise rather than being silently skipped.
+
+    Item amounts are verified against the linked Journal Entry lines: the
+    net credit (credit - debit) to each accrued liability account must match
+    the batch item total for that account. Any mismatch raises.
     """
     field_name = "company_amount" if use_company_amount else "accrual_amount"
     filters = {"commission_ledger_entry": entry_name, "docstatus": 1}
@@ -81,7 +121,6 @@ def _accrued_for_entry_by_account(entry_name, exclude_batch=None, use_company_am
     )
     if not items:
         return {}
-    # Validate parent batches and their linked Journal Entries.
     batch_names = list({i.get("parent") for i in items if i.get("parent")})
     batches = frappe.get_all(
         "Commission Accrual Batch",
@@ -92,19 +131,67 @@ def _accrued_for_entry_by_account(entry_name, exclude_batch=None, use_company_am
     submitted = set()
     for b in batches or []:
         if flt(b.get("docstatus")) != 1:
-            continue
+            frappe.throw(
+                _("Commission Accrual Batch {0} is not submitted.").format(b.get("name"))
+            )
         je_name = b.get("journal_entry")
-        if je_name:
-            je_status = frappe.get_cached_value("Journal Entry", je_name, "docstatus")
-            if je_status != 1:
-                continue
-            je_company = frappe.get_cached_value("Journal Entry", je_name, "company")
-            if je_company and je_company != b.get("company"):
-                continue
-        else:
-            # Batch has no linked JE: cannot validate GL; skip to avoid
-            # counting unposted accruals.
-            continue
+        if not je_name:
+            frappe.throw(
+                _("Submitted Commission Accrual Batch {0} has no linked Journal Entry.").format(
+                    b.get("name")
+                )
+            )
+        je_status = frappe.get_cached_value("Journal Entry", je_name, "docstatus")
+        if je_status != 1:
+            frappe.throw(
+                _("Journal Entry {0} linked to batch {1} is not submitted.").format(
+                    je_name, b.get("name")
+                )
+            )
+        je_company = frappe.get_cached_value("Journal Entry", je_name, "company")
+        if je_company and je_company != b.get("company"):
+            frappe.throw(
+                _("Journal Entry {0} does not belong to company {1}.").format(
+                    je_name, b.get("company")
+                )
+            )
+        # Verify item amounts against the linked Journal Entry lines.
+        batch_items = [i for i in items if i.get("parent") == b.get("name")]
+        item_by_acct = {}
+        for i in batch_items:
+            acct = i.get("accrued_liability_account")
+            if not acct:
+                frappe.throw(
+                    _("Accrual batch item in {0} has no accrued liability account.").format(
+                        b.get("name")
+                    )
+                )
+            item_by_acct[acct] = item_by_acct.get(acct, 0.0) + flt(i.get(field_name))
+        je_lines = frappe.get_all(
+            "Journal Entry Account",
+            filters={"parent": je_name},
+            fields=[
+                "account",
+                "debit_in_account_currency",
+                "credit_in_account_currency",
+            ],
+        )
+        je_net_by_acct = {}
+        for line in je_lines or []:
+            acct = line.get("account")
+            if acct in item_by_acct:
+                je_net_by_acct[acct] = je_net_by_acct.get(acct, 0.0) + flt(
+                    line.get("credit_in_account_currency")
+                ) - flt(line.get("debit_in_account_currency"))
+        for acct, amt in item_by_acct.items():
+            je_amt = je_net_by_acct.get(acct, 0.0)
+            if abs(je_amt - amt) > 0.01:
+                frappe.throw(
+                    _(
+                        "Accrual batch {0}: Journal Entry {1} net credit to {2} "
+                        "({3}) does not match batch item amount ({4})."
+                    ).format(b.get("name"), je_name, acct, je_amt, amt)
+                )
         submitted.add(b.get("name"))
     result = {}
     for i in items or []:
