@@ -3,6 +3,8 @@ from frappe.tests import IntegrationTestCase
 from sales_commission_management.sales_commission_management.doctype.commission_entry.commission_entry import (
     _event_key,
     _item_group_path,
+    _load_invoice_attribution,
+    _freeze_invoice_attribution,
     reconcile_return_cancellation,
 )
 
@@ -49,3 +51,7 @@ class TestCommissionEngine(IntegrationTestCase):
 
     def test_reconcile_function_callable(self):
         self.assertTrue(callable(reconcile_return_cancellation))
+
+    def test_attribution_helpers_callable(self):
+        self.assertTrue(callable(_freeze_invoice_attribution))
+        self.assertTrue(callable(_load_invoice_attribution))

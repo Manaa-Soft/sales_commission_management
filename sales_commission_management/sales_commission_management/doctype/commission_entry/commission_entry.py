@@ -812,6 +812,86 @@ def _source_enabled(doc):
     return True
 
 
+def _freeze_invoice_attribution(doc, plan, contributor_source):
+    """Persist the frozen contributor allocation on the Sales Invoice.
+
+    Used for On Payment plans so payment-time generation honours the
+    original invoice agreement even if the Sales Team is later edited.
+    """
+    try:
+        if not frappe.db.has_column("Sales Invoice", "commission_attribution_snapshot"):
+            return
+    except Exception:
+        return
+    contributors = []
+    if contributor_source == "Plan Contributors":
+        for pc in (plan.get("contributors") or []):
+            contributors.append(
+                {
+                    "sales_person": getattr(pc, "sales_person", None),
+                    "sales_partner": getattr(pc, "sales_partner", None),
+                    "contributor_type": getattr(pc, "contributor_type", "Sales Person"),
+                    "allocated_percentage": flt(getattr(pc, "split_percentage", 100.0)),
+                    "pool_code": getattr(pc, "pool_code", None) or "INTERNAL_SALES",
+                }
+            )
+    elif contributor_source == "Sales Invoice Sales Team":
+        for st in doc.get("sales_team") or []:
+            contributors.append(
+                {
+                    "sales_person": getattr(st, "sales_person", None),
+                    "sales_partner": None,
+                    "contributor_type": "Sales Person",
+                    "allocated_percentage": flt(getattr(st, "allocated_percentage", 0)),
+                    "pool_code": "INTERNAL_SALES",
+                }
+            )
+    invoice_partner_rate = flt(getattr(doc, "commission_rate", 0))
+    if not invoice_partner_rate and getattr(doc, "sales_partner", None):
+        try:
+            invoice_partner_rate = flt(
+                frappe.get_cached_value("Sales Partner", doc.sales_partner, "commission_rate")
+            )
+        except Exception:
+            invoice_partner_rate = 0.0
+    snapshot = frappe.as_json(
+        {
+            "contributor_source": contributor_source,
+            "contributors": contributors,
+            "invoice_partner_rate": invoice_partner_rate,
+            "plan": getattr(plan, "name", None),
+        }
+    )
+    try:
+        frappe.db.set_value(
+            "Sales Invoice",
+            doc.name,
+            "commission_attribution_snapshot",
+            snapshot,
+            update_modified=False,
+        )
+    except Exception:
+        frappe.log_error(
+            "Failed to freeze commission attribution for {0}".format(getattr(doc, "name", "")),
+            "Commission Attribution",
+        )
+
+
+def _load_invoice_attribution(doc):
+    """Return the frozen attribution snapshot dict, or None."""
+    try:
+        if not frappe.db.has_column("Sales Invoice", "commission_attribution_snapshot"):
+            return None
+        raw = frappe.db.get_value(
+            "Sales Invoice", getattr(doc, "name", None), "commission_attribution_snapshot"
+        )
+        if not raw:
+            return None
+        return frappe.parse_json(raw)
+    except Exception:
+        return None
+
+
 def generate_commission_entries(doc, method=None, force=False):
     """Triggered on Sales Invoice / POS Invoice on_submit. Creates Commission Entry records."""
     if not _source_enabled(doc):
@@ -840,14 +920,26 @@ def generate_commission_entries(doc, method=None, force=False):
     # Honor the plan's earning_event unless forced (e.g. by Payment Entry
     # for "On Payment" plans).
     earning_event = getattr(plan, "earning_event", None) or "On Invoice Submit"
+
+    # Resolve contributor source up-front so the invoice's actual attribution
+    # (Sales Team + partner rate) can be frozen at submission time, even when
+    # commission is only earned later on payment.
+    contributor_source = getattr(plan, "contributor_source", None) or ""
+    if not contributor_source:
+        if plan.get("contributors"):
+            contributor_source = "Plan Contributors"
+        else:
+            contributor_source = "Sales Invoice Sales Team"
+
     if not force and earning_event != "On Invoice Submit":
+        # Freeze the invoice attribution snapshot so payment-time generation
+        # uses the original agreement even if the Sales Team is later edited.
+        _freeze_invoice_attribution(doc, plan, contributor_source)
         return
 
-    # contributors: prefer plan contributors, else invoice sales team
-    plan_contributors = plan.get("contributors") or []
-    if plan_contributors:
-        contributors = []
-        for pc in plan_contributors:
+    contributors = []
+    if contributor_source == "Plan Contributors":
+        for pc in (plan.get("contributors") or []):
             contributors.append(
                 {
                     "sales_person": getattr(pc, "sales_person", None),
@@ -859,8 +951,9 @@ def generate_commission_entries(doc, method=None, force=False):
                     "_from_plan": True,
                 }
             )
-    else:
-        contributors = []
+    elif contributor_source == "Sales Invoice Sales Team":
+        # The Sales Invoice is the source of truth for who participated in
+        # this particular sale and their contribution percentages.
         for st in doc.get("sales_team") or []:
             contributors.append(
                 {
@@ -873,6 +966,19 @@ def generate_commission_entries(doc, method=None, force=False):
                     "_from_plan": False,
                 }
             )
+    # contributor_source == "No Internal Contributors": leave contributors empty.
+
+    # Prefer a frozen invoice attribution snapshot when present (payment-time
+    # generation), so later edits to the Sales Team cannot change the result.
+    _snapshot = _load_invoice_attribution(doc)
+    _snapshot_partner_rate = None
+    if _snapshot:
+        contributor_source = _snapshot.get("contributor_source") or contributor_source
+        if _snapshot.get("contributors") is not None:
+            contributors = list(_snapshot.get("contributors") or [])
+        _snap_rate = _snapshot.get("invoice_partner_rate", None)
+        if _snap_rate is not None:
+            _snapshot_partner_rate = flt(_snap_rate)
 
     # Exclude group sales persons: a group is a non-earning container, not a
     # beneficiary. Only leaf (individual) sales persons earn commission entries.
@@ -891,7 +997,20 @@ def generate_commission_entries(doc, method=None, force=False):
     contributors = filtered_contributors
 
     external_partner = getattr(doc, "sales_partner", None)
-    flt(getattr(doc, "commission_rate", 0))
+    # Resolve the partner commission rate (%). Prefer the invoice-level rate
+    # (which may differ from the Sales Partner master default); fall back to
+    # the Sales Partner master record when the invoice rate is not set.
+    if _snapshot_partner_rate is not None:
+        invoice_partner_rate = _snapshot_partner_rate
+    else:
+        invoice_partner_rate = flt(getattr(doc, "commission_rate", 0))
+        if not invoice_partner_rate and external_partner:
+            try:
+                invoice_partner_rate = flt(
+                    frappe.get_cached_value("Sales Partner", external_partner, "commission_rate")
+                )
+            except Exception:
+                invoice_partner_rate = 0.0
 
     if not contributors and not external_partner:
         return
@@ -1091,34 +1210,41 @@ def generate_commission_entries(doc, method=None, force=False):
             if getattr(pc, "contributor_type", "") == "Sales Partner"
         }
         if external_partner and external_partner not in plan_partner_beneficiaries:
-            # Use the common calculation pipeline (item_commission), not a
-            # percentage-only formula, so fixed/slab/currency conversion apply.
-            partner_commission = item_commission
-            if partner_commission > 0:
-                _insert_entry(
-                    doc,
-                    plan,
-                    rule,
-                    item,
-                    "Sales Partner",
-                    external_partner,
-                    "EXTERNAL_PARTNER",
-                    basis_name,
-                    basis_company,
-                    basis_txn,
-                    source_qty,
-                    source_uom,
-                    partner_commission,
-                    1.0,
-                    company_currency,
-                    txn_currency,
-                    exchange_rate,
-                    commission_currency=commission_currency,
-                    commission_to_company_rate=commission_to_company_rate,
-                    selected_slab_rate=_selected_slab_rate_val,
-                    attainment_before_pct=_prev_att_item,
-                    attainment_after_pct=_after_att_item,
-                )
+            # Partner commission is a SEPARATE policy from the internal pool:
+            # it uses the partner's own rate applied to the item basis, not the
+            # internal rule rate / slab / target logic. Never reuse item_commission
+            # (which already embeds the internal rule rate) for the partner.
+            if invoice_partner_rate and invoice_partner_rate > 0:
+                partner_commission = basis_company * (invoice_partner_rate / 100.0)
+                # Convert from company currency to the selected commission currency.
+                if commission_to_company_rate and commission_to_company_rate != 1.0:
+                    partner_commission = flt(partner_commission) / commission_to_company_rate
+                partner_commission = _apply_floor_cap(partner_commission, rule)
+                if partner_commission > 0:
+                    _insert_entry(
+                        doc,
+                        plan,
+                        rule,
+                        item,
+                        "Sales Partner",
+                        external_partner,
+                        "EXTERNAL_PARTNER",
+                        basis_name,
+                        basis_company,
+                        basis_txn,
+                        source_qty,
+                        source_uom,
+                        partner_commission,
+                        1.0,
+                        company_currency,
+                        txn_currency,
+                        exchange_rate,
+                        commission_currency=commission_currency,
+                        commission_to_company_rate=commission_to_company_rate,
+                        selected_slab_rate=0.0,
+                        attainment_before_pct=0.0,
+                        attainment_after_pct=0.0,
+                    )
 
 
 def _calculate_slab_amount(

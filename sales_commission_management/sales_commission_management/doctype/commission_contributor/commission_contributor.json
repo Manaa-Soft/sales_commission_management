@@ -85,8 +85,7 @@
       "fieldname": "commission_rate",
       "fieldtype": "Percent",
       "label": "Commission Rate (Override)",
-      "description": "Override only; defaults to the plan rule rate. Leave blank to use the plan rule rate.",
-      "in_list_view": 1
+      "description": "Informational only under the pool-distribution model: the Commission Rule rate determines the total commission pool; this field is not applied as an additional multiplier. Retained for legacy/exceptional plans.",      "in_list_view": 1
     },
     {
       "fieldname": "commission_multiplier",

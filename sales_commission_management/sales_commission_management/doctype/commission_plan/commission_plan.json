@@ -37,6 +37,7 @@
     "section_slabs",
     "slabs",
     "section_contributors",
+    "contributor_source",
     "contributors",
     "section_targets",
     "targets",
@@ -232,10 +233,19 @@
       "label": "Contributors"
     },
     {
+      "fieldname": "contributor_source",
+      "fieldtype": "Select",
+      "label": "Contributor Source",
+      "options": "Sales Invoice Sales Team\\nPlan Contributors\\nNo Internal Contributors",
+      "default": "Sales Invoice Sales Team",
+      "description": "Determines who receives the internal commission pool. Sales Invoice Sales Team (default) uses the actual Sales Persons and percentages on each invoice. Plan Contributors uses the fixed people configured below. No Internal Contributors generates no internal Sales Person commission."
+    },
+    {
       "fieldname": "contributors",
       "fieldtype": "Table",
       "label": "Contributors",
-      "options": "Commission Contributor"
+      "options": "Commission Contributor",
+      "depends_on": "eval:doc.contributor_source=='Plan Contributors'"
     },
     {
       "fieldname": "section_targets",

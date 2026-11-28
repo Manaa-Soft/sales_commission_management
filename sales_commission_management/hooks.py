@@ -68,9 +68,11 @@ scheduler_events = {
 after_migrate = [
     "sales_commission_management.patches.migrate_commission_settings_legacy_data.ensure",
     "sales_commission_management.patches.ensure_commission_settlement_link_fields.execute",
+    "sales_commission_management.patches.ensure_commission_attribution_snapshot_field.execute",
 ]
 
 after_install = [
     "sales_commission_management.patches.migrate_commission_settings_legacy_data.ensure",
     "sales_commission_management.patches.ensure_commission_settlement_link_fields.execute",
+    "sales_commission_management.patches.ensure_commission_attribution_snapshot_field.execute",
 ]
