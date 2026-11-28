@@ -60,6 +60,9 @@ def _accrued_for_entry(entry_name, exclude_batch=None, for_update=False, use_com
         for i in items or []:
             if i.get("parent") in submitted_parents:
                 total += flt(i.get(field_name))
+    return flt(total, 6)
+
+
 def _accrued_for_entry_by_account(entry_name, exclude_batch=None, use_company_amount=True):
     """Return a dict mapping accrued liability account -> amount for an entry.
 
@@ -78,12 +81,31 @@ def _accrued_for_entry_by_account(entry_name, exclude_batch=None, use_company_am
     )
     if not items:
         return {}
-    parents = frappe.get_all(
+    # Validate parent batches and their linked Journal Entries.
+    batch_names = list({i.get("parent") for i in items if i.get("parent")})
+    batches = frappe.get_all(
         "Commission Accrual Batch",
-        filters={"name": ["in", [i["parent"] for i in items]], "docstatus": 1},
-        pluck="name",
+        filters={"name": ["in", batch_names]},
+        fields=["name", "docstatus", "journal_entry", "company", "accrual_date"],
     )
-    submitted = set(parents or [])
+    batch_map = {b.get("name"): b for b in (batches or [])}
+    submitted = set()
+    for b in batches or []:
+        if flt(b.get("docstatus")) != 1:
+            continue
+        je_name = b.get("journal_entry")
+        if je_name:
+            je_status = frappe.get_cached_value("Journal Entry", je_name, "docstatus")
+            if je_status != 1:
+                continue
+            je_company = frappe.get_cached_value("Journal Entry", je_name, "company")
+            if je_company and je_company != b.get("company"):
+                continue
+        else:
+            # Batch has no linked JE: cannot validate GL; skip to avoid
+            # counting unposted accruals.
+            continue
+        submitted.add(b.get("name"))
     result = {}
     for i in items or []:
         if i.get("parent") not in submitted:

@@ -2262,6 +2262,34 @@ def handle_return_invoice(doc, method=None):
         entry.submit()
 def reverse_commission_entries(doc, method=None):
     """Triggered on Sales Invoice cancellation: full clawback of all entries."""
+def reverse_commission_entries(doc, method=None):
+    """Triggered on Sales Invoice cancellation: full clawback of all entries."""
+    existing_entries = frappe.get_all(
+        "Commission Entry",
+        filters={"sales_invoice": doc.name, "docstatus": 1},
+        fields=[
+            "name",
+            "earned_commission",
+            "commission_basis_amount",
+            "plan",
+            "pool_code",
+            "beneficiary_type",
+            "sales_person",
+            "sales_partner",
+            "item_code",
+            "source_row",
+            "paid_amount",
+            "settled_amount",
+        ],
+    )
+    # Lock the original Commission Entry rows in deterministic order before
+    # any lifecycle checks, so concurrent cancellations/settlements cannot race.
+    for _locked in sorted(existing_entries, key=lambda r: r.get("name") or ""):
+        frappe.db.sql(
+            "SELECT name FROM `tabCommission Entry` WHERE name = %s FOR UPDATE",
+            _locked.get("name"),
+        )
+    # Re-read the latest state while holding the locks.
     existing_entries = frappe.get_all(
         "Commission Entry",
         filters={"sales_invoice": doc.name, "docstatus": 1},
@@ -2282,17 +2310,29 @@ def reverse_commission_entries(doc, method=None):
     )
     # Guard: if commission has already been reclassified to payable or paid,
     # invoice cancellation cannot be safely auto-reversed. Require resolution
-    # of the commission position first.
+    # of the commission position first. Fail closed on any error.
     for entry in existing_entries:
-        try:
-            from sales_commission_management.sales_commission_management.doctype.commission_settlement.commission_settlement import (
-                _reclassified_for_entry as _recl,
-            )
+        from sales_commission_management.sales_commission_management.doctype.commission_settlement.commission_settlement import (
+            _reclassified_for_entry as _recl,
+        )
 
-            reclassified = _recl(entry.name, use_company_amount=True)
-        except Exception:
-            reclassified = 0.0
-        paid = flt(entry.get("paid_amount"))
+        reclassified = _recl(entry.name, use_company_amount=True)
+        # Authoritative payout status from the submitted Commission Payout Event
+        # ledger, not the entry's paid_amount snapshot.
+        payout_events = frappe.get_all(
+            "Commission Payout Event",
+            filters={"commission_entry": entry.name, "docstatus": 1},
+            fields=["event_type", "commission_amount"],
+        )
+        paid = 0.0
+        for ev in payout_events or []:
+            et = ev.get("event_type")
+            if et == "Payout":
+                paid += flt(ev.get("commission_amount"))
+            elif et == "Payout Reversal":
+                paid -= flt(ev.get("commission_amount"))
+        if paid == 0:
+            paid = flt(entry.get("paid_amount"))
         if (reclassified and abs(reclassified) > 0.005) or (paid and abs(paid) > 0.005):
             frappe.throw(
                 _(
@@ -2301,13 +2341,6 @@ def reverse_commission_entries(doc, method=None):
                     "manual resolution before cancellation."
                 ).format(doc.name, entry.name, reclassified, paid)
             )
-    # Lock the original Commission Entry rows in deterministic order before
-    # processing, so concurrent cancellations cannot both create a reversal.
-    for _locked in sorted(existing_entries, key=lambda r: r.get("name") or ""):
-        frappe.db.sql(
-            "SELECT name FROM `tabCommission Entry` WHERE name = %s FOR UPDATE",
-            _locked.get("name"),
-        )
     for entry in existing_entries:
         original = frappe.get_doc("Commission Entry", entry.name)
         from sales_commission_management.sales_commission_management.doctype.commission_accrual_batch.commission_accrual_batch import _accrued_for_entry
@@ -2410,7 +2443,7 @@ def reverse_commission_entries(doc, method=None):
 
                     by_acct = _by_acct(original.name)
                 except Exception:
-                    by_acct = {}
+                    raise
                 total_accrued = sum(flt(v) for v in (by_acct or {}).values())
                 if total_accrued <= 0.005:
                     # Fall back to configured mapping only if no batch data.

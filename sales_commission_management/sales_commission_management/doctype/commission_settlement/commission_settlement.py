@@ -543,7 +543,7 @@ class CommissionSettlement(Document):
 
                 by_acct = _by_acct(entry_name)
             except Exception:
-                by_acct = {}
+                raise
             total_accrued = sum(flt(v) for v in (by_acct or {}).values())
             if total_accrued <= 0.005:
                 # Fall back to the configured accrued account for this entry.
@@ -1100,7 +1100,7 @@ def _reclassified_for_entry(entry_name, exclude_settlement=None, use_company_amo
         valid_names.append(s.name)
     if not valid_names:
         return total
-    fields = ["amount_included", "reclassified_amount", "base_currency_amount"]
+    fields = ["amount_included", "reclassified_amount", "reclassified_company_amount"]
     items = frappe.get_all(
     "Commission Settlement Item",
     filters={
@@ -1111,15 +1111,13 @@ def _reclassified_for_entry(entry_name, exclude_settlement=None, use_company_amo
     )
     for r in items or []:
         if use_company_amount:
-            ba = r.get("base_currency_amount")
-            if ba is not None and ba != "" and flt(ba) != 0:
-                total += flt(ba)
+            rca = r.get("reclassified_company_amount")
+            if rca is not None and rca != "":
+                total += flt(rca)
             else:
-                # Fallback: convert reclassified_amount using entry rate.
                 ra = r.get("reclassified_amount")
                 if ra is None or ra == "":
-                    ra = r.get("amount_included")
-                # Look up the entry's rate for conversion.
+                    continue
                 entry_rate = flt(
                     frappe.db.get_value("Commission Entry", entry_name, "commission_to_company_rate")
                 )
@@ -1135,7 +1133,6 @@ def _reclassified_for_entry(entry_name, exclude_settlement=None, use_company_amo
                     if comm and comp and comm == comp:
                         entry_rate = 1.0
                     elif comm and txn and comm == txn:
-                        # Only use transaction snapshot when commission == transaction currency.
                         snapshot = flt(
                             frappe.db.get_value("Commission Entry", entry_name, "conversion_rate_snapshot")
                         )
@@ -1146,7 +1143,6 @@ def _reclassified_for_entry(entry_name, exclude_settlement=None, use_company_amo
                             )
                         entry_rate = snapshot
                     else:
-                        # Third-currency commission: cannot use transaction snapshot.
                         frappe.throw(
                             _("Cannot resolve commission-to-company rate for entry {0}.").format(entry_name)
                         )
