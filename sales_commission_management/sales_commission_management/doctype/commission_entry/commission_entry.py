@@ -2335,6 +2335,7 @@ def reverse_commission_entries(doc, method=None):
         clawback.settled_amount = -1 * flt(original.settled_amount)
         clawback.paid_amount = -1 * flt(original.paid_amount)
         clawback.accrued_amount = -1 * flt(original.accrued_amount)
+        clawback.accrued_reversal_company_amount = -1 * flt(_orig_accrued)
         clawback.outstanding_amount = clawback.earned_commission
         clawback.status = "Reversed"
         clawback.collection_status = "Not Eligible"
@@ -2424,6 +2425,13 @@ def reverse_commission_entries(doc, method=None):
                         a.cost_center = cost_center
                 je.insert(ignore_permissions=True)
                 je.submit()
+                frappe.db.set_value(
+                    "Commission Entry",
+                    clawback.name,
+                    "reversal_journal_entry",
+                    je.name,
+                    update_modified=False,
+                )
 
 
 def reconcile_return_cancellation(doc, method=None):

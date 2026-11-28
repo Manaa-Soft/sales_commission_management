@@ -121,27 +121,75 @@ def _accounting_mode(settings):
 
 
 def _batch_accrued_subledger(company, to_date, mode):
-    """Accrued liability subledger in company currency as of to_date."""
+    """Accrued liability subledger in company currency as of to_date.
+
+    Returns a dict mapping liability account -> amount (company currency),
+    derived from submitted Commission Accrual Batch items and their linked
+    Journal Entries, less reclassified and cancellation-reversal amounts.
+    """
     if mode != "Periodic Accrual":
-        return 0.0
-    # Sum submitted Commission Accrual Batch Items (company_amount) for company.
-    total = 0.0
+        return {}
+    # Sum submitted Commission Accrual Batch Items (company_amount) per actual
+    # liability account used on the item.
+    by_account = {}
     batches = frappe.get_all(
         "Commission Accrual Batch",
         filters={"company": company, "docstatus": 1},
-        fields=["name", "accrual_date"],
+        fields=["name", "accrual_date", "journal_entry", "company"],
     )
     for b in batches or []:
-        ad = getattr(b, "accrual_date", None)
-        if to_date and ad and getdate(ad) > getdate(to_date):
-            continue
+        je_name = getattr(b, "journal_entry", None)
+        if not je_name:
+            frappe.throw(
+                _("Submitted Commission Accrual Batch {0} has no linked Journal Entry.").format(
+                    b.name
+                )
+            )
+        try:
+            je = frappe.get_doc("Journal Entry", je_name)
+        except Exception:
+            raise
+        if getattr(je, "docstatus", None) != 1:
+            frappe.throw(
+                _("Journal Entry {0} linked to batch {1} is not submitted.").format(
+                    je_name, b.name
+                )
+            )
+        if getattr(je, "company", None) != company:
+            frappe.throw(
+                _("Journal Entry {0} does not belong to company {1}.").format(
+                    je_name, company
+                )
+            )
+        # Use the Journal Entry posting date for accounting cutoff.
+        posting_date = getattr(je, "posting_date", None) or getattr(
+            b, "accrual_date", None
+        )
+        if to_date and posting_date:
+            try:
+                if getdate(posting_date) > getdate(to_date):
+                    continue
+            except Exception:
+                pass
         items = frappe.get_all(
             "Commission Accrual Batch Item",
-            filters={"parent": b.name, "docstatus": 1},
-            fields=["company_amount"],
+            filters={"parent": b.name},
+            fields=["company_amount", "accrued_liability_account"],
         )
         for it in items or []:
-            total += flt(it.get("company_amount"))
+            acct = getattr(it, "accrued_liability_account", None)
+            if not acct:
+                # Fall back to batch-level account resolution is not reliable;
+                # require row-level account.
+                frappe.throw(
+                    _("Accrual batch item in {0} has no accrued liability account.").format(
+                        b.name
+                    )
+                )
+            by_account[acct] = by_account.get(acct, 0.0) + flt(
+                it.get("company_amount")
+            )
+
     # Subtract reclassified amounts through submitted settlements with submitted JE.
     reclassified_total = 0.0
     settlements = frappe.get_all(
@@ -155,32 +203,45 @@ def _batch_accrued_subledger(company, to_date, mode):
             continue
         try:
             je_status = frappe.get_cached_value("Journal Entry", je, "docstatus")
+            je_posting = frappe.get_cached_value("Journal Entry", je, "posting_date")
         except Exception:
             raise
         if je_status != 1:
             continue
-        ad = getattr(s, "approval_date", None)
-        if to_date and ad:
+        cutoff_date = je_posting or getattr(s, "approval_date", None)
+        if to_date and cutoff_date:
             try:
-                if getdate(ad) > getdate(to_date):
+                if getdate(cutoff_date) > getdate(to_date):
                     continue
             except Exception:
                 pass
-        # Sum base_currency_amount (now reclassified company amount) of items.
         items = frappe.get_all(
             "Commission Settlement Item",
             filters={"parent": s.name},
-            fields=["base_currency_amount"],
+            fields=["base_currency_amount", "reclassified_company_amount"],
         )
         for it in items or []:
-            ba = it.get("base_currency_amount")
-            if ba is not None and ba != "":
-                reclassified_total += flt(ba)
-    total -= reclassified_total
+            rca = it.get("reclassified_company_amount")
+            if rca is None:
+                rca = it.get("base_currency_amount")
+            if rca is not None and rca != "":
+                reclassified_total += flt(rca)
+    # Resolve configured accrued account.
+    try:
+        _settings_obj = frappe.get_single("Commission Settings") if frappe.db.exists(
+            "DocType", "Commission Settings"
+        ) else None
+    except Exception:
+        _settings_obj = None
+    _accrued_cfg, _ = _resolve_accounts(_settings_obj, company)
+    target_acct = _accrued_cfg if _accrued_cfg in by_account else (
+        next(iter(by_account), None)
+    )
+    if target_acct is not None and reclassified_total:
+        by_account[target_acct] = by_account.get(target_acct, 0.0) - reclassified_total
 
-    # Account for cancellation / accrual-reversal Journal Entries via
-    # submitted Cancellation Reversal Commission Entries (accrued_amount negated).
-    reversal_total = 0.0
+    # Account for cancellation / accrual-reversal. Use persisted company amount.
+    reversal_total_by_acct = {}
     rev_entries = frappe.get_all(
         "Commission Entry",
         filters={
@@ -188,36 +249,53 @@ def _batch_accrued_subledger(company, to_date, mode):
             "docstatus": 1,
             "event_type": "Cancellation Reversal",
         },
-        fields=["accrued_amount", "commission_to_company_rate", "commission_currency", "company_currency", "posting_date"],
+        fields=[
+            "accrued_reversal_company_amount",
+            "accrued_amount",
+            "commission_to_company_rate",
+            "commission_currency",
+            "company_currency",
+            "posting_date",
+        ],
     )
     for e in rev_entries or []:
         pd = getattr(e, "posting_date", None)
         if to_date and pd and getdate(pd) > getdate(to_date):
             continue
-        amt = flt(e.get("accrued_amount"))
-        # accrued_amount is negated for reversal; convert to company currency.
-        rate = flt(e.get("commission_to_company_rate") or 0)
-        comm = e.get("commission_currency")
-        comp = e.get("company_currency") or _company_currency(company)
-        if comm and comp and comm == comp:
-            rate = 1.0 if not rate else rate
-        if not rate or rate <= 0:
-            # Cannot convert; skip rather than mix currencies silently? Raise.
-            if comm and comp and comm != comp:
-                frappe.throw(
-                    _("Missing commission-to-company rate for cancellation reversal entry.")
-                )
-            rate = 1.0
-        reversal_total += flt(amt * rate)
-    total += reversal_total
+        # Prefer persisted company-currency reversal amount.
+        amt = getattr(e, "accrued_reversal_company_amount", None)
+        if amt is None:
+            # Fallback for historical rows: old calculation.
+            amt = flt(e.get("accrued_amount"))
+            rate = flt(e.get("commission_to_company_rate") or 0)
+            comm = e.get("commission_currency")
+            comp = e.get("company_currency") or _company_currency(company)
+            if comm and comp and comm == comp:
+                rate = 1.0 if not rate else rate
+            if not rate or rate <= 0:
+                if comm and comp and comm != comp:
+                    frappe.throw(
+                        _("Missing commission-to-company rate for cancellation reversal entry.")
+                    )
+                rate = 1.0
+            amt = flt(amt * rate)
+        else:
+            amt = flt(amt)
+        # amt is negative reversal; add to accrued liability.
+        acct = target_acct if target_acct is not None else (
+            next(iter(by_account), None)
+        )
+        if acct is None:
+            # No batch accounts; nothing to attribute. Skip.
+            continue
+        by_account[acct] = by_account.get(acct, 0.0) + amt
 
-    return flt(total)
+    return by_account
 
 
-def _payable_subledger(company, to_date):
+def _payable_subledger(company, to_date, mode):
     """Commission payable subledger in company currency as of to_date."""
     total = 0.0
-    # Settlements: recognised payable (base_currency_amount) for submitted settlements.
     settlements = frappe.get_all(
         "Commission Settlement",
         filters={"company": company, "docstatus": 1},
@@ -229,26 +307,35 @@ def _payable_subledger(company, to_date):
             continue
         try:
             je_status = frappe.get_cached_value("Journal Entry", je, "docstatus")
+            je_posting = frappe.get_cached_value("Journal Entry", je, "posting_date")
         except Exception:
             raise
         if je_status != 1:
             continue
-        ad = getattr(s, "approval_date", None)
-        if to_date and ad:
+        cutoff_date = je_posting or getattr(s, "approval_date", None)
+        if to_date and cutoff_date:
             try:
-                if getdate(ad) > getdate(to_date):
+                if getdate(cutoff_date) > getdate(to_date):
                     continue
             except Exception:
                 pass
         items = frappe.get_all(
             "Commission Settlement Item",
             filters={"parent": s.name},
-            fields=["base_currency_amount"],
+            fields=["base_currency_amount", "reclassified_company_amount"],
         )
         for it in items or []:
-            ba = it.get("base_currency_amount")
-            if ba is not None and ba != "":
-                total += flt(ba)
+            if mode == "Periodic Accrual":
+                rca = it.get("reclassified_company_amount")
+                if rca is None:
+                    rca = it.get("base_currency_amount")
+                if rca is not None and rca != "":
+                    total += flt(rca)
+            else:
+                # Subledger Until Settlement: approved settlement amount route.
+                ba = it.get("base_currency_amount")
+                if ba is not None and ba != "":
+                    total += flt(ba)
     # Payout events reduce payable; payout reversals increase it.
     events = frappe.get_all(
         "Commission Payout Event",
@@ -265,7 +352,6 @@ def _payable_subledger(company, to_date):
             total -= amt
         elif et == "Payout Reversal":
             total += amt
-        # Recovery / Recovery Reversal: not part of payable liability per spec.
     return flt(total)
 
 
@@ -273,10 +359,9 @@ def get_data(filters):
     company = filters.get("company")
     if not company:
         frappe.throw(_("Company is required for GL Reconciliation."))
-    from_date = filters.get("from_date")
-    to_date = filters.get("to_date") or None
+    to_date = filters.get("to_date") or nowdate()
     if not to_date:
-        to_date = None
+        to_date = nowdate()
 
     data = []
 
@@ -284,8 +369,8 @@ def get_data(filters):
     accrued_account, payable_account = _resolve_accounts(settings, company)
     mode = _accounting_mode(settings)
 
-    accrued_subledger = _batch_accrued_subledger(company, to_date, mode)
-    payable_subledger = _payable_subledger(company, to_date)
+    accrued_by_acct = _batch_accrued_subledger(company, to_date, mode)
+    payable_subledger = _payable_subledger(company, to_date, mode)
 
     accrued_accounts = set()
     payable_accounts = set()
@@ -293,17 +378,19 @@ def get_data(filters):
         accrued_accounts.add(accrued_account)
     if payable_account:
         payable_accounts.add(payable_account)
+    accrued_accounts |= set(accrued_by_acct.keys())
 
     # Accrued liability accounts.
     for acct in sorted(accrued_accounts):
         gl = _gl_balance(acct, company, to_date)
+        sub = flt(accrued_by_acct.get(acct, 0.0))
         data.append(
             {
                 "account": acct,
                 "description": _("Accrued commission liability"),
                 "gl_balance": flt(gl, 2),
-                "subledger_amount": flt(accrued_subledger, 2),
-                "difference": flt(accrued_subledger - gl, 2),
+                "subledger_amount": flt(sub, 2),
+                "difference": flt(sub - gl, 2),
             }
         )
 

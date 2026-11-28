@@ -560,6 +560,21 @@ class CommissionSettlement(Document):
                     flt(row_reclassified_company.get(entry_name, 0), 6),
                     update_modified=False,
                 )
+                frappe.db.set_value(
+                    "Commission Settlement Item",
+                    row.name,
+                    "reclassified_company_amount",
+                    flt(row_reclassified_company.get(entry_name, 0), 6),
+                    update_modified=False,
+                )
+            else:
+                frappe.db.set_value(
+                    "Commission Settlement Item",
+                    row.name,
+                    "reclassified_company_amount",
+                    0,
+                    update_modified=False,
+                )
 
     def on_cancel(self):
         # Reverse linked financial documents first; abort (propagate) if any

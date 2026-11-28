@@ -64,6 +64,8 @@
     "settlement",
     "accrual_batch",
     "accrued_amount",
+    "accrued_reversal_company_amount",
+    "reversal_journal_entry",
     "column_break_7",
     "sales_invoice",
     "commission_basis",
@@ -465,6 +467,20 @@
       "label": "Accrued Amount",
       "read_only": 1,
       "options": "commission_currency"
+    },
+    {
+      "fieldname": "accrued_reversal_company_amount",
+      "fieldtype": "Currency",
+      "label": "Accrued Reversal Company Amount",
+      "read_only": 1,
+      "options": "company_currency"
+    },
+    {
+      "fieldname": "reversal_journal_entry",
+      "fieldtype": "Link",
+      "label": "Reversal Journal Entry",
+      "options": "Journal Entry",
+      "read_only": 1
     },
     {
       "fieldname": "column_break_7",
