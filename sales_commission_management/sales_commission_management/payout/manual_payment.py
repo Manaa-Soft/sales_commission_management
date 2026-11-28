@@ -699,9 +699,30 @@ def record_manual_payout(settlement=None, **kwargs):
                 settlement_fx_rate = 1.0
             else:
                 settlement_fx_rate = None
+        # Resolve PE currencies for a detailed error message when available.
+        _pe_paid_from_curr = None
+        _pe_paid_to_curr = None
+        try:
+            if source_doctype == "Payment Entry":
+                _pe_doc = frappe.get_doc("Payment Entry", source_name)
+                _pe_paid_from_curr = getattr(_pe_doc, "paid_from_account_currency", None)
+                _pe_paid_to_curr = getattr(_pe_doc, "paid_to_account_currency", None)
+        except Exception:
+            pass
         if not settlement_fx_rate or not _is_finite(settlement_fx_rate) or float(settlement_fx_rate) <= 0:
-            frappe.throw(_("Invalid or missing settlement FX rate."))
+            frappe.throw(
+                _("Invalid or missing settlement FX rate for settlement {0}: "
+                  "settlement currency {1}, company currency {2}, payment entry "
+                  "{3} (paid from {4}, paid to {5}), requested {1}->{2}, "
+                  "effective date {6}.").format(
+                    sett_name, settlement_currency, company_currency,
+                    source_name, _pe_paid_from_curr, _pe_paid_to_curr,
+                    payment_date
+                )
+            )
     settlement_fx_rate = flt(settlement_fx_rate)
+    sett_fx_date = getattr(sett, "settlement_fx_date", None) or payment_date
+    sett_fx_source = getattr(sett, "settlement_fx_source", None) or "Manual Approved Route default"
 
     # Target (commission -> company) rate, resolved by evidence type first.
     if source_doctype == "Payment Entry":
@@ -729,7 +750,12 @@ def record_manual_payout(settlement=None, **kwargs):
                 except Exception:
                     pe_rate = None
             if not pe_rate or not _is_finite(pe_rate) or float(pe_rate) <= 0:
-                frappe.throw(_("Invalid or missing Payment Entry target exchange rate."))
+                frappe.throw(
+                    _("Invalid or missing Payment Entry target exchange rate for settlement {0}: "
+                      "commission currency {1}, company currency {2}, effective date {3}.").format(
+                        sett_name, commission_currency, company_currency, payment_date
+                    )
+                )
             target_exchange_rate = flt(pe_rate)
         # Verify beneficiary-side reconciliation: base_received = received * rate.
         pe_received = flt(getattr(pe_doc, "received_amount", 0) or 0)
@@ -757,7 +783,12 @@ def record_manual_payout(settlement=None, **kwargs):
             except Exception:
                 pass
             if not target_exchange_rate or not _is_finite(target_exchange_rate) or float(target_exchange_rate) <= 0:
-                frappe.throw(_("Invalid or missing company exchange rate."))
+                frappe.throw(
+                    _("Invalid or missing company exchange rate for settlement {0}: "
+                      "commission currency {1}, company currency {2}, effective date {3}.").format(
+                        sett_name, commission_currency, company_currency, payment_date
+                    )
+                )
         target_exchange_rate = flt(target_exchange_rate)
 
     # Amounts: input amount is commission currency.
@@ -970,9 +1001,9 @@ def record_manual_payout(settlement=None, **kwargs):
                 frappe.throw(_("Existing payout event settlement FX rate is missing; refusing to reprocess."))
             if abs(flt(_get_attr(_r, "fx_rate", 0)) - flt(settlement_fx_rate)) > (10 ** (-6)):
                 frappe.throw(_("Existing payout event settlement FX rate does not match; refusing to reprocess."))
-            if _get_attr(_r, "fx_date", None) is None or str(getdate(_get_attr(_r, "fx_date", None))) != payment_date:
+            if _get_attr(_r, "fx_date", None) is None or str(getdate(_get_attr(_r, "fx_date", None))) != str(getdate(sett_fx_date)):
                 frappe.throw(_("Existing payout event settlement FX date does not match; refusing to reprocess."))
-            if _get_attr(_r, "fx_source", None) != "Manual Payout":
+            if _get_attr(_r, "fx_source", None) != sett_fx_source:
                 frappe.throw(_("Existing payout event settlement FX source does not match; refusing to reprocess."))
 
             # Commission FX.
@@ -1221,8 +1252,8 @@ def record_manual_payout(settlement=None, **kwargs):
             "fx_from_currency": settlement_currency,
             "fx_to_currency": company_currency,
             "fx_rate": settlement_fx_rate,
-            "fx_date": payment_date,
-            "fx_source": "Manual Payout",
+            "fx_date": sett_fx_date,
+            "fx_source": sett_fx_source,
             "commission_to_company_rate": target_exchange_rate,
             "commission_fx_from_currency": commission_currency,
             "commission_fx_to_currency": company_currency,

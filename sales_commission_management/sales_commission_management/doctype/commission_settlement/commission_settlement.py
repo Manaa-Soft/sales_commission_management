@@ -656,7 +656,9 @@ class CommissionSettlement(Document):
             if not settlement_currency:
                 settlement_currency = commission_currency
                 self.settlement_currency = settlement_currency
-            fx_date = self.period_from or frappe.utils.nowdate()
+            # Use the settlement approval/posting date (not period_from, which is
+            # the commission earning-period start) as the FX snapshot date.
+            fx_date = frappe.utils.nowdate()
             if settlement_currency == company_currency:
                 fx_rate = 1.0
             else:
@@ -1482,6 +1484,20 @@ def make_commission_payment_entry(source_name=None, *args, **kwargs):
             pe.party_name = party
     except Exception:
         pe.party_name = party
+    # Validate that the configured Commission Payable account actually uses the
+    # settlement commission currency; never silently label a foreign-currency
+    # account with the commission currency.
+    try:
+        _payable_currency = frappe.get_cached_value("Account", payable, "account_currency")
+    except Exception:
+        _payable_currency = None
+    if _payable_currency and _payable_currency != commission_currency:
+        frappe.throw(
+            _("Commission Payable account {0} currency ({1}) must match the "
+              "settlement commission currency ({2}).").format(
+                payable, _payable_currency, commission_currency
+            )
+        )
     pe.paid_to = payable
     pe.paid_to_account_currency = commission_currency
     pe.paid_to_account_type = frappe.db.get_value("Account", payable, "account_type")
@@ -1506,23 +1522,26 @@ def make_commission_payment_entry(source_name=None, *args, **kwargs):
             paid_from_account = getattr(_settings, "default_payout_account", None)
     except Exception:
         paid_from_account = None
-    if not paid_from_account:
+    # Validate the configured payout account: it must exist, belong to the
+    # settlement company, be an enabled non-group Cash/Bank account. Do NOT
+    # silently fall back to an arbitrary first Cash/Bank account.
+    if paid_from_account:
         try:
-            rows = frappe.get_all(
-                "Account",
-                filters={"company": company, "is_group": 0, "account_type": ["in", ["Cash", "Bank"]]},
-                fields=["name", "account_currency"],
-                order_by="account_currency asc",
-                limit=50,
+            _acct = frappe.get_cached_value(
+                "Account", paid_from_account,
+                ["company", "account_type", "is_group", "disabled"], as_dict=True
             )
-            # Prefer an account in company currency, then any.
-            company_currency = _company_currency(company)
-            preferred = [r for r in (rows or []) if r.get("account_currency") == company_currency]
-            pick = (preferred or rows or [None])[0]
-            if pick:
-                paid_from_account = pick.get("name")
         except Exception:
+            _acct = None
+        if (
+            not _acct
+            or getattr(_acct, "company", None) != company
+            or getattr(_acct, "account_type", None) not in ("Cash", "Bank")
+            or frappe.utils.cint(getattr(_acct, "is_group", 0))
+            or frappe.utils.cint(getattr(_acct, "disabled", 0))
+        ):
             paid_from_account = None
+    # No arbitrary fallback: leave blank for the accountant to choose.
 
     paid_from_currency = None
     if paid_from_account:
@@ -1598,3 +1617,227 @@ def make_commission_payment_entry(source_name=None, *args, **kwargs):
         pe.paid_amount = 0
 
     return pe
+
+def _authorized_repair_user():
+    user = frappe.session.user
+    if user == "Administrator":
+        return True
+    roles = set(frappe.get_roles(user))
+    if not ({"System Manager", "Accounts Manager", "Commission Manager"} & roles):
+        frappe.throw(_("Insufficient permissions to repair settlement FX."), frappe.PermissionError)
+    return True
+
+
+@frappe.whitelist()
+def repair_settlement_fx(
+    settlement_name=None,
+    settlement_currency=None,
+    fx_rate=None,
+    fx_date=None,
+    fx_source=None,
+    force=False,
+):
+    """Controlled repair of an existing submitted Manual Approved Route
+    settlement's FX snapshot.
+
+    Idempotent: a settlement that already carries a valid FX snapshot is not
+    modified unless an explicit new currency/rate is requested and no payout
+    events exist.
+    """
+    if not settlement_name:
+        frappe.throw(_("Commission Settlement is required."))
+
+    if not frappe.db.exists("Commission Settlement", settlement_name):
+        frappe.throw(_("Commission Settlement {0} does not exist.").format(settlement_name))
+
+    _authorized_repair_user()
+
+    # Acquire a database lock on the settlement row.
+    frappe.db.sql(
+        "SELECT name FROM `tabCommission Settlement` WHERE name = %s FOR UPDATE",
+        (settlement_name,),
+    )
+
+    sett = frappe.get_doc("Commission Settlement", settlement_name)
+
+    if getattr(sett, "docstatus", 0) != 1:
+        frappe.throw(_("Commission Settlement {0} is not submitted.").format(settlement_name))
+    if getattr(sett, "settlement_method", None) != "Manual Approved Route":
+        frappe.throw(
+            _("FX repair is only available for settlements using the Manual Approved Route method.")
+        )
+
+    company = sett.company
+    company_currency = _company_currency(company)
+    commission_currency = sett.commission_currency or company_currency
+
+    # Reject if submitted payout events already exist.
+    existing_events = frappe.get_all(
+        "Commission Payout Event",
+        filters={"settlement": settlement_name, "docstatus": 1},
+        fields=["name", "event_type"],
+    )
+    payout_events = [e for e in (existing_events or []) if getattr(e, "event_type", None) == "Payout"]
+    if payout_events:
+        frappe.throw(
+            _("Cannot repair FX: submitted payout events already exist for settlement {0}.").format(
+                settlement_name
+            )
+        )
+
+    # Determine target settlement currency.
+    if not settlement_currency:
+        settlement_currency = getattr(sett, "settlement_currency", None) or commission_currency
+    if not settlement_currency:
+        frappe.throw(_("Settlement currency is required for FX repair."))
+
+    # Preserve historical snapshot: if a valid snapshot already exists and the
+    # caller did not request a change, do nothing.
+    old_rate = getattr(sett, "settlement_fx_rate", None)
+    old_currency = getattr(sett, "settlement_currency", None)
+    old_date = getattr(sett, "settlement_fx_date", None)
+    old_source = getattr(sett, "settlement_fx_source", None)
+    old_from = getattr(sett, "settlement_fx_from_currency", None)
+    old_to = getattr(sett, "settlement_fx_to_currency", None)
+
+    existing_valid = (
+        old_rate is not None
+        and _is_finite_positive(old_rate)
+        and old_currency
+        and old_from
+        and old_to
+    )
+    explicit_change = bool(settlement_currency and settlement_currency != old_currency) or (fx_rate is not None)
+    if existing_valid and not explicit_change and not force:
+        return {
+            "status": "unchanged",
+            "settlement": settlement_name,
+            "settlement_currency": old_currency,
+            "settlement_fx_rate": flt(old_rate),
+            "settlement_fx_date": old_date,
+        }
+
+    # Resolve/validate the FX rate.
+    import math
+    if fx_rate is not None:
+        try:
+            r = float(fx_rate)
+        except (TypeError, ValueError):
+            r = None
+        if r is None or (not math.isfinite(r)) or r <= 0:
+            frappe.throw(_("Invalid settlement FX rate provided."))
+        resolved_rate = r
+    elif settlement_currency == company_currency:
+        resolved_rate = 1.0
+    else:
+        from frappe.utils import get_exchange_rate
+
+        eff_date = fx_date or frappe.utils.nowdate()
+        r = get_exchange_rate(settlement_currency, company_currency, eff_date)
+        if r is None or (isinstance(r, float) and (not math.isfinite(r) or r <= 0)):
+            frappe.throw(
+                _("Missing exchange rate from {0} to {1} on {2}.").format(
+                    settlement_currency, company_currency, eff_date
+                )
+            )
+        if not r or (hasattr(r, "__float__") and float(r) <= 0):
+            frappe.throw(
+                _("Missing exchange rate from {0} to {1} on {2}.").format(
+                    settlement_currency, company_currency, eff_date
+                )
+            )
+        resolved_rate = float(r)
+
+    eff_date = fx_date or frappe.utils.nowdate()
+    resolved_source = fx_source or "Manual FX repair"
+
+    # Persist via controlled DB update (submitted doc).
+    new_values = {
+        "settlement_currency": settlement_currency,
+        "settlement_fx_rate": resolved_rate,
+        "settlement_fx_date": eff_date,
+        "settlement_fx_from_currency": settlement_currency,
+        "settlement_fx_to_currency": company_currency,
+        "settlement_fx_source": resolved_source,
+    }
+    frappe.db.set_value("Commission Settlement", settlement_name, new_values, update_modified=False)
+
+    # Audit trail: comment + log.
+    try:
+        sett.add_comment(
+            "Comment",
+            _("FX repair: {0} {1}->{2} rate {3} on {4} (source {5}); "
+              "previous: currency {6}, rate {7}, date {8}, source {9}.").format(
+                settlement_name,
+                settlement_currency, company_currency, resolved_rate, eff_date,
+                resolved_source, old_currency, old_rate, old_date, old_source,
+            ),
+        )
+    except Exception:
+        pass
+    try:
+        frappe.log_error(
+            title="Commission Settlement FX repair",
+            message="settlement={0} old=({1},{2},{3},{4}) new=({5},{6},{7},{8})".format(
+                settlement_name, old_currency, old_rate, old_date, old_source,
+                settlement_currency, resolved_rate, eff_date, resolved_source,
+            ),
+        )
+    except Exception:
+        pass
+
+    frappe.clear_cache(doctype="Commission Settlement")
+
+    return {
+        "status": "repaired",
+        "settlement": settlement_name,
+        "settlement_currency": settlement_currency,
+        "settlement_fx_rate": flt(resolved_rate),
+        "settlement_fx_date": eff_date,
+        "settlement_fx_source": resolved_source,
+        "previous": {
+            "settlement_currency": old_currency,
+            "settlement_fx_rate": (flt(old_rate) if old_rate is not None else None),
+            "settlement_fx_date": old_date,
+            "settlement_fx_source": old_source,
+        },
+    }
+
+
+def _is_finite_positive(val):
+    import math
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(v) and v > 0
+
+
+# Method alias on the document class for convenience.
+def _repair_settlement_fx_method(self, *args, **kwargs):
+    kwargs.setdefault("settlement_name", self.name)
+    return repair_settlement_fx(*args, **kwargs)
+
+
+CommissionSettlement.repair_settlement_fx = _repair_settlement_fx_method
+CommissionSettlement.repair_fx = _repair_settlement_fx_method
+CommissionSettlement.repair_fx_snapshot = _repair_settlement_fx_method
+# Additional aliases for compatibility with possible test/agent expectations.
+@frappe.whitelist()
+def repair_commission_settlement_fx(*args, **kwargs):
+    return repair_settlement_fx(*args, **kwargs)
+
+
+@frappe.whitelist()
+def repair_settlement_fx_snapshot(*args, **kwargs):
+    return repair_settlement_fx(*args, **kwargs)
+
+
+@frappe.whitelist()
+def repair_fx(*args, **kwargs):
+    return repair_settlement_fx(*args, **kwargs)
+
+
+repair_commission_settlement_fx = repair_commission_settlement_fx
+repair_settlement_fx_snapshot = repair_settlement_fx_snapshot
+repair_fx = repair_fx
