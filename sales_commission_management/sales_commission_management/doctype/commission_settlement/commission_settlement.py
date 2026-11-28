@@ -1491,7 +1491,7 @@ def make_commission_payment_entry(source_name=None, *args, **kwargs):
         _payable_currency = frappe.get_cached_value("Account", payable, "account_currency")
     except Exception:
         _payable_currency = None
-    if _payable_currency and _payable_currency != commission_currency:
+    if not _payable_currency or _payable_currency != commission_currency:
         frappe.throw(
             _("Commission Payable account {0} currency ({1}) must match the "
               "settlement commission currency ({2}).").format(
@@ -1600,12 +1600,23 @@ def make_commission_payment_entry(source_name=None, *args, **kwargs):
         if source_rate is not None:
             pe.source_exchange_rate = source_rate
 
-    if paid_from_currency and paid_from_currency == commission_currency:
+    if paid_from_currency and paid_from_currency == commission_currency and commission_currency == company_currency:
+        # Only safe to default both rates to 1 when the paid-from account, the
+        # commission currency AND the company currency are all identical.
         pe.paid_amount = outstanding
         if not pe.source_exchange_rate:
             pe.source_exchange_rate = 1.0
         if not pe.target_exchange_rate:
             pe.target_exchange_rate = 1.0
+    elif paid_from_currency and paid_from_currency == commission_currency:
+        # Same account/commission currency but a foreign company currency:
+        # never default to 1; require resolved rates for the currency pair.
+        if source_rate and target_rate:
+            pe.paid_amount = outstanding
+            pe.source_exchange_rate = source_rate
+            pe.target_exchange_rate = target_rate
+        else:
+            pe.paid_amount = 0
     elif paid_from_currency and source_rate and target_rate:
         try:
             pe.paid_amount = flt(outstanding * float(target_rate) / float(source_rate), _cp(paid_from_currency))
@@ -1635,6 +1646,7 @@ def repair_settlement_fx(
     fx_rate=None,
     fx_date=None,
     fx_source=None,
+    reason=None,
     force=False,
 ):
     """Controlled repair of an existing submitted Manual Approved Route
@@ -1700,13 +1712,32 @@ def repair_settlement_fx(
     old_from = getattr(sett, "settlement_fx_from_currency", None)
     old_to = getattr(sett, "settlement_fx_to_currency", None)
 
-    existing_valid = (
-        old_rate is not None
-        and _is_finite_positive(old_rate)
-        and old_currency
-        and old_from
-        and old_to
-    )
+    # Full snapshot validation: correct direction, rate, date and source.
+    existing_valid = False
+    try:
+        from frappe.utils import getdate
+        if (
+            old_rate is not None
+            and _is_finite_positive(old_rate)
+            and old_currency
+            and old_from
+            and old_to
+            and old_date
+            and old_source
+            and old_from == old_currency
+            and old_to == company_currency
+        ):
+            # Same source/target currency must use a rate of exactly 1.
+            if old_from == old_to:
+                if float(old_rate) == 1.0:
+                    getdate(old_date)
+                    existing_valid = True
+            else:
+                if float(old_rate) > 0:
+                    getdate(old_date)
+                    existing_valid = True
+    except Exception:
+        existing_valid = False
     explicit_change = bool(settlement_currency and settlement_currency != old_currency) or (fx_rate is not None)
     if existing_valid and not explicit_change and not force:
         return {
@@ -1719,16 +1750,30 @@ def repair_settlement_fx(
 
     # Resolve/validate the FX rate.
     import math
-    if fx_rate is not None:
+    manual_override = fx_rate is not None
+    explanation = reason
+    if manual_override:
+        # Manual FX override: require an explanation and force the source label.
         try:
             r = float(fx_rate)
         except (TypeError, ValueError):
             r = None
         if r is None or (not math.isfinite(r)) or r <= 0:
             frappe.throw(_("Invalid settlement FX rate provided."))
+        # Reject a non-1 manual rate when source and target currencies match.
+        if settlement_currency == company_currency and r != 1.0:
+            frappe.throw(
+                _("Manual FX override rate must be 1 when source and target "
+                  "currencies are identical.")
+            )
+        # Explanation is recorded for audit; fall back to fx_source/text if a
+        # dedicated reason is not supplied, but never trust it as the source label.
+        explanation = reason or fx_source or "Manual override"
         resolved_rate = r
+        resolved_source = "Manual Override"
     elif settlement_currency == company_currency:
         resolved_rate = 1.0
+        resolved_source = "ERPNext Currency Exchange"
     else:
         from frappe.utils import get_exchange_rate
 
@@ -1747,9 +1792,14 @@ def repair_settlement_fx(
                 )
             )
         resolved_rate = float(r)
+        resolved_source = "ERPNext Currency Exchange"
 
     eff_date = fx_date or frappe.utils.nowdate()
-    resolved_source = fx_source or "Manual FX repair"
+    if manual_override:
+        resolved_source = "Manual Override"
+    # Never trust a caller-supplied source label.
+    if resolved_source not in ("ERPNext Currency Exchange", "Manual Override"):
+        resolved_source = "ERPNext Currency Exchange" if not manual_override else "Manual Override"
 
     # Persist via controlled DB update (submitted doc).
     new_values = {
@@ -1760,27 +1810,38 @@ def repair_settlement_fx(
         "settlement_fx_to_currency": company_currency,
         "settlement_fx_source": resolved_source,
     }
-    frappe.db.set_value("Commission Settlement", settlement_name, new_values, update_modified=False)
-
-    # Audit trail: comment + log.
     try:
+        frappe.db.set_value("Commission Settlement", settlement_name, new_values, update_modified=False)
+        # Mandatory persistent audit record.
         sett.add_comment(
             "Comment",
-            _("FX repair: {0} {1}->{2} rate {3} on {4} (source {5}); "
-              "previous: currency {6}, rate {7}, date {8}, source {9}.").format(
+            _("FX repair by {0} at {1}: {2} {3}->{4} rate {5} on {6} "
+              "(source {7}); reason: {8}; previous: currency {9}, rate {10}, "
+              "date {11}, source {12}.").format(
+                frappe.session.user,
+                frappe.utils.now_datetime(),
                 settlement_name,
                 settlement_currency, company_currency, resolved_rate, eff_date,
-                resolved_source, old_currency, old_rate, old_date, old_source,
+                resolved_source, explanation or "-",
+                old_currency, old_rate, old_date, old_source,
             ),
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        try:
+            frappe.db.rollback()
+        except Exception:
+            pass
+        frappe.throw(
+            _("FX repair could not be audited; database update rolled back: {0}").format(exc)
+        )
+    # Secondary error log is best-effort.
     try:
         frappe.log_error(
             title="Commission Settlement FX repair",
-            message="settlement={0} old=({1},{2},{3},{4}) new=({5},{6},{7},{8})".format(
+            message="settlement={0} old=({1},{2},{3},{4}) new=({5},{6},{7},{8}) user={9}".format(
                 settlement_name, old_currency, old_rate, old_date, old_source,
                 settlement_currency, resolved_rate, eff_date, resolved_source,
+                frappe.session.user,
             ),
         )
     except Exception:

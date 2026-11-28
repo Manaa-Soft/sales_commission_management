@@ -662,6 +662,19 @@ def record_manual_payout(settlement=None, **kwargs):
     #   3. If settlement currency == company currency -> 1.
     #   4. Fall back to ERPNext Currency Exchange (get_exchange_rate).
     settlement_fx_rate = getattr(sett, "settlement_fx_rate", None)
+    # Verify the persisted snapshot actually describes the required
+    # settlement_currency -> company_currency conversion before trusting it.
+    if settlement_fx_rate:
+        fx_from = getattr(sett, "settlement_fx_from_currency", None)
+        fx_to = getattr(sett, "settlement_fx_to_currency", None)
+        if not (fx_from == settlement_currency and fx_to == company_currency):
+            settlement_fx_rate = None
+        elif fx_from == fx_to:
+            try:
+                if float(settlement_fx_rate) != 1.0:
+                    settlement_fx_rate = None
+            except (TypeError, ValueError):
+                settlement_fx_rate = None
     if not settlement_fx_rate or not _is_finite(settlement_fx_rate) or float(settlement_fx_rate) <= 0:
         settlement_fx_rate = None
         # Payment Entry evidence: try its source/target rates first.
