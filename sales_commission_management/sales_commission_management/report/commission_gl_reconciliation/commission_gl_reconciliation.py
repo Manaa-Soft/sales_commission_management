@@ -397,7 +397,7 @@ def _payable_subledger(company, to_date, mode):
     settlements = frappe.get_all(
         "Commission Settlement",
         filters={"company": company, "docstatus": 1},
-        fields=["name", "approval_date", "settlement_journal_entry", "settlement_method", "settlement_document_type"],
+        fields=["name", "approval_date", "settlement_journal_entry", "settlement_method", "settlement_document_type", "settlement_document"],
     )
     for s in settlements or []:
         je = getattr(s, "settlement_journal_entry", None)
@@ -522,13 +522,16 @@ def _payable_subledger(company, to_date, mode):
     events = frappe.get_all(
         "Commission Payout Event",
         filters={"company": company, "docstatus": 1},
-        fields=["event_type", "company_amount", "posting_date"],
+        fields=["event_type", "company_amount", "posting_date", "settlement"],
     )
     # Resolve configured payable account for payouts / subledger-until-settlement.
     settings = _settings()
     _accrued_cfg, payable_cfg = _resolve_accounts(settings, company)
-    payout_account = payable_cfg
-    payout_total = 0.0
+    # Accumulate payout totals per actual payable account. Prefer the account
+    # used on the linked settlement's settlement Journal Entry (the source
+    # voucher's GL account) over the currently configured payable account, so
+    # historical payouts follow the account that was actually posted.
+    payout_totals_by_account = {}
     for ev in events or []:
         pd = getattr(ev, "posting_date", None)
         if to_date and pd:
@@ -541,16 +544,60 @@ def _payable_subledger(company, to_date, mode):
                 )
         amt = flt(ev.get("company_amount"))
         et = ev.get("event_type")
+        delta = 0.0
         if et == "Payout":
-            payout_total -= amt
+            delta = -amt
         elif et == "Payout Reversal":
-            payout_total += amt
-    if payout_account:
-        by_account[payout_account] = by_account.get(payout_account, 0.0) + flt(payout_total)
+            delta = amt
+        else:
+            continue
+        acct = payable_cfg
+        sett_name = getattr(ev, "settlement", None)
+        if sett_name:
+            try:
+                sett_je = frappe.get_cached_value(
+                    "Commission Settlement", sett_name, "settlement_journal_entry"
+                )
+            except Exception:
+                sett_je = None
+            if sett_je:
+                try:
+                    je_status = frappe.get_cached_value(
+                        "Journal Entry", sett_je, "docstatus"
+                    )
+                    je_company = frappe.get_cached_value(
+                        "Journal Entry", sett_je, "company"
+                    )
+                except Exception:
+                    je_status = None
+                    je_company = None
+                if je_status == 1 and (not je_company or je_company == company):
+                    je_lines = frappe.get_all(
+                        "Journal Entry Account",
+                        filters={"parent": sett_je},
+                        fields=["account", "credit_in_account_currency"],
+                    )
+                    # Use the first credited payable account as the source voucher's
+                    # payable account; fall back to configured account.
+                    for line in je_lines or []:
+                        credit = flt(line.get("credit_in_account_currency"))
+                        if credit and credit > 0:
+                            acct = line.get("account") or acct
+                            break
+        if not acct:
+            acct = None
+        payout_totals_by_account[acct] = (
+            payout_totals_by_account.get(acct, 0.0) + flt(delta)
+        )
+    for acct, total in payout_totals_by_account.items():
+        if acct is not None:
+            by_account[acct] = by_account.get(acct, 0.0) + flt(total)
+        else:
+            by_account[None] = by_account.get(None, 0.0) + flt(total)
     # Move subledger-until-settlement accumulated total into configured payable account.
     sus_total = by_account.pop("__subledger_until_settlement__", 0.0)
-    if sus_total and payout_account:
-        by_account[payout_account] = by_account.get(payout_account, 0.0) + flt(sus_total)
+    if sus_total and payable_cfg:
+        by_account[payable_cfg] = by_account.get(payable_cfg, 0.0) + flt(sus_total)
     elif sus_total:
         # No configured payable account; leave as unmapped? Store under None.
         by_account[None] = by_account.get(None, 0.0) + flt(sus_total)

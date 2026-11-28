@@ -3225,6 +3225,9 @@ def _plan_cumulative_metric(plan, company, posting_date):
     target_metric = getattr(plan, "target_metric", None)
     basis_name = _METRIC_TO_BASIS.get(target_metric)
 
+    # Quantity targets are tracked by quantity, not by a monetary basis.
+    quantity_metric = target_metric == "Quantity"
+
     filters = {
         "docstatus": 1,
         "plan": plan.name,
@@ -3243,6 +3246,8 @@ def _plan_cumulative_metric(plan, company, posting_date):
                 "source_name",
                 "source_row",
                 "sales_invoice",
+                "commission_qty",
+                "source_qty",
             ],
         )
     except Exception:
@@ -3252,6 +3257,15 @@ def _plan_cumulative_metric(plan, company, posting_date):
     seen = set()
     total = 0.0
     for e in entries or []:
+        if quantity_metric:
+            # No monetary basis filter; aggregate quantity.
+            qty = flt(e.get("commission_qty") or e.get("source_qty") or 0)
+            key = (e.get("sales_invoice") or e.get("source_name"), e.get("source_row"))
+            if key in seen:
+                continue
+            seen.add(key)
+            total += qty
+            continue
         if basis_name and e.get("commission_basis") != basis_name:
             continue
         key = (e.get("sales_invoice") or e.get("source_name"), e.get("source_row"))
@@ -3290,6 +3304,8 @@ def _recompute_one_period(period):
             "sales_invoice",
             "company",
             "plan",
+            "commission_qty",
+            "source_qty",
         ],
     )
 
@@ -3417,7 +3433,10 @@ def _recompute_one_period(period):
             if src_key in seen2:
                 continue
             seen2.add(src_key)
-            total_metric += flt(e.get("company_basis_amount"))
+            if target_metric == "Quantity":
+                total_metric += flt(e.get("commission_qty") or e.get("source_qty") or 0)
+            else:
+                total_metric += flt(e.get("company_basis_amount"))
 
         pct = (total_metric / target_value) * 100.0
         try:
