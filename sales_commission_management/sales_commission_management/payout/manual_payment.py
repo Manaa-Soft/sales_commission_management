@@ -707,6 +707,63 @@ def record_manual_payout(settlement=None, **kwargs):
                     settlement_fx_rate = r
             except Exception:
                 pass
+        # Auto-correct a misconfigured settlement whose FX snapshot cannot be
+        # resolved but whose payment evidence is actually denominated in the
+        # company currency. In that case the settlement is effectively being
+        # paid in company currency, so treat it as such (rate 1) instead of
+        # hard-failing. This repairs legacy/submitted settlements whose
+        # settlement_currency was set to a foreign currency without a usable
+        # exchange rate, while keeping the fail-closed behaviour for genuine
+        # multi-currency payouts where no rate exists.
+        if not settlement_fx_rate:
+            _voucher_in_company_currency = False
+            try:
+                if source_doctype == "Payment Entry":
+                    _pe = frappe.get_doc("Payment Entry", source_name)
+                    _pf = getattr(_pe, "paid_from_account_currency", None)
+                    _pt = getattr(_pe, "paid_to_account_currency", None)
+                    if _pf and _pt and _pf == _pt == company_currency:
+                        _voucher_in_company_currency = True
+                elif source_doctype == "Journal Entry":
+                    _je = frappe.get_doc("Journal Entry", source_name)
+                    if getattr(_je, "currency", None) == company_currency:
+                        _voucher_in_company_currency = True
+            except Exception:
+                _voucher_in_company_currency = False
+            if _voucher_in_company_currency and commission_currency == company_currency:
+                settlement_currency = company_currency
+                settlement_fx_rate = 1.0
+                # Persist the correction so the settlement document stays
+                # consistent and future payouts do not rely on this fallback.
+                try:
+                    frappe.db.set_value(
+                        "Commission Settlement",
+                        sett_name,
+                        {
+                            "settlement_currency": company_currency,
+                            "settlement_fx_rate": 1.0,
+                            "settlement_fx_date": payment_date,
+                            "settlement_fx_from_currency": company_currency,
+                            "settlement_fx_to_currency": company_currency,
+                            "settlement_fx_source": "Manual Approved Route default",
+                        },
+                        update_modified=False,
+                    )
+                    try:
+                        sett.add_comment(
+                            "Comment",
+                            _("Auto-corrected settlement currency to {0} (rate 1) "
+                              "during manual payout {1}: payment evidence is "
+                              "denominated in company currency.").format(
+                                company_currency, source_name
+                            ),
+                        )
+                    except Exception:
+                        pass
+                    frappe.clear_cache(doctype="Commission Settlement")
+                except Exception:
+                    # Non-fatal: in-memory correction already applied.
+                    pass
         if not settlement_fx_rate:
             if settlement_currency == company_currency:
                 settlement_fx_rate = 1.0
