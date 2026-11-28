@@ -25,4 +25,3 @@ def get_data():
             {"label": _("Accounting & Settlement"), "items": ["Journal Entry", "Purchase Invoice", "Additional Salary"]},
         ],
     }
-PY
