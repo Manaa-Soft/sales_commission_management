@@ -25,26 +25,36 @@ def execute():
             }
         ).insert(ignore_permissions=True)
 
-    # Backfill contributor_source on existing Commission Plans. Infer prior
-    # behaviour from existing Commission Contributor rows: plans with
-    # contributors should be "Plan Contributors"; others "Sales Invoice Sales Team".
-    # Only correct plans where the inferred value differs from the stored value,
-    # so an administrator's explicit choice is never overwritten.
+    # Backfill contributor_source on existing Commission Plans EXACTLY ONCE.
+    #
+    # This is a one-time migration of legacy rows that predate the
+    # contributor_source field. It must NEVER overwrite an administrator's
+    # explicit choice on a subsequent `bench migrate` (after_migrate /
+    # after_install both call this function repeatedly).
+    #
+    # Marker strategy: a plan is considered "not yet migrated" only when its
+    # contributor_source is genuinely unset (NULL / empty). Once a value is
+    # present -- whether inferred here or chosen by an administrator -- it is
+    # left untouched. This makes the backfill idempotent and preserves
+    # explicit configuration across repeated migrations.
     if not frappe.db.has_column("Commission Plan", "contributor_source"):
         return
     all_plans = frappe.get_all("Commission Plan", pluck="name")
     for pname in all_plans:
+        current = frappe.db.get_value("Commission Plan", pname, "contributor_source")
+        # One-time marker: only infer for plans that have never been assigned
+        # a contributor_source. Never overwrite an existing (explicit) value.
+        if current not in (None, ""):
+            continue
         has_contribs = frappe.db.exists(
             "Commission Contributor", {"parent": pname, "parenttype": "Commission Plan"}
         )
         inferred = "Plan Contributors" if has_contribs else "Sales Invoice Sales Team"
-        current = frappe.db.get_value("Commission Plan", pname, "contributor_source")
-        if current != inferred:
-            frappe.db.set_value(
-                "Commission Plan",
-                pname,
-                "contributor_source",
-                inferred,
-                update_modified=False,
-            )
-    frappe.db.commit()
+        frappe.db.set_value(
+            "Commission Plan",
+            pname,
+            "contributor_source",
+            inferred,
+            update_modified=False,
+        )
+    # Do not commit here; Frappe manages the transaction for patches/migrate.
