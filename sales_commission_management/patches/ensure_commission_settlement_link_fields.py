@@ -32,4 +32,3 @@ def execute():
     if frappe.db.exists("DocType", "Additional Salary"):
         _ensure_field("Additional Salary", "commission_settlement", "Commission Settlement", "Commission Settlement")
     print("ensure_commission_settlement_link_fields: done")
-PY
